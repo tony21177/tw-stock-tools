@@ -12,8 +12,16 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
 
-CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache", "prices")
-TAIEX_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache", "taiex.json")
+HERE_FETCHER = os.path.dirname(os.path.abspath(__file__))
+CACHE_DIR = os.path.join(HERE_FETCHER, "cache", "prices")
+TAIEX_CACHE = os.path.join(HERE_FETCHER, "cache", "taiex.json")
+
+sys.path.insert(0, HERE_FETCHER)
+try:
+    from stock_names import get_name as _get_zh_name
+except ImportError:
+    def _get_zh_name(code, fallback=""):
+        return fallback or code
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
 
@@ -109,9 +117,11 @@ def fetch_stock(code: str) -> dict:
                 })
             if not rows:
                 continue
+            zh_name = _get_zh_name(code, meta.get("shortName", code))
             return {
                 "code": code,
-                "name": meta.get("shortName", code),
+                "name": zh_name,
+                "name_en": meta.get("shortName", code),
                 "market": "上櫃" if suffix == ".TWO" else "上市",
                 "current_price": meta.get("regularMarketPrice"),
                 "rows": rows,
