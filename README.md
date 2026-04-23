@@ -1,14 +1,16 @@
-# 台股借券 / 融資分析工具組
+# 台股借券 / 融資 / 概念動能分析工具組
 
-四支 Python 腳本（純標準庫 + FinMind + Yahoo Finance），涵蓋：
+五大功能：
 
-1. 借券議借異常監控（每日排程推送）
-2. 借券賣出餘額大幅減少監控（每日排程推送）
-3. 單檔借券狀況查詢（CLI）
-4. 融資維持率預警全市場掃描
-5. 單檔融資維持率估算（CLI）
+1. 借券議借異常監控（每日排程推送）→ `tw_lending_monitor.py`
+2. 借券賣出餘額大幅減少監控（每日排程推送）→ `tw_lending_monitor.py`
+3. 單檔借券狀況查詢（CLI）→ `tw_lending_lookup.py`
+4. 融資維持率預警全市場掃描 → `tw_margin_monitor.py`
+5. 單檔融資維持率估算（CLI）→ `tw_margin_lookup.py`
+6. **概念動能監控（每日排程推送 PNG + 網頁儀表板）** → `concept_momentum/`
 
-所有腳本放在 `~/project/tw_stock_tools/`，cron 設定每天排程推送到 Telegram 群組。
+所有工具放在 `~/project/tw_stock_tools/`，cron 設定每天排程推送到 Telegram 群組。
+概念動能子模組詳見 `concept_momentum/README.md`。
 
 ---
 

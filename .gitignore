@@ -14,3 +14,11 @@ __pycache__/
 .DS_Store
 .vscode/
 .idea/
+
+# concept_momentum specific
+concept_momentum/cache/prices/
+concept_momentum/cache/taiex.json
+concept_momentum/cache/results/
+concept_momentum/static/*.png
+concept_momentum/templates/dashboard.html
+concept_momentum/daily.log
