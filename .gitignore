@@ -1,0 +1,16 @@
+# Cached API responses (can be regenerated)
+margin_cache/
+
+# Runtime logs
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Editor/OS
+.DS_Store
+.vscode/
+.idea/
