@@ -130,6 +130,40 @@ def normalize(value: float, min_v: float, max_v: float) -> float:
     return max(0.0, min(100.0, (value - min_v) / (max_v - min_v) * 100))
 
 
+def extract_leaders(concept_stocks: list[dict], top_n: int = 5) -> list[dict]:
+    """Identify top N leader stocks: sort by 20d return desc, filter 5d return > 0."""
+    candidates = []
+    for s in concept_stocks:
+        rows = s.get("rows", [])
+        if len(rows) < 21:
+            continue
+        closes = [r["close"] for r in rows]
+        volumes = [r["volume"] for r in rows]
+        ret_5d = pct_change(closes, 5)
+        ret_20d = pct_change(closes, 20)
+        # volume ratio: last 5d avg / last 20d avg
+        vol5 = sum(volumes[-5:]) / 5 if volumes else 0
+        vol20 = sum(volumes[-20:]) / 20 if volumes else 0
+        vol_ratio = vol5 / vol20 if vol20 > 0 else 1.0
+        candidates.append({
+            "code": s["code"],
+            "name": s.get("name", s["code"]),
+            "market": s.get("market", ""),
+            "current_price": s.get("current_price", closes[-1]),
+            "ret_5d": ret_5d,
+            "ret_20d": ret_20d,
+            "vol_ratio": vol_ratio,
+        })
+
+    # Filter: 5d > 0 (still up short-term), sort by 20d desc
+    filtered = [c for c in candidates if c["ret_5d"] > 0]
+    if len(filtered) < top_n:
+        # Fallback: no 5d filter
+        filtered = candidates
+    filtered.sort(key=lambda x: x["ret_20d"], reverse=True)
+    return filtered[:top_n]
+
+
 def analyze_concept(theme_key: str, theme_info: dict, stocks_data: dict, taiex_rows: list[dict]) -> dict:
     """Compute all metrics for one concept."""
     codes = theme_info.get("stocks", [])
@@ -177,6 +211,9 @@ def analyze_concept(theme_key: str, theme_info: dict, stocks_data: dict, taiex_r
         0.20 * duration_score
     )
 
+    # Top 5 leader stocks
+    leaders = extract_leaders(concept_stocks, top_n=5)
+
     return {
         "theme_key": theme_key,
         "name_zh": theme_info.get("name_zh", theme_key),
@@ -197,7 +234,90 @@ def analyze_concept(theme_key: str, theme_info: dict, stocks_data: dict, taiex_r
         "duration_score": duration_score,
         "sustainability_score": sustainability_score,
         "concept_index": concept_index,
+        "leaders": leaders,
     }
+
+
+# ============================================================
+# Historical score time series (3-month trend)
+# ============================================================
+
+def _truncate_rows(rows: list[dict], end_date: str) -> list[dict]:
+    """Keep only rows with date <= end_date."""
+    return [r for r in rows if r["date"] <= end_date]
+
+
+def compute_score_for_date(theme_info: dict, stocks_data: dict, taiex_rows: list[dict], as_of: str) -> float:
+    """Compute sustainability score as if 'as_of' were the current date.
+    Uses data up to and including as_of."""
+    codes = theme_info.get("stocks", [])
+    concept_stocks_full = [stocks_data[c] for c in codes if c in stocks_data]
+
+    # Truncate to as_of
+    truncated = []
+    for s in concept_stocks_full:
+        truncated_rows = _truncate_rows(s.get("rows", []), as_of)
+        if len(truncated_rows) >= 20:
+            truncated.append({**s, "rows": truncated_rows})
+
+    if len(truncated) < 3:
+        return 0.0
+
+    breadth_5d = compute_breadth(truncated, 5)
+    breadth_20d = compute_breadth(truncated, 20)
+    breadth_avg = (breadth_5d + breadth_20d) / 2
+
+    concept_index = build_concept_index(truncated)
+    index_values = [p["value"] for p in concept_index]
+    duration = compute_duration(index_values) if index_values else 0
+
+    vol_ratio = compute_volume_ratio(truncated)
+
+    taiex_truncated = _truncate_rows(taiex_rows, as_of)
+    rs_20d = compute_rs(concept_index, taiex_truncated, 20)
+
+    breadth_score = normalize(breadth_avg, 50, 80)
+    volume_score = normalize(vol_ratio, 1.0, 2.0)
+    rs_score = normalize(rs_20d, -5, 15)
+    duration_score = normalize(duration, 0, 10)
+
+    return 0.40 * breadth_score + 0.20 * volume_score + 0.20 * rs_score + 0.20 * duration_score
+
+
+def compute_score_history(theme_info: dict, stocks_data: dict, taiex_rows: list[dict], sample_every: int = 2) -> list[dict]:
+    """Compute score for each sampled trading day in the available data range.
+    Returns list of {date, score}."""
+    # Find all unique trading dates
+    all_dates = set()
+    for code in theme_info.get("stocks", []):
+        if code in stocks_data:
+            for r in stocks_data[code].get("rows", []):
+                all_dates.add(r["date"])
+    sorted_dates = sorted(all_dates)
+
+    # Need at least 20 days of history for score
+    if len(sorted_dates) < 21:
+        return []
+
+    start_idx = 20
+    series = []
+    for i in range(start_idx, len(sorted_dates), sample_every):
+        date = sorted_dates[i]
+        score = compute_score_for_date(theme_info, stocks_data, taiex_rows, date)
+        series.append({"date": date, "score": score})
+    # Always include last date if not in sample
+    if sorted_dates[-1] != series[-1]["date"]:
+        score = compute_score_for_date(theme_info, stocks_data, taiex_rows, sorted_dates[-1])
+        series.append({"date": sorted_dates[-1], "score": score})
+    return series
+
+
+def add_score_history(concepts: dict, results: list[dict], stocks_data: dict, taiex_rows: list[dict]) -> None:
+    """Mutate results in-place: add 'score_history' to each entry."""
+    for r in results:
+        theme_info = concepts["themes"].get(r["theme_key"])
+        if theme_info:
+            r["score_history"] = compute_score_history(theme_info, stocks_data, taiex_rows)
 
 
 def analyze_all(concepts: dict, stocks_data: dict, taiex_rows: list[dict]) -> list[dict]:

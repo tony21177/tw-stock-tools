@@ -15,8 +15,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 from data_fetcher import fetch_all_concepts, fetch_taiex
-from concept_momentum import analyze_all
-from concept_charts import generate_png, generate_html
+from concept_momentum import analyze_all, add_score_history
+from concept_charts import generate_png, generate_trend_png, generate_html
 
 DEFAULT_CHAT_ID = "-5229750819"
 TG_API_URL = "https://api.telegram.org/bot{token}"
@@ -82,37 +82,47 @@ def send_telegram_text(message: str, bot_token: str, chat_id: str) -> bool:
 
 
 def build_summary(results: list[dict], target_date: str) -> str:
-    """Build text summary for Telegram caption + detail message."""
+    """Build main summary: high-momentum concepts with top 5 leaders each."""
     if not results:
         return f"概念動能監控 {target_date}\n\n無資料"
 
     lines = [f"概念動能監控 {target_date}"]
-    lines.append("高動能（評分 ≥70，資金持續流入）")
-    lines.append("━━━━━━━━━━")
+    lines.append("高動能族群（評分 ≥70）+ 領漲 Top 5")
+    lines.append("━━━━━━━━━━━━")
     high = [r for r in results if r["sustainability_score"] >= 70]
     if not high:
-        lines.append("（無）")
+        lines.append("（今日無高動能族群）")
     else:
-        for i, r in enumerate(high[:10], 1):
+        for i, r in enumerate(high, 1):
+            lines.append(f"\n{i}. {r['name_zh']}  評分 {r['sustainability_score']:.0f}")
             lines.append(
-                f"{i}. {r['name_zh']}  評分 {r['sustainability_score']:.0f}\n"
                 f"   20d: {r['ret_20d']:+.1f}%  廣度 {r['breadth_20d']:.0f}%  "
                 f"量比 {r['volume_ratio']:.1f}x  RS {r['rs_20d']:+.1f}%  持續 {r['duration']}天"
             )
+            leaders = r.get("leaders", [])
+            if leaders:
+                for L in leaders[:5]:
+                    lines.append(
+                        f"   • {L['code']} {L['name'][:20]}  "
+                        f"5d:{L['ret_5d']:+.1f}% 20d:{L['ret_20d']:+.1f}%"
+                    )
+    return "\n".join(lines)
 
-    lines.append("")
-    lines.append("弱勢（評分 <30，資金流出）")
-    lines.append("━━━━━━━━━━")
+
+def build_weak_summary(results: list[dict], target_date: str) -> str:
+    """Secondary message: weak concepts."""
+    lines = [f"弱勢族群監控 {target_date}"]
     low = [r for r in results if r["sustainability_score"] < 30]
+    lines.append("評分 <30（資金流出，不建議進場）")
+    lines.append("━━━━━━━━━━━━")
     if not low:
         lines.append("（無）")
     else:
-        for r in low[:5]:
+        for r in low:
             lines.append(
                 f"• {r['name_zh']}  評分 {r['sustainability_score']:.0f}  "
-                f"20d: {r['ret_20d']:+.1f}%  RS {r['rs_20d']:+.1f}%"
+                f"20d: {r['ret_20d']:+.1f}%  RS {r['rs_20d']:+.1f}%  廣度 {r['breadth_20d']:.0f}%"
             )
-
     return "\n".join(lines)
 
 
@@ -142,37 +152,58 @@ def main():
         taiex = fetch_taiex()
 
     # Analyze
-    print("【步驟 3/4】計算動能指標...", file=sys.stderr)
+    print("【步驟 3/5】計算動能指標...", file=sys.stderr)
     results = analyze_all(concepts, stocks, taiex)
 
+    print("【步驟 4/5】計算 3 個月評分歷史（Top 10）...", file=sys.stderr)
+    add_score_history(concepts, results[:10], stocks, taiex)
+
     # Charts
-    print("【步驟 4/4】生成圖表...", file=sys.stderr)
+    print("【步驟 5/5】生成圖表...", file=sys.stderr)
     target_date = datetime.now().strftime("%Y-%m-%d")
     png_path = generate_png(results, target_date)
+    trend_png = generate_trend_png(results, target_date)
     html_path = generate_html(results, taiex, target_date)
-    print(f"PNG: {png_path}")
+    print(f"Snapshot PNG: {png_path}")
+    print(f"Trend PNG: {trend_png}")
     print(f"HTML: {html_path}")
 
-    # Summary text
     summary = build_summary(results, target_date)
+    weak_summary = build_weak_summary(results, target_date)
     print()
     print(summary)
+    print()
+    print(weak_summary)
 
     # Telegram push
     if args.telegram:
         if not bot_token:
             print("[ERROR] 需要 TG_BOT_TOKEN", file=sys.stderr)
             sys.exit(1)
-        # Send photo with short caption
         short_caption = f"概念動能 {target_date}  Top 3: "
         for r in results[:3]:
             short_caption += f"{r['name_zh']}({r['sustainability_score']:.0f}) "
-        print("推送 PNG...", file=sys.stderr)
+
+        print("推送 Snapshot PNG...", file=sys.stderr)
         ok1 = send_telegram_photo(png_path, short_caption, bot_token, args.chat_id)
         time.sleep(1)
-        print("推送文字摘要...", file=sys.stderr)
+
+        if trend_png:
+            print("推送 Trend PNG...", file=sys.stderr)
+            trend_caption = f"概念動能 3 個月趨勢 {target_date}"
+            ok_trend = send_telegram_photo(trend_png, trend_caption, bot_token, args.chat_id)
+            time.sleep(1)
+        else:
+            ok_trend = True
+
+        print("推送強勢族群文字摘要...", file=sys.stderr)
         ok2 = send_telegram_text(summary, bot_token, args.chat_id)
-        if ok1 and ok2:
+        time.sleep(1)
+
+        print("推送弱勢族群摘要...", file=sys.stderr)
+        ok3 = send_telegram_text(weak_summary, bot_token, args.chat_id)
+
+        if ok1 and ok_trend and ok2 and ok3:
             print("推送成功")
         else:
             print("部分推送失敗", file=sys.stderr)
