@@ -30,7 +30,7 @@ TWSE_OPENAPI_MARGIN = "https://openapi.twse.com.tw/v1/exchangeReport/MI_MARGN"
 TPEX_OPENAPI_MARGIN = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_margin_balance"
 FINMIND_URL = "https://api.finmindtrade.com/api/v4/data"
 TG_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
-CACHE_DIR = os.path.expanduser("~/project/margin_cache")
+CACHE_DIR = os.path.expanduser("~/project/tw_stock_tools/margin_cache")
 
 TWSE_MARGIN_RATIO = 0.60
 TPEX_MARGIN_RATIO = 0.50
@@ -199,6 +199,62 @@ def compute_fifo_cost(history: list[dict], daily_prices: dict) -> tuple[float, i
     return total_cost / total_vol, int(total_vol)
 
 
+def compute_cohort_buckets(history: list[dict], daily_prices: dict,
+                             current_price: float, current_balance: int,
+                             margin_ratio: float) -> dict:
+    """Balance-change based cohort distribution. Returns bucket dict + tracked/legacy split."""
+    from collections import deque as _dq
+    sorted_hist = sorted(history, key=lambda x: x["date"])
+    if not sorted_hist:
+        return {"buckets": {}, "tracked": 0, "legacy": current_balance, "danger_pct": 0}
+
+    legacy = sorted_hist[0]["balance"]
+    lots = _dq()
+    prev = legacy
+    for entry in sorted_hist:
+        price = daily_prices.get(entry["date"])
+        today_bal = entry["balance"]
+        delta = today_bal - prev
+        if delta > 0 and price is not None:
+            lots.append([entry["date"], delta, price])
+        elif delta < 0:
+            reduce = -delta
+            while reduce > 0 and lots:
+                if lots[0][1] <= reduce:
+                    reduce -= lots[0][1]
+                    lots.popleft()
+                else:
+                    lots[0][1] -= reduce
+                    reduce = 0
+            if reduce > 0:
+                legacy = max(0, legacy - reduce)
+        prev = today_bal
+
+    tracked = sum(l[1] for l in lots)
+    legacy_vol = max(0, current_balance - tracked)
+
+    buckets = {"<130": 0, "130-140": 0, "140-150": 0, "150-170": 0, "170+": 0}
+    for _, v, p in lots:
+        r = (current_price / (p * margin_ratio)) * 100
+        if r < 130: buckets["<130"] += v
+        elif r < 140: buckets["130-140"] += v
+        elif r < 150: buckets["140-150"] += v
+        elif r < 170: buckets["150-170"] += v
+        else: buckets["170+"] += v
+
+    # Danger %: tracked volume in <140 zone, as % of tracked
+    danger_vol = buckets["<130"] + buckets["130-140"]
+    danger_pct = danger_vol / tracked * 100 if tracked else 0
+
+    return {
+        "buckets": buckets,
+        "tracked": tracked,
+        "legacy": legacy_vol,
+        "danger_pct": danger_pct,
+        "danger_vol": danger_vol,
+    }
+
+
 def analyze(target_date: str, threshold: float, min_balance: int, finmind_token: str, max_stocks: int = 0) -> list[dict]:
     """Main analysis. threshold: maintenance ratio % (e.g. 140)."""
     # Compute date range
@@ -248,9 +304,13 @@ def analyze(target_date: str, threshold: float, min_balance: int, finmind_token:
         market = price_data["market"]
         ratio = TPEX_MARGIN_RATIO if market == "上櫃" else TWSE_MARGIN_RATIO
         current_price = price_data["current_price"]
+        current_balance = today_data[code]["balance"]
 
         maintenance = (current_price / (avg_cost * ratio)) * 100
         trigger = avg_cost * ratio * 1.30
+
+        cohort = compute_cohort_buckets(history, price_data["prices"],
+                                        current_price, current_balance, ratio)
 
         if maintenance >= threshold:
             continue
@@ -263,10 +323,15 @@ def analyze(target_date: str, threshold: float, min_balance: int, finmind_token:
             "change_pct": price_data["change_pct"],
             "avg_cost": avg_cost,
             "remaining_lots": remaining,
-            "balance_today": today_data[code]["balance"],
+            "balance_today": current_balance,
             "maintenance_ratio": maintenance,
             "trigger_price": trigger,
             "margin_ratio": ratio,
+            "cohort_buckets": cohort["buckets"],
+            "cohort_tracked": cohort["tracked"],
+            "cohort_legacy": cohort["legacy"],
+            "cohort_danger_pct": cohort["danger_pct"],
+            "cohort_danger_vol": cohort["danger_vol"],
         })
 
         if (i + 1) % 50 == 0:
@@ -284,21 +349,37 @@ def format_output(results: list[dict], target_date: str, threshold: float) -> st
         lines.append("今日無符合條件的標的")
         return "\n".join(lines)
 
-    lines.append("估算：維持率 = 現價 / (加權成本 × 融資成數)")
+    lines.append("估算：FIFO 加權 + 批次分布")
     lines.append("  融資成數：上市 60%、上櫃 50%")
-    lines.append("  加權成本：過去 3 個月融資買進，FIFO 扣除賣出/償還")
+    lines.append("  追蹤批次 = 餘額實際增加的日期，依進場價估維持率")
     lines.append("━━━━━━━━━━━━")
-    for r in results:
+
+    # Resort: prioritize stocks with high danger_pct (% of tracked in <140%)
+    results_sorted = sorted(results, key=lambda x: (-x.get("cohort_danger_pct", 0), x["maintenance_ratio"]))
+
+    for r in results_sorted:
         sign = "+" if r["change_pct"] >= 0 else ""
+        bucket = r.get("cohort_buckets", {})
+        tracked = r.get("cohort_tracked", 0)
+        legacy = r.get("cohort_legacy", 0)
+        danger_pct = r.get("cohort_danger_pct", 0)
+        danger_vol = r.get("cohort_danger_vol", 0)
+
+        def pct(key):
+            v = bucket.get(key, 0)
+            return f"{v/tracked*100:.0f}%" if tracked else "-"
+
         lines.append(
             f"{r['code']} {r['name']} [{r['market']}]\n"
             f"  現價: ${r['current_price']:,.2f} {sign}{r['change_pct']:.2f}%\n"
-            f"  加權成本: ${r['avg_cost']:,.2f} | 融資餘額: {r['balance_today']:,}張\n"
-            f"  估算維持率: {r['maintenance_ratio']:.1f}% | 追繳觸發價: ${r['trigger_price']:,.2f}"
+            f"  整體維持率: {r['maintenance_ratio']:.1f}% | 加權成本: ${r['avg_cost']:,.2f}\n"
+            f"  融資餘額: {r['balance_today']:,}張 (追蹤 {tracked:,} + 舊部位 {legacy:,})\n"
+            f"  批次分布: 追繳區 {pct('<130')} | 危險區 {pct('130-140')} | 警戒 {pct('140-150')} | 尚可 {pct('150-170')} | 安全 {pct('170+')}\n"
+            f"  危險部位: {danger_vol:,}張 ({danger_pct:.1f}% 追蹤量)"
         )
         lines.append("")
 
-    lines.append(f"共篩出 {len(results)} 檔")
+    lines.append(f"共篩出 {len(results)} 檔（依「追蹤量中危險部位比例」由高至低排序）")
     return "\n".join(lines)
 
 
