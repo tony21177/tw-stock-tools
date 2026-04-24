@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 
 # Reuse functions from tw_margin_monitor
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "concept_momentum"))
 from tw_margin_monitor import (
     fetch_finmind_history,
     fetch_yahoo_history,
@@ -25,6 +26,11 @@ from tw_margin_monitor import (
     TWSE_MARGIN_RATIO,
     TPEX_MARGIN_RATIO,
 )
+try:
+    from stock_names import get_name as _get_zh_name
+except ImportError:
+    def _get_zh_name(code, fallback=""):
+        return fallback or code
 
 
 def compute_cohort_distribution(history: list[dict], daily_prices: dict,
@@ -151,17 +157,23 @@ def lookup(code: str, target_date: str | None = None, finmind_token: str = "") -
         return f"{code}: 無法取得股價資料"
 
     avg_cost, remaining = compute_fifo_cost(history, price_data["prices"])
-    if remaining == 0 or avg_cost == 0:
+    current_balance = history[-1]["balance"] if history else 0
+
+    if current_balance == 0:
         return f"{code} {price_data['name']}: 目前無融資餘額"
 
     market = price_data["market"]
     ratio = TPEX_MARGIN_RATIO if market == "上櫃" else TWSE_MARGIN_RATIO
     current = price_data["current_price"]
-    maintenance = (current / (avg_cost * ratio)) * 100
-    trigger_call = avg_cost * ratio * 1.30
-    trigger_warn = avg_cost * ratio * 1.40
 
-    current_balance = history[-1]["balance"] if history else remaining
+    if remaining > 0 and avg_cost > 0:
+        maintenance = (current / (avg_cost * ratio)) * 100
+        trigger_call = avg_cost * ratio * 1.30
+        trigger_warn = avg_cost * ratio * 1.40
+    else:
+        maintenance = None  # all legacy, no tracked cohorts
+        trigger_call = 0
+        trigger_warn = 0
 
     # Cohort analysis (skip small days as noise)
     cohort_data = compute_cohort_distribution(
@@ -169,25 +181,37 @@ def lookup(code: str, target_date: str | None = None, finmind_token: str = "") -
     )
 
     sign = "+" if price_data["change_pct"] >= 0 else ""
-    status = "🔴 危險（<140%）" if maintenance < 140 else \
-             "🟡 警戒（140-150%）" if maintenance < 150 else \
-             "🟢 尚可（150-170%）" if maintenance < 170 else \
-             "✅ 安全（>170%）"
 
-    pct_to_call = ((current - trigger_call) / current) * 100
-
+    zh_name = _get_zh_name(code, price_data["name"])
     lines = [
-        f"{code} {price_data['name']} [{market}]",
+        f"{code} {zh_name} [{market}]",
         f"現價: ${current:,.2f}  {sign}{price_data['change_pct']:.2f}%",
         "",
-        f"【整體維持率（FIFO 加權）】",
-        f"加權成本: ${avg_cost:,.2f} | 融資餘額: {current_balance:,} 張 | 成數: {ratio*100:.0f}%",
-        f"估算維持率: {maintenance:.1f}%  {status}",
-        f"140% 警戒價: ${trigger_warn:,.2f} (再跌 {((current-trigger_warn)/current*100):.2f}%)",
-        f"130% 追繳價: ${trigger_call:,.2f} (再跌 {pct_to_call:.2f}%)",
-        "",
-        f"【批次分布（顯示佔比 ≥5% 的大量進場日）】",
     ]
+
+    if maintenance is not None:
+        status = "🔴 危險（<140%）" if maintenance < 140 else \
+                 "🟡 警戒（140-150%）" if maintenance < 150 else \
+                 "🟢 尚可（150-170%）" if maintenance < 170 else \
+                 "✅ 安全（>170%）"
+        pct_to_call = ((current - trigger_call) / current) * 100
+        lines.extend([
+            f"【整體維持率（FIFO 加權）】",
+            f"加權成本: ${avg_cost:,.2f} | 融資餘額: {current_balance:,} 張 | 成數: {ratio*100:.0f}%",
+            f"估算維持率: {maintenance:.1f}%  {status}",
+            f"140% 警戒價: ${trigger_warn:,.2f} (再跌 {((current-trigger_warn)/current*100):.2f}%)",
+            f"130% 追繳價: ${trigger_call:,.2f} (再跌 {pct_to_call:.2f}%)",
+            "",
+        ])
+    else:
+        lines.extend([
+            f"【融資餘額】{current_balance:,} 張 | 成數: {ratio*100:.0f}%",
+            f"⚠️ 過去 3 個月融資餘額持續淨減少（賣>買），目前所有餘額都是 3 個月前就存在的「舊部位」",
+            f"   → 成本無從得知（超出觀察區間），無法估算維持率",
+            "",
+        ])
+
+    lines.append(f"【批次分布（顯示佔比 ≥5% 的大量進場日）】")
 
     tracked = cohort_data["tracked_vol"]
     legacy = cohort_data["legacy_vol"]
