@@ -17,6 +17,7 @@ sys.path.insert(0, HERE)
 from data_fetcher import fetch_all_concepts, fetch_taiex
 from concept_momentum import analyze_all, add_score_history
 from concept_charts import generate_png, generate_trend_png, generate_html
+from rerating_detector import compute_rerating, format_rerating_report
 
 DEFAULT_CHAT_ID = "-5229750819"
 TG_API_URL = "https://api.telegram.org/bot{token}"
@@ -175,6 +176,13 @@ def main():
     print()
     print(weak_summary)
 
+    # Rerating analysis (over all stocks across concepts)
+    print("\n計算 rerating 訊號...", file=sys.stderr)
+    rerating = compute_rerating(concepts, results, stocks)
+    rerating_summary = format_rerating_report(rerating, concepts, top_n=15)
+    print()
+    print(rerating_summary)
+
     # Telegram push
     if args.telegram:
         if not bot_token:
@@ -202,8 +210,12 @@ def main():
 
         print("推送弱勢族群摘要...", file=sys.stderr)
         ok3 = send_telegram_text(weak_summary, bot_token, args.chat_id)
+        time.sleep(1)
 
-        if ok1 and ok_trend and ok2 and ok3:
+        print("推送 rerating 摘要...", file=sys.stderr)
+        ok4 = send_telegram_text(rerating_summary, bot_token, args.chat_id)
+
+        if ok1 and ok_trend and ok2 and ok3 and ok4:
             print("推送成功")
         else:
             print("部分推送失敗", file=sys.stderr)
