@@ -23,3 +23,7 @@ concept_momentum/cache/stock_names.json
 concept_momentum/static/*.png
 concept_momentum/templates/dashboard.html
 concept_momentum/daily.log
+.gstack/
+
+# BSR scraper cache
+bsr_cache/
