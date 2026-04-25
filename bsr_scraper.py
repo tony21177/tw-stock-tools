@@ -205,7 +205,8 @@ def fetch_bsr(stock_code: str, max_attempts: int = 10,
 
 
 def fetch_and_cache(stock_code: str, force: bool = False) -> dict:
-    """Fetch BSR for stock, cache to disk. Returns parsed data."""
+    """Fetch BSR for stock, cache to disk. Returns parsed data.
+    Auto-routes: TWSE BSR first, falls back to TPEx (Playwright) if no data."""
     _ensure_cache()
     today = datetime.now().strftime("%Y%m%d")
     cache_file = os.path.join(CACHE_DIR, f"{stock_code}_{today}.json")
@@ -213,7 +214,23 @@ def fetch_and_cache(stock_code: str, force: bool = False) -> dict:
         with open(cache_file) as f:
             return json.load(f)
 
+    # Try TWSE BSR first
     data = fetch_bsr(stock_code)
+
+    # If TWSE returned no_data (likely OTC stock), try TPEx
+    if data.get("no_data") or not data:
+        try:
+            from tpex_scraper import fetch_tpex_broker
+            tpex_data = fetch_tpex_broker(stock_code)
+            if tpex_data and not tpex_data.get("no_data"):
+                data = tpex_data
+            elif tpex_data and tpex_data.get("no_data") and not data:
+                data = tpex_data  # at least record it as no_data
+        except ImportError:
+            pass
+        except Exception as e:
+            print(f"[WARN] TPEx fallback for {stock_code}: {e}", file=sys.stderr)
+
     if data:
         with open(cache_file, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
