@@ -201,8 +201,9 @@ def compute_fifo_cost(history: list[dict], daily_prices: dict) -> tuple[float, i
 
 def compute_cohort_buckets(history: list[dict], daily_prices: dict,
                              current_price: float, current_balance: int,
-                             margin_ratio: float) -> dict:
-    """Balance-change based cohort distribution. Returns bucket dict + tracked/legacy split."""
+                             margin_ratio: float, method: str = "fifo") -> dict:
+    """Balance-change based cohort distribution. Returns bucket dict + tracked/legacy split.
+    method: "fifo" (default), "lifo", or "proportional"."""
     from collections import deque as _dq
     sorted_hist = sorted(history, key=lambda x: x["date"])
     if not sorted_hist:
@@ -219,15 +220,37 @@ def compute_cohort_buckets(history: list[dict], daily_prices: dict,
             lots.append([entry["date"], delta, price])
         elif delta < 0:
             reduce = -delta
-            while reduce > 0 and lots:
-                if lots[0][1] <= reduce:
-                    reduce -= lots[0][1]
-                    lots.popleft()
-                else:
-                    lots[0][1] -= reduce
-                    reduce = 0
-            if reduce > 0:
-                legacy = max(0, legacy - reduce)
+            if method == "lifo":
+                while reduce > 0 and lots:
+                    if lots[-1][1] <= reduce:
+                        reduce -= lots[-1][1]
+                        lots.pop()
+                    else:
+                        lots[-1][1] -= reduce
+                        reduce = 0
+                if reduce > 0:
+                    legacy = max(0, legacy - reduce)
+            elif method == "proportional":
+                total = sum(l[1] for l in lots) + legacy
+                if total > 0:
+                    factor = max(0.0, 1.0 - reduce / total)
+                    new_lots = _dq()
+                    for d, v, p in lots:
+                        nv = v * factor
+                        if nv >= 1:
+                            new_lots.append([d, nv, p])
+                    lots = new_lots
+                    legacy = legacy * factor
+            else:  # fifo
+                while reduce > 0 and lots:
+                    if lots[0][1] <= reduce:
+                        reduce -= lots[0][1]
+                        lots.popleft()
+                    else:
+                        lots[0][1] -= reduce
+                        reduce = 0
+                if reduce > 0:
+                    legacy = max(0, legacy - reduce)
         prev = today_bal
 
     tracked = sum(l[1] for l in lots)
@@ -255,7 +278,7 @@ def compute_cohort_buckets(history: list[dict], daily_prices: dict,
     }
 
 
-def analyze(target_date: str, threshold: float, min_balance: int, finmind_token: str, max_stocks: int = 0) -> list[dict]:
+def analyze(target_date: str, threshold: float, min_balance: int, finmind_token: str, max_stocks: int = 0, method: str = "fifo") -> list[dict]:
     """Main analysis. threshold: maintenance ratio % (e.g. 140)."""
     # Compute date range
     end_dt = datetime.strptime(target_date, "%Y%m%d")
@@ -310,7 +333,7 @@ def analyze(target_date: str, threshold: float, min_balance: int, finmind_token:
         trigger = avg_cost * ratio * 1.30
 
         cohort = compute_cohort_buckets(history, price_data["prices"],
-                                        current_price, current_balance, ratio)
+                                        current_price, current_balance, ratio, method=method)
 
         if maintenance >= threshold:
             continue
@@ -425,6 +448,8 @@ def main():
     parser.add_argument("--threshold", type=float, default=140.0)
     parser.add_argument("--min-balance", type=int, default=500, help="融資餘額門檻 張數 (預設 500)")
     parser.add_argument("--max-stocks", type=int, default=0, help="最多分析前 N 檔（0=全部，依融資餘額排序）")
+    parser.add_argument("--method", choices=["fifo", "lifo", "proportional"], default="fifo",
+                        help="批次扣減規則：fifo（預設）/ lifo / proportional")
     parser.add_argument("--telegram", action="store_true")
     parser.add_argument("--bot-token")
     parser.add_argument("--chat-id", default=DEFAULT_CHAT_ID)
@@ -439,7 +464,7 @@ def main():
 
     target_date = args.date or datetime.now().strftime("%Y%m%d")
 
-    results = analyze(target_date, args.threshold, args.min_balance, finmind_token, args.max_stocks)
+    results = analyze(target_date, args.threshold, args.min_balance, finmind_token, args.max_stocks, method=args.method)
     output = format_output(results, target_date, args.threshold)
     print(output)
 

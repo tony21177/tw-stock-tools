@@ -36,28 +36,26 @@ except ImportError:
 def compute_cohort_distribution(history: list[dict], daily_prices: dict,
                                  current_price: float, current_balance: int,
                                  margin_ratio: float,
-                                 sig_threshold_pct: float = 0.05) -> dict:
+                                 sig_threshold_pct: float = 0.05,
+                                 method: str = "fifo") -> dict:
     """
     Cohort analysis via BALANCE-CHANGE method:
-    - Each day the balance INCREASED = new cohort at that day's price for the delta
-    - Each day the balance DECREASED = FIFO reduce oldest cohorts
-    - This is more realistic than tracking raw buy/sell because it only
-      creates cohorts when net balance actually grew.
+    - Each day balance INCREASED = new cohort at that day's price for the delta
+    - Each day balance DECREASED = reduce existing cohorts using one of:
+      - "fifo" (default): oldest cohorts exit first
+      - "lifo": newest cohorts exit first
+      - "proportional": all cohorts reduce proportionally
 
     Any residual balance not explained by tracked changes (e.g. pre-window
     positions) is shown as "unknown/legacy" holdings.
     """
     from collections import deque
 
-    # Build daily balance series from history (sorted ascending)
     sorted_hist = sorted(history, key=lambda x: x["date"])
     if not sorted_hist:
         return {"cohorts": [], "buckets": {}, "tracked": 0, "legacy": current_balance}
 
-    # Starting balance = prev day balance of first entry (not available)
-    # Use first entry's balance as seed (this represents "legacy holders" before window)
     first_balance = sorted_hist[0]["balance"]
-    # Legacy holders = earliest known balance; their cost unknown
     legacy_at_start = first_balance
 
     lots = deque()  # [date, volume, price]
@@ -69,23 +67,44 @@ def compute_cohort_distribution(history: list[dict], daily_prices: dict,
         delta = today_balance - prev_balance
 
         if delta > 0 and price is not None:
-            # Net new position → new cohort
             lots.append([date, delta, price])
         elif delta < 0:
-            # Net reduction → FIFO remove oldest (from known cohorts only)
             reduce = -delta
-            while reduce > 0 and lots:
-                oldest = lots[0]
-                if oldest[1] <= reduce:
-                    reduce -= oldest[1]
-                    lots.popleft()
-                else:
-                    oldest[1] -= reduce
-                    reduce = 0
-            # If still reduction remains, legacy holders decreased
-            if reduce > 0:
-                legacy_at_start -= reduce
-                legacy_at_start = max(0, legacy_at_start)
+            if method == "lifo":
+                # Newest first (pop from right)
+                while reduce > 0 and lots:
+                    newest = lots[-1]
+                    if newest[1] <= reduce:
+                        reduce -= newest[1]
+                        lots.pop()
+                    else:
+                        newest[1] -= reduce
+                        reduce = 0
+                if reduce > 0:
+                    legacy_at_start = max(0, legacy_at_start - reduce)
+            elif method == "proportional":
+                # Reduce all lots + legacy proportionally to total
+                total_vol = sum(l[1] for l in lots) + legacy_at_start
+                if total_vol > 0:
+                    factor = max(0.0, 1.0 - reduce / total_vol)
+                    new_lots = deque()
+                    for d, v, p in lots:
+                        nv = v * factor
+                        if nv >= 1:  # drop very small remainders
+                            new_lots.append([d, nv, p])
+                    lots = new_lots
+                    legacy_at_start = legacy_at_start * factor
+            else:  # fifo
+                while reduce > 0 and lots:
+                    oldest = lots[0]
+                    if oldest[1] <= reduce:
+                        reduce -= oldest[1]
+                        lots.popleft()
+                    else:
+                        oldest[1] -= reduce
+                        reduce = 0
+                if reduce > 0:
+                    legacy_at_start = max(0, legacy_at_start - reduce)
 
         prev_balance = today_balance
 
@@ -141,7 +160,8 @@ def compute_cohort_distribution(history: list[dict], daily_prices: dict,
     }
 
 
-def lookup(code: str, target_date: str | None = None, finmind_token: str = "") -> str:
+def lookup(code: str, target_date: str | None = None, finmind_token: str = "",
+           method: str = "fifo") -> str:
     today = target_date or datetime.now().strftime("%Y%m%d")
     end_dt = datetime.strptime(today, "%Y%m%d")
     start_dt = end_dt - timedelta(days=95)
@@ -177,7 +197,8 @@ def lookup(code: str, target_date: str | None = None, finmind_token: str = "") -
 
     # Cohort analysis (skip small days as noise)
     cohort_data = compute_cohort_distribution(
-        history, price_data["prices"], current, current_balance, ratio, sig_threshold_pct=0.05
+        history, price_data["prices"], current, current_balance, ratio,
+        sig_threshold_pct=0.05, method=method
     )
 
     sign = "+" if price_data["change_pct"] >= 0 else ""
@@ -211,10 +232,11 @@ def lookup(code: str, target_date: str | None = None, finmind_token: str = "") -
             "",
         ])
 
-    lines.append(f"【批次分布（顯示佔比 ≥5% 的大量進場日）】")
+    method_label = {"fifo": "FIFO 老批先扣", "lifo": "LIFO 新批先扣", "proportional": "比例扣減"}[method]
+    lines.append(f"【批次分布（規則：{method_label}，顯示佔比 ≥5%）】")
 
-    tracked = cohort_data["tracked_vol"]
-    legacy = cohort_data["legacy_vol"]
+    tracked = round(cohort_data["tracked_vol"])
+    legacy = round(cohort_data["legacy_vol"])
     balance = cohort_data["current_balance"]
     lines.append(f"目前融資餘額 {balance:,} 張 = "
                   f"可追蹤批次 {tracked:,} 張 + 舊部位 {legacy:,} 張")
@@ -230,7 +252,7 @@ def lookup(code: str, target_date: str | None = None, finmind_token: str = "") -
         ("170+", "✅ 安全區"),
     ]
     for key, label in bucket_labels:
-        vol = buckets.get(key, 0)
+        vol = round(buckets.get(key, 0))
         pct = vol / tracked * 100 if tracked else 0
         bar = "█" * int(pct / 5)
         lines.append(f"  {label} ({key}%)：{vol:>6,}張 ({pct:>5.1f}%) {bar}")
@@ -246,15 +268,17 @@ def lookup(code: str, target_date: str | None = None, finmind_token: str = "") -
             date_fmt = datetime.strptime(c["date"], "%Y%m%d").strftime("%m/%d")
             r = c["maintenance_ratio"]
             emoji = "🔴" if r < 130 else "🟠" if r < 140 else "🟡" if r < 150 else "🟢" if r < 170 else "✅"
+            vol = round(c["volume"])
             lines.append(
-                f"  {date_fmt} 淨進 {c['volume']:,}張 @ ${c['price']:.2f}  "
+                f"  {date_fmt} 淨進 {vol:,}張 @ ${c['price']:.2f}  "
                 f"→ 維持率 {r:.1f}% {emoji}  追繳 ${c['trigger_call']:.2f}"
             )
     if cohort_data.get("minor_volume", 0) > 0:
-        lines.append(f"  (另有 {cohort_data['minor_volume']:,}張 為小量散進，共 {cohort_data['minor_pct']:.1f}%，已略過)")
+        minor_v = round(cohort_data['minor_volume'])
+        lines.append(f"  (另有 {minor_v:,}張 為小量散進，共 {cohort_data['minor_pct']:.1f}%，已略過)")
 
     lines.append("")
-    lines.append("註：整體維持率是加權平均；批次分布是 FIFO 推估每日進場至今尚未平倉的部位。")
+    lines.append(f"註：批次分布規則 = {method_label}；不同規則對「誰先離場」假設不同，數字會有差異。")
     lines.append("  實際投資人成本因個別擔保品組合而異，以上僅為市場整體估算。")
     return "\n".join(lines)
 
@@ -263,6 +287,8 @@ def main():
     parser = argparse.ArgumentParser(description="台股單檔融資維持率查詢")
     parser.add_argument("code", help="股票代號，例如 2330")
     parser.add_argument("--date", help="指定日期 YYYYMMDD（預設今天）")
+    parser.add_argument("--method", choices=["fifo", "lifo", "proportional"], default="fifo",
+                        help="餘額減少時的批次扣減規則：fifo=老批先扣（預設）、lifo=新批先扣、proportional=全部按比例")
     parser.add_argument("--finmind-token")
     args = parser.parse_args()
 
@@ -271,7 +297,7 @@ def main():
         print("[ERROR] 需要 FinMind token (--finmind-token 或 FINMIND_TOKEN)", file=sys.stderr)
         sys.exit(1)
 
-    print(lookup(args.code, args.date, token))
+    print(lookup(args.code, args.date, token, method=args.method))
 
 
 if __name__ == "__main__":
