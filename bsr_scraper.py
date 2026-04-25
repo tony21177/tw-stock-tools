@@ -103,11 +103,23 @@ def _parse_bsr_csv(text: str) -> dict:
     return aggregates
 
 
-def fetch_bsr(stock_code: str, max_attempts: int = 5,
+def _is_valid_image(content: bytes) -> bool:
+    """Quick check if bytes look like a real image (PNG/JPEG/GIF)."""
+    if len(content) < 100:
+        return False
+    # PNG: 89 50 4E 47, JPEG: FF D8 FF, GIF: 47 49 46
+    return (content[:4] == b"\x89PNG"
+            or content[:3] == b"\xff\xd8\xff"
+            or content[:3] == b"GIF")
+
+
+def fetch_bsr(stock_code: str, max_attempts: int = 10,
               session: requests.Session | None = None) -> dict:
     """Fetch and parse BSR data for one stock (today only).
     Returns dict {date, stock_code, brokers: {id: {name, buy, sell}}, total_buy, total_sell}.
-    Returns empty dict on failure after max_attempts."""
+    Returns empty dict on failure after max_attempts.
+    On any failure (bad image, OCR error, wrong CAPTCHA), refreshes the page
+    to get a new CAPTCHA image and retries."""
     if session is None:
         session = requests.Session()
     headers = {"User-Agent": UA}
@@ -122,7 +134,22 @@ def fetch_bsr(stock_code: str, max_attempts: int = 5,
                 continue
 
             img_r = session.get(form["_captcha_url"], headers=headers, timeout=15)
-            solved = ocr.classification(img_r.content)
+            if img_r.status_code != 200 or not _is_valid_image(img_r.content):
+                # Bad image — refresh and try again
+                time.sleep(0.5)
+                continue
+
+            try:
+                solved = ocr.classification(img_r.content)
+            except Exception as e:
+                # OCR can't parse — refresh page next iteration
+                time.sleep(0.5)
+                continue
+
+            if not solved or len(solved) != 5:
+                # CAPTCHA expects 5 chars; bail and try again
+                time.sleep(0.3)
+                continue
 
             data = {
                 "__EVENTTARGET": "", "__EVENTARGUMENT": "", "__LASTFOCUS": "",
@@ -136,12 +163,17 @@ def fetch_bsr(stock_code: str, max_attempts: int = 5,
             }
             r2 = session.post(BSR_URL, data=data, headers=headers, timeout=30, allow_redirects=True)
 
+            # Detect server-side responses
+            if "查無資料" in r2.text:
+                # Stock has no BSR data today (e.g. didn't trade) — give up, no point retrying
+                return {"date": datetime.now().strftime("%Y%m%d"), "stock_code": stock_code,
+                        "brokers": {}, "total_buy": 0, "total_sell": 0,
+                        "no_data": True, "captcha_attempts": attempt + 1}
             if "HyperLink_DownloadCSV" not in r2.text:
-                # CAPTCHA or query failed; retry
-                time.sleep(0.5)
+                # Wrong CAPTCHA or other transient — retry with new page
+                time.sleep(0.3)
                 continue
 
-            # Find CSV link
             link_match = re.search(r'href="(bsContent\.aspx\?StkNo=[^"]+)"', r2.text)
             if not link_match:
                 continue
@@ -155,6 +187,9 @@ def fetch_bsr(stock_code: str, max_attempts: int = 5,
             brokers = _parse_bsr_csv(text)
             total_buy = sum(b["buy"] for b in brokers.values())
             total_sell = sum(b["sell"] for b in brokers.values())
+            if not brokers:
+                # Empty result (e.g. delisted/halted stock) — don't retry forever
+                return {}
             return {
                 "date": datetime.now().strftime("%Y%m%d"),
                 "stock_code": stock_code,
@@ -164,7 +199,6 @@ def fetch_bsr(stock_code: str, max_attempts: int = 5,
                 "captcha_attempts": attempt + 1,
             }
         except Exception as e:
-            print(f"[WARN] BSR {stock_code} attempt {attempt+1}: {e}", file=sys.stderr)
             time.sleep(1)
 
     return {}
