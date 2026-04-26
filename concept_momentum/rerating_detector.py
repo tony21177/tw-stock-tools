@@ -38,18 +38,41 @@ def correlation(xs: list[float], ys: list[float]) -> float:
     return num / (denx * deny)
 
 
-def compute_rerating(concepts: dict, results: list[dict], stocks_data: dict) -> list[dict]:
-    """For each stock that appears in any concept, compute correlation with
-    its assigned concept(s) and all other concepts. Flag potential rerating.
+def linear_beta(stock_rets: list[float], market_rets: list[float]) -> float:
+    """Compute β (regression slope) of stock returns vs market returns."""
+    n = min(len(stock_rets), len(market_rets))
+    if n < 10:
+        return 1.0
+    xs = market_rets[-n:]
+    ys = stock_rets[-n:]
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    varx = sum((x - mx) ** 2 for x in xs)
+    return cov / varx if varx > 0 else 1.0
 
-    Args:
-      concepts: concepts.json dict
-      results: list of analyze_concept results, each with concept_index
-      stocks_data: {code: {rows: [...]}} from data_fetcher
 
-    Returns:
-      List of {code, name, assigned_concepts, top_concept, top_corr,
-               own_corr, rerating_score} sorted by rerating_score desc.
+def excess_returns(stock_rets: list[float], market_rets: list[float]) -> list[float]:
+    """Return market-beta-adjusted excess returns: stock_ret - β × market_ret.
+    Both lists must be same length and aligned by date."""
+    if len(stock_rets) != len(market_rets) or len(stock_rets) < 10:
+        return stock_rets
+    beta = linear_beta(stock_rets, market_rets)
+    return [s - beta * m for s, m in zip(stock_rets, market_rets)]
+
+
+def compute_rerating(concepts: dict, results: list[dict], stocks_data: dict,
+                     taiex_rows: list[dict] | None = None,
+                     window_days: int = 20,
+                     mega_cap_taiex_corr_threshold: float = 0.85) -> list[dict]:
+    """For each stock, compute correlation between BETA-ADJUSTED excess returns
+    of stock vs each concept index. Skip "broad-market" stocks (high TAIEX corr).
+    Use recent N days for rerating signal (default 20 = ~1 month).
+
+    Improvements over naive version:
+    - β-adjusted excess returns (removes broad-market co-movement)
+    - Filter mega-caps with corr(stock, TAIEX) > threshold (萬有引力 effect)
+    - Recent window (rerating is a phase change, not long-term correlation)
     """
     # Build code → list of assigned concepts
     code_to_concepts = defaultdict(list)
@@ -57,8 +80,16 @@ def compute_rerating(concepts: dict, results: list[dict], stocks_data: dict) -> 
         for code in theme.get("stocks", []):
             code_to_concepts[code].append(theme_key)
 
-    # Build concept_key → daily returns of concept index
-    concept_returns = {}
+    # TAIEX returns (for β adjustment)
+    taiex_rets = []
+    taiex_dates = []
+    if taiex_rows:
+        taiex_closes = [r["close"] for r in taiex_rows if r.get("close")]
+        taiex_dates = [r["date"] for r in taiex_rows if r.get("close")][1:]
+        taiex_rets = daily_returns(taiex_closes)
+
+    # Build concept index returns (also β-adjusted vs TAIEX)
+    concept_excess_rets = {}
     concept_dates = {}
     for r in results:
         ci = r.get("concept_index", [])
@@ -66,28 +97,65 @@ def compute_rerating(concepts: dict, results: list[dict], stocks_data: dict) -> 
             continue
         values = [p["value"] for p in ci]
         rets = daily_returns(values)
-        concept_returns[r["theme_key"]] = rets
-        concept_dates[r["theme_key"]] = [p["date"] for p in ci]
+        dates = [p["date"] for p in ci][1:]
 
-    # For each stock with prices, compute returns
+        # Align with TAIEX and compute excess
+        taiex_map = dict(zip(taiex_dates, taiex_rets))
+        paired = [(rets[i], taiex_map[d]) for i, d in enumerate(dates) if d in taiex_map]
+        if len(paired) >= 10:
+            c_rets = [p[0] for p in paired]
+            t_rets = [p[1] for p in paired]
+            paired_dates = [d for d in dates if d in taiex_map]
+            excess = excess_returns(c_rets, t_rets)
+            concept_excess_rets[r["theme_key"]] = (paired_dates, excess)
+        else:
+            concept_excess_rets[r["theme_key"]] = (dates, rets)
+
+    # Limit to recent window
+    def tail_window(dates: list[str], values: list[float]) -> tuple[list[str], list[float]]:
+        if len(dates) <= window_days:
+            return dates, values
+        return dates[-window_days:], values[-window_days:]
+
     results_list = []
     for code, info in stocks_data.items():
         rows = info.get("rows", [])
-        if len(rows) < 10:
+        if len(rows) < window_days + 5:
             continue
         closes = [r["close"] for r in rows if r.get("close")]
         stock_rets = daily_returns(closes)
         stock_dates = [r["date"] for r in rows if r.get("close")][1:]
 
-        # Compute correlation with EVERY concept (align by date)
+        # Filter: skip mega-caps that move with TAIEX
+        if taiex_rets:
+            taiex_map = dict(zip(taiex_dates, taiex_rets))
+            paired_t = [(stock_rets[i], taiex_map[d])
+                         for i, d in enumerate(stock_dates) if d in taiex_map]
+            if len(paired_t) < 10:
+                continue
+            sx = [p[0] for p in paired_t]
+            tx = [p[1] for p in paired_t]
+            taiex_corr = correlation(sx, tx)
+            if taiex_corr > mega_cap_taiex_corr_threshold:
+                continue  # broad-market mover, skip
+            # Compute excess returns
+            stock_excess = excess_returns(sx, tx)
+            stock_dates_aligned = [d for d in stock_dates if d in taiex_map]
+        else:
+            taiex_corr = 0.0
+            stock_excess = stock_rets
+            stock_dates_aligned = stock_dates
+
+        # Limit to recent window
+        stock_dates_aligned, stock_excess = tail_window(stock_dates_aligned, stock_excess)
+
+        # Compute correlation between stock_excess and each concept's excess returns
         corr_by_concept = {}
-        for theme_key, c_rets in concept_returns.items():
-            c_dates = concept_dates[theme_key][1:]  # skip first since returns are diff
-            # Align: only days both have data
-            stock_map = dict(zip(stock_dates, stock_rets))
-            paired = [(stock_map[d], c_rets[i])
-                       for i, d in enumerate(c_dates)
-                       if d in stock_map]
+        for theme_key, (c_dates, c_excess) in concept_excess_rets.items():
+            c_dates_w, c_excess_w = tail_window(c_dates, c_excess)
+            stock_map = dict(zip(stock_dates_aligned, stock_excess))
+            paired = [(stock_map[d], c_excess_w[i])
+                       for i, d in enumerate(c_dates_w) if d in stock_map]
             if len(paired) < 10:
                 continue
             sx = [p[0] for p in paired]
@@ -97,18 +165,15 @@ def compute_rerating(concepts: dict, results: list[dict], stocks_data: dict) -> 
         if not corr_by_concept:
             continue
 
-        # Find own concepts (assigned) and others
         own = code_to_concepts.get(code, [])
         own_corrs = [corr_by_concept[k] for k in own if k in corr_by_concept]
-        own_avg = sum(own_corrs) / len(own_corrs) if own_corrs else 0.0
         own_max = max(own_corrs) if own_corrs else 0.0
 
-        # Top non-own concept
-        other_concepts = {k: v for k, v in corr_by_concept.items() if k not in own}
-        if not other_concepts:
+        other = {k: v for k, v in corr_by_concept.items() if k not in own}
+        if not other:
             continue
-        top_other_key = max(other_concepts, key=other_concepts.get)
-        top_other_corr = other_concepts[top_other_key]
+        top_other_key = max(other, key=other.get)
+        top_other_corr = other[top_other_key]
 
         rerating_score = top_other_corr - own_max if own else top_other_corr
 
@@ -116,6 +181,7 @@ def compute_rerating(concepts: dict, results: list[dict], stocks_data: dict) -> 
             "code": code,
             "name": info.get("name", code),
             "market": info.get("market", ""),
+            "taiex_corr": taiex_corr,
             "assigned_concepts": own,
             "own_max_corr": own_max,
             "top_other_concept": top_other_key,
@@ -136,21 +202,25 @@ def format_rerating_report(rerating: list[dict], concepts: dict, top_n: int = 30
 
     theme_names = {k: v["name_zh"] for k, v in concepts["themes"].items()}
 
-    candidates = [r for r in rerating if r["rerating_score"] >= 0.1
+    # Higher threshold (0.15) since excess returns have lower magnitudes than raw
+    candidates = [r for r in rerating if r["rerating_score"] >= 0.15
                    and r["assigned_concepts"]][:top_n]
 
     if not candidates:
-        lines.append("（無顯著 rerating 訊號）")
+        lines.append("（過濾大盤 β 後無顯著 rerating 訊號）")
         return "\n".join(lines)
+
+    lines.append("（已扣除大盤 β、僅看近 20 個交易日，過濾 TAIEX 相關 >0.85 的萬有引力股）")
+    lines.append("")
 
     for r in candidates:
         own_names = " / ".join(theme_names.get(k, k) for k in r["assigned_concepts"][:3])
         new_name = theme_names.get(r["top_other_concept"], r["top_other_concept"])
         lines.append(
             f"{r['code']} {r['name']} [{r['market']}]\n"
-            f"  原屬：{own_names} (相關 {r['own_max_corr']:.2f})\n"
-            f"  →更接近：{new_name} (相關 {r['top_other_corr']:.2f})\n"
-            f"  Rerating 分數：+{r['rerating_score']:.2f}"
+            f"  原屬：{own_names} (excess corr {r['own_max_corr']:+.2f})\n"
+            f"  →更接近：{new_name} (excess corr {r['top_other_corr']:+.2f})\n"
+            f"  Rerating 分數：+{r['rerating_score']:.2f}  (TAIEX β corr {r['taiex_corr']:.2f})"
         )
         lines.append("")
 
@@ -170,6 +240,6 @@ if __name__ == "__main__":
     stocks = fetch_all_concepts(concepts)
     taiex = fetch_taiex()
     results = analyze_all(concepts, stocks, taiex)
-    rerating = compute_rerating(concepts, results, stocks)
+    rerating = compute_rerating(concepts, results, stocks, taiex_rows=taiex)
 
     print(format_rerating_report(rerating, concepts, top_n=30))

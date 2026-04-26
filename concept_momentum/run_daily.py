@@ -176,9 +176,9 @@ def main():
     print()
     print(weak_summary)
 
-    # Rerating analysis (over all stocks across concepts)
-    print("\n計算 rerating 訊號...", file=sys.stderr)
-    rerating = compute_rerating(concepts, results, stocks)
+    # Rerating analysis (β-adjusted, recent window, filter mega-caps)
+    print("\n計算 rerating 訊號（β 調整）...", file=sys.stderr)
+    rerating = compute_rerating(concepts, results, stocks, taiex_rows=taiex)
     rerating_summary = format_rerating_report(rerating, concepts, top_n=15)
     print()
     print(rerating_summary)
