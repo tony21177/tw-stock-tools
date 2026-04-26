@@ -63,7 +63,7 @@ def excess_returns(stock_rets: list[float], market_rets: list[float]) -> list[fl
 
 def compute_rerating(concepts: dict, results: list[dict], stocks_data: dict,
                      taiex_rows: list[dict] | None = None,
-                     window_days: int = 20,
+                     window_days: int = 60,
                      mega_cap_taiex_corr_threshold: float = 0.85) -> list[dict]:
     """For each stock, compute correlation between BETA-ADJUSTED excess returns
     of stock vs each concept index. Skip "broad-market" stocks (high TAIEX corr).
@@ -120,7 +120,8 @@ def compute_rerating(concepts: dict, results: list[dict], stocks_data: dict,
     results_list = []
     for code, info in stocks_data.items():
         rows = info.get("rows", [])
-        if len(rows) < window_days + 5:
+        # Need at least 30 days; will use whatever's available up to window_days
+        if len(rows) < 30:
             continue
         closes = [r["close"] for r in rows if r.get("close")]
         stock_rets = daily_returns(closes)
@@ -210,7 +211,7 @@ def format_rerating_report(rerating: list[dict], concepts: dict, top_n: int = 30
         lines.append("（過濾大盤 β 後無顯著 rerating 訊號）")
         return "\n".join(lines)
 
-    lines.append("（已扣除大盤 β、僅看近 20 個交易日，過濾 TAIEX 相關 >0.85 的萬有引力股）")
+    lines.append("（已扣除大盤 β、近 60 個交易日視窗，過濾 TAIEX 相關 >0.85 的萬有引力股）")
     lines.append("")
 
     for r in candidates:
