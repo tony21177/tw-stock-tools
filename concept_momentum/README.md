@@ -57,7 +57,10 @@ concept_momentum/
 ├── stock_names.py        # TWSE ISIN 中文名解析
 ├── concept_momentum.py   # 動能指標 + 評分歷史
 ├── concept_charts.py     # PNG + 互動 HTML 生成
-├── rerating_detector.py  # 跨概念 rerating 偵測（β 調整）
+├── rerating_detector.py  # 跨概念 rerating 偵測（β 調整，看股價走勢）
+├── news_fetcher.py       # Yahoo TW 個股新聞抓取
+├── theme_keywords.py     # 28 個概念的關鍵字字典
+├── business_drift_detector.py  # 業務轉型偵測（看新聞主題）
 ├── run_daily.py          # 每日 orchestrator
 ├── app.py                # Flask 本機 server
 └── README.md
@@ -195,6 +198,62 @@ rerating_score = top_other_corr - own_max_corr
 - 60 天的相關係數仍可能受短期事件影響
 - 等權重概念指數可能被特定大型股主導
 - 沒考慮類股輪動，只看時間序列相似度
+
+---
+
+## 業務轉型偵測（business_drift_detector.py）
+
+### 核心問題
+Rerating detector 看的是「股價走勢」——抓的是市場已開始 reprice 的訊號。但有些股票業務確實已轉型（從新聞、法說會可看出），但市場還沒完全反應，rerating detector 抓不到。
+
+例如 3665 貿聯-KY 主業已從車用轉向 AI 伺服器高速線材，但近 60 天股價仍與 EV 概念股同步，rerating score 為負。
+
+### 解法：看新聞主題分布
+不看股價，而是抓每檔股票最近 30 天的相關新聞標題，統計每個概念被提及的次數。如果新聞中主導主題 ≠ 我們在 concepts.json 的分類，且差距夠大 → 業務轉型候選。
+
+### 核心演算法
+
+**Step 1：抓新聞**
+從 Yahoo TW 股市的 `/quote/{code}.TW/news` 頁面爬 h3 tag，得到該股近期新聞標題（約 20 則）。Yahoo 已自動篩選為股票相關新聞。
+
+**Step 2：關鍵字匹配**
+對每篇新聞標題，依 `theme_keywords.py` 字典檢查它是否提到每個概念的關鍵字。每篇新聞最多被各概念計數 1 次（避免單篇重複關鍵字膨脹）。
+
+範例字典：
+```python
+"AI伺服器": ["GB200", "GB300", "Blackwell", "AI伺服器", "輝達伺服器", ...]
+"CPO_矽光子": ["CPO", "矽光子", "光通訊", "光收發", ...]
+```
+
+**Step 3：判定轉型**
+```
+news_top_theme = 新聞中提及次數最多的主題
+own_max_count = 該股原分類概念中提及次數最多的
+top_count = news_top_theme 的提及次數
+
+若 news_top_theme NOT IN 原分類 AND
+   top_count >= 3 AND
+   top_count >= own_max_count × 1.5
+   → 列入轉型候選
+```
+
+### Rerating vs Drift 互補關係
+
+| 偵測器 | 訊號來源 | 抓到的是 |
+|--------|----------|----------|
+| rerating_detector | 股價走勢相關性 | 市場已在 reprice 的股票 |
+| business_drift_detector | 新聞主題分布 | 業務已轉型但市場還沒 reprice 的股票 |
+
+兩個都標記同一檔股票 → 強烈轉型訊號（業務+股價都印證）
+只有 drift 標記 → 業務先行，等待市場 reprice
+只有 rerating 標記 → 股價先動，可能是短期投機/籌碼面變化
+
+### 已知限制
+- 關鍵字匹配為輕量近似，會有「光電」誤匹配「光電」公司等雜訊
+- Yahoo TW 新聞涵蓋有限（約 10-20 則），標題短可能漏掉重要訊號
+- 沒做語意分析，否定詞（如「不再做 X」）會誤判
+- 新聞品質依媒體選文偏向，部分小型股新聞稀少
+- v1 版本未整合 LLM；後續可加入 LLM 判讀對重點候選做深度分析
 
 ---
 
