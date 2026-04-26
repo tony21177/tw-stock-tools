@@ -1,13 +1,14 @@
-# 台股借券 / 融資 / 概念動能分析工具組
+# 台股借券 / 融資 / 籌碼 / 概念動能分析工具組
 
-五大功能：
+七大功能：
 
 1. 借券議借異常監控（每日排程推送）→ `tw_lending_monitor.py`
 2. 借券賣出餘額大幅減少監控（每日排程推送）→ `tw_lending_monitor.py`
 3. 單檔借券狀況查詢（CLI）→ `tw_lending_lookup.py`
-4. 融資維持率預警全市場掃描 → `tw_margin_monitor.py`
-5. 單檔融資維持率估算（CLI）→ `tw_margin_lookup.py`
-6. **概念動能監控（每日排程推送 PNG + 網頁儀表板）** → `concept_momentum/`
+4. 融資維持率預警全市場掃描（含批次分布）→ `tw_margin_monitor.py`
+5. 單檔融資維持率估算 + 批次 cohort 分析（CLI）→ `tw_margin_lookup.py`
+6. **分點+融資連動分析（每日排程推送）** → `tw_broker_monitor.py` / `tw_broker_lookup.py`
+7. **概念動能監控 + Rerating 偵測（每日排程推送 PNG + 網頁儀表板）** → `concept_momentum/`
 
 所有工具放在 `~/project/tw_stock_tools/`，cron 設定每天排程推送到 Telegram 群組。
 概念動能子模組詳見 `concept_momentum/README.md`。
@@ -217,10 +218,48 @@ FINMIND_TOKEN=xxx python3 ~/project/tw_stock_tools/tw_margin_monitor.py --thresh
 
 ---
 
-## 4. `tw_margin_lookup.py` — 單檔融資維持率查詢
+## 4. `tw_margin_lookup.py` — 單檔融資維持率查詢 + Cohort 分析
 
 ### 用途
-輸入股票代號，立刻算出估算維持率、警戒價、追繳價、近期融資買進明細。
+輸入股票代號，輸出：
+- 整體 FIFO 加權成本 + 維持率 + 警戒/追繳價
+- **批次（cohort）分布**：把融資餘額按進場日拆成多批，看不同進場價的維持率
+- 主要批次明細（佔總餘額 ≥5% 的大量進場日）
+
+### 為什麼要做 cohort 分析？
+單一加權平均會掩蓋風險。例如 2313 整體維持率 151%（看似安全），但拆開後追蹤量 92% 都已在警戒區（130-140%），只是被舊部位拉高平均。Cohort 才是真實的風險分布。
+
+### 三種扣減規則（`--method`）
+餘額減少時，要把減少量歸因到哪一批 cohort？三種假設：
+
+| Method | 假設 | 適用情境 |
+|--------|------|----------|
+| `fifo`（預設） | 老批先扣（先進先出） | 最常見假設：老倉達到停利停損先出場 |
+| `lifo` | 新批先扣 | 假設新進場恐慌賣壓較強 |
+| `proportional` | 全部按比例扣 | 中性視角，無方向性 |
+
+同一檔股票用不同 method 結果差異巨大。建議搭配使用做壓力測試。
+
+### Cohort 演算法（balance-change 法）
+```
+For each trading day d (oldest → newest):
+  delta = today_balance - prev_balance
+
+  If delta > 0:
+    add cohort {date: d, volume: delta, price: today_close}
+
+  If delta < 0:
+    reduce = -delta
+    Match against cohorts using selected method:
+      fifo: reduce from oldest
+      lifo: reduce from newest
+      proportional: scale all by (1 - reduce/total)
+    若仍有剩餘，從 legacy（觀察期前的舊部位）扣
+
+當前活躍 cohorts → 各自算維持率 → 分桶（<130, 130-140, 140-150, 150-170, 170+）
+```
+
+**Legacy 概念**：3 個月觀察期之前就存在的部位，因為沒有當時的成本資料，無從估算維持率。獨立顯示「舊部位 X 張」。
 
 ### 使用方式
 ```bash
@@ -259,6 +298,67 @@ FINMIND_TOKEN=xxx python3 ~/project/tw_stock_tools/tw_margin_lookup.py 3035 --da
 
 ---
 
+## 5. `tw_broker_monitor.py` / `tw_broker_lookup.py` — 分點+融資連動分析
+
+### 用途
+找出疑似「用融資做短線」的券商分點：在過去 N 天連續買超某檔，且這幾天該股的融資餘額也同步增加，且分點當日淨買 vs 當日融資淨增量呈正相關。
+
+### 核心邏輯
+
+對每一檔目標股票：
+1. 抓近 N 天（預設 5）BSR 分點資料 + FinMind 融資歷史
+2. 對每個分點計算：
+   - **連續買超**：N 天內 ≥3 天買超 + 每天買超 >當日 5% 總量
+   - **融資同步**：N 天累積融資餘額淨增加 > 0
+   - **相關係數**：分點當日淨買 vs 當日融資淨增量的 Pearson 相關 ≥ 0.5
+3. 三項都符合 → 列入「疑似用融資做短線」名單
+
+### 資料源
+
+| 資料 | 來源 | CAPTCHA 處理 |
+|------|------|--------------|
+| 上市分點買賣量 | TWSE BSR `bsr.twse.com.tw/bshtm/` | 圖片 CAPTCHA → ddddocr |
+| 上櫃分點買賣量 | TPEx `brokerBS.html` | Cloudflare Turnstile → patchright + Xvfb |
+| 融資餘額歷史 | FinMind `TaiwanStockMarginPurchaseShortSale` | - |
+
+**重要限制**：BSR 與 TPEx 兩邊都只有「當日」資料，沒有歷史。所以必須每天 cron 抓取累積，第 5 天起分析才有完整視窗。
+
+### CAPTCHA 突破方法
+
+**TWSE BSR（簡單圖片）**：
+- 套件：`pip install ddddocr`
+- 解碼成功率約 95%，失敗自動重試
+- 搭配 Session 維持 ASP.NET ViewState
+
+**TPEx（Cloudflare Turnstile）**：
+- 套件：`pip install patchright`（playwright fork，反偵測）
+- 系統：`apt install xvfb`（虛擬顯示器）
+- 必須用 `headless=False` + Xvfb 才能讓 Turnstile 自動解鎖（純 headless 會被 Cloudflare 偵測拒絕）
+- 用 `browser.new_page()` 預設 context，**不要**自訂 viewport/locale/UA
+
+### 使用方式
+```bash
+# 單檔查詢（需要至少 2 天 BSR 歷史 cache）
+FINMIND_TOKEN=xxx python3 ~/project/tw_stock_tools/tw_broker_lookup.py 2313
+
+# 全市場掃描 + 推送 Telegram
+TG_BOT_TOKEN=xxx FINMIND_TOKEN=xxx python3 ~/project/tw_stock_tools/tw_broker_monitor.py --top-n 100 --telegram
+```
+
+### 排程
+```
+0 18 * * 1-5 ... tw_broker_monitor.py --top-n 100 --telegram
+```
+週一到五傍晚 6:00（BSR 約 17:30 公布）累積資料並執行分析。第 5 個交易日起分析開始有效。
+
+### 已知限制
+1. BSR 沒有歷史，需從今日起累積
+2. Cloudflare Turnstile 偶爾偵測（10-20% 失敗率，會自動重試）
+3. 無法區分「分點買進」中現股 vs 融資的比例 — 只能用相關性做 inference
+4. 真實分點融資資料需要付費（FinMind 贊助版的 `TaiwanStockTradingDailyReport`，未實作）
+
+---
+
 ## 環境變數
 
 | 變數 | 用途 | 來源 |
@@ -272,13 +372,21 @@ FINMIND_TOKEN=xxx python3 ~/project/tw_stock_tools/tw_margin_lookup.py 3035 --da
 
 ```
 ~/project/tw_stock_tools/
-├── tw_lending_monitor.py      # 借券異常監控（議借 + 賣出減少）
-├── tw_lending_lookup.py       # 單檔借券查詢
-├── tw_margin_monitor.py       # 融資維持率全市場掃描
-├── tw_margin_lookup.py        # 單檔融資維持率查詢
-├── margin_cache/              # FinMind 快取資料夾（git ignore）
+├── tw_lending_monitor.py      # 借券議借 + 借券賣出減少監控（每日排程）
+├── tw_lending_lookup.py       # 單檔借券查詢（CLI）
+├── tw_margin_monitor.py       # 融資維持率全市場掃描（含 cohort 分布）
+├── tw_margin_lookup.py        # 單檔融資維持率 + cohort 分析（CLI）
+├── bsr_scraper.py             # TWSE BSR 爬蟲（ddddocr 解 CAPTCHA）
+├── tpex_scraper.py            # TPEx 分點爬蟲（patchright + Xvfb 解 Turnstile）
+├── tw_broker_monitor.py       # 分點+融資連動分析全市場掃描（每日排程）
+├── tw_broker_lookup.py        # 單檔分點+融資連動分析（CLI）
+├── concept_momentum/          # 概念動能子模組（詳見內部 README.md）
+├── margin_cache/              # FinMind 融資快取（git ignore）
 │   └── finmind_{code}_{date}.json
-├── lending_monitor.log        # cron 排程執行 log（git ignore）
+├── bsr_cache/                 # BSR 分點 cache（git ignore）
+│   └── {code}_{date}.json
+├── lending_monitor.log        # 排程 log（git ignore）
+├── broker_monitor.log         # 排程 log（git ignore）
 ├── README.md                  # 本文件
 └── .gitignore
 ```
@@ -301,11 +409,50 @@ FINMIND_TOKEN=xxx python3 ~/project/tw_stock_tools/tw_margin_lookup.py 3035 --da
 - 上櫃借券賣出餘額：`https://www.tpex.org.tw/www/zh-tw/margin/sbl?date=YYYY/MM/DD&response=json`
 - 上櫃融資（OpenAPI）：`https://www.tpex.org.tw/openapi/v1/tpex_mainboard_margin_balance`
 
+### TWSE BSR 分點（需 CAPTCHA）
+- 入口：`https://bsr.twse.com.tw/bshtm/bsMenu.aspx`
+- 5 碼英數圖形 CAPTCHA，用 ddddocr 解
+- 必須帶 `__VIEWSTATE`、`__VIEWSTATEGENERATOR`、`__EVENTVALIDATION` 三個 hidden 欄位
+- POST 後從回應抓 `HyperLink_DownloadCSV` 連結，下載 CSV（cp950 編碼）
+- 只有當日資料
+
+### TPEx 分點（需 Cloudflare Turnstile）
+- 入口：`https://www.tpex.org.tw/zh-tw/mainboard/trading/info/brokerBS.html`
+- Cloudflare Turnstile 自動解鎖：必須用 patchright + Xvfb（headed mode）
+- 點擊 CSV 下載按鈕取得完整資料（cp950 編碼）
+
 ### FinMind
-- 融資融券歷史：`TaiwanStockMarginPurchaseShortSale`
+- 融資融券歷史：`TaiwanStockMarginPurchaseShortSale`（免費版可用）
+- 分點交易：`TaiwanStockTradingDailyReport`（贊助版）
+- 個股基本資料：`TaiwanStockInfo`（免費版可用）
 - 單檔查詢需要 data_id，`start_date` 和 `end_date`
 - 免費版 600 req/hr
 
 ### Yahoo Finance
 - 歷史價格：`https://query1.finance.yahoo.com/v8/finance/chart/{code}.TW?interval=1d&range=3mo`
 - 上櫃用 `.TWO` 後綴
+- 加權指數用 `^TWII`
+
+### TWSE ISIN（中文名對照）
+- 上市：`https://isin.twse.com.tw/isin/C_public.jsp?strMode=2`
+- 上櫃：`https://isin.twse.com.tw/isin/C_public.jsp?strMode=4`
+- HTML 頁面，**用 `cp950` 解碼**（不要用 `big5`，會丟失字如「碁」）
+
+---
+
+## 部署需求
+
+### 系統套件
+```bash
+# 基本
+sudo apt install xvfb libnss3 libnspr4 libdbus-1-3 libatk1.0-0 \
+                 libatk-bridge2.0-0 libcups2 libxcomposite1 libxdamage1 \
+                 libxfixes3 libxrandr2 libgbm1 libxkbcommon0 \
+                 libpango-1.0-0 libcairo2 libasound2 libatspi2.0-0
+```
+
+### Python 套件
+```bash
+pip install requests beautifulsoup4 ddddocr patchright matplotlib plotly flask
+python3 -m patchright install chromium
+```

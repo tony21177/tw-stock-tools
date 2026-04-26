@@ -42,18 +42,22 @@ Score = 0.40 × 廣度 + 0.20 × 量能 + 0.20 × RS + 0.20 × 持續性
 ```
 concept_momentum/
 ├── cache/
-│   ├── concepts.json     # 概念股 → 成分股對照表（可手動編輯）
+│   ├── concepts.json     # 概念股 → 成分股對照表（可手動編輯，每季更新）
+│   ├── stock_names.json  # TWSE ISIN 中文名快取（每週自動更新）
 │   ├── prices/           # Yahoo Finance 快取（每日一次）
 │   ├── taiex.json        # 加權指數快取
 │   └── results/          # 每日分析結果 JSON
 ├── static/
-│   ├── concept_momentum_{date}.png   # 每日 PNG
+│   ├── concept_momentum_{date}.png   # 每日快照 PNG
+│   ├── concept_trend_{date}.png      # 3 個月趨勢 PNG
 │   └── latest.png        # 最新 PNG
 ├── templates/
 │   └── dashboard.html    # 互動網頁儀表板
 ├── data_fetcher.py       # Yahoo OHLCV 抓取
-├── concept_momentum.py   # 動能指標計算
-├── concept_charts.py     # 圖表生成
+├── stock_names.py        # TWSE ISIN 中文名解析
+├── concept_momentum.py   # 動能指標 + 評分歷史
+├── concept_charts.py     # PNG + 互動 HTML 生成
+├── rerating_detector.py  # 跨概念 rerating 偵測（β 調整）
 ├── run_daily.py          # 每日 orchestrator
 ├── app.py                # Flask 本機 server
 └── README.md
@@ -125,11 +129,72 @@ cron 設定：每週一到五下午 5:00 自動跑，PNG + 文字摘要推送到
 
 ---
 
-## 目前覆蓋的概念（25 個）
+## 目前覆蓋的概念（28 個）
 
-CPO/矽光子、AI伺服器、先進封裝/CoWoS、HBM記憶體、液冷散熱、重電/電網、軍工、機器人、無人機、鋰電池/儲能、PCB/ABF載板、矽智財/IP、低軌衛星、CXO/生技代工、網通/5G、ADAS/智駕、綠能/太陽能、蘋果概念、車用電子、被動元件、Edge AI、折疊螢幕、電動車/EV、半導體設備、光學鏡頭。
+CPO/矽光子、AI伺服器、ASIC自研晶片、玻璃基板/TGV、先進封裝/CoWoS、HBM記憶體、液冷散熱、重電/電網、軍工、機器人、無人機、鋰電池/儲能、PCB/ABF載板、矽智財/IP、量子運算、低軌衛星、CXO/生技代工、網通/5G、ADAS/智駕、綠能/太陽能、蘋果概念、車用電子、被動元件、Edge AI、折疊螢幕、電動車/EV、半導體設備、光學鏡頭。
 
-覆蓋約 180-200 檔股票（去重後），基本涵蓋台股當前熱門板塊。
+覆蓋約 190 檔股票（去重後），涵蓋台股當前熱門板塊。
+
+---
+
+## Rerating 偵測（rerating_detector.py）
+
+### 核心問題
+公司業務常常會擴展到新領域（例如傳統電子廠跨入 AI 伺服器），但「概念股名單」通常落後 1-2 季。市場其實已開始重新評價（rerate），但分類沒跟上。
+
+我們用 **股價走勢** 抓這個訊號：如果某檔股票過去 60 個交易日的走勢與「自己被分類的概念」相關性低，反而與「另一個概念」相關性高，就疑似 rerating。
+
+### 核心演算法
+
+**Step 1：β 調整 excess returns**
+```
+β = cov(stock_return, TAIEX_return) / var(TAIEX_return)
+excess_return(t) = stock_return(t) - β × TAIEX_return(t)
+```
+為什麼要扣大盤 β？台股有「萬有引力」效應，台積電（β≈1.0）跟所有東西都相關，因為它本身就是大盤代理。扣掉大盤共動後，剩下的 excess return 才反映「個股獨立的價格行為」。
+
+**Step 2：過濾大型權值股（萬有引力過濾器）**
+```
+若 corr(stock, TAIEX) > 0.85 → 跳過該股
+```
+這把台積電、鴻海、台達電等大盤代理股排除。它們無論扣不扣 β 都會跟很多概念高相關，rerating 訊號毫無意義。
+
+**Step 3：對每個概念建立 excess return 序列**
+- 對每個概念做等權重指數（已在 concept_momentum.py 實作）
+- 同樣扣除大盤 β，得到概念的 excess return 序列
+
+**Step 4：算個股 vs 每個概念的 excess return Pearson 相關**
+- 取最近 60 個交易日（約 1 季）
+- 對每一檔股票，計算它與所有 28 個概念的相關係數
+
+**Step 5：計算 Rerating 分數**
+```
+own_max_corr = 該股原屬概念中相關性最高者
+top_other_corr = 該股不屬於的其他概念中相關性最高者
+rerating_score = top_other_corr - own_max_corr
+
+若 rerating_score > 0.15 → 列入「疑似 rerating」名單
+```
+
+### 為什麼用 60 天視窗
+- 太短（如 20 天）：訊號雜訊高，容易被短期波動誤判
+- 太長（如 250 天）：rerating 是「相位變化」，長期平均後變平淡看不到變化
+- 60 天 ≈ 1 季，恰好對應市場法人重新分類的週期
+
+### 輸出範例
+```
+2354 鴻準 [上市]
+  原屬：蘋果概念 (excess corr +0.09)
+  →更接近：ADAS / 智駕 (excess corr +0.52)
+  Rerating 分數：+0.42  (TAIEX β corr 0.77)
+```
+解讀：鴻準近 1 季扣除大盤後，跟 ADAS/智駕概念股的走勢相關性（+0.52）顯著高於跟蘋果概念（+0.09），可能反映業務從消費電子轉向汽車電子。
+
+### 限制
+- 只是「相關性」訊號，不是因果。需搭配公司財報/法說會驗證
+- 60 天的相關係數仍可能受短期事件影響
+- 等權重概念指數可能被特定大型股主導
+- 沒考慮類股輪動，只看時間序列相似度
 
 ---
 
