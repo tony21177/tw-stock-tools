@@ -14,6 +14,16 @@ TEMPLATES_DIR = os.path.join(HERE, "templates")
 app = Flask(__name__, static_folder=STATIC_DIR)
 
 
+@app.after_request
+def no_cache(resp):
+    """Dashboard is regenerated daily — disable any caching so users always
+    see the latest run, not yesterday's stale copy from browser cache."""
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
+
+
 @app.route("/")
 def dashboard():
     html_path = os.path.join(TEMPLATES_DIR, "dashboard.html")
