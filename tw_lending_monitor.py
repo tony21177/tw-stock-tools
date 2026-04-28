@@ -315,7 +315,9 @@ def format_lending_output(results: list[dict], target_date: str) -> str:
         vol_sign = "+" if r["vol_change_pct"] >= 0 else ""
         avg_str = f"{r['avg_5d']:,.0f}" if r["avg_5d"] > 0 else "N/A"
         spike_str = f"+{r['spike_pct']:.0f}%" if r["avg_5d"] > 0 else "新出現"
-        vol_str = f"{r['trade_volume']:,.0f}" if r['trade_volume'] else "N/A"
+        # trade_volume from Yahoo is in shares (股), convert to 張 for display
+        vol_lots = (r['trade_volume'] or 0) / 1000.0
+        vol_str = f"{vol_lots:,.0f}" if r['trade_volume'] else "N/A"
         vol_chg = f"({vol_sign}{r['vol_change_pct']:.0f}%)" if r['trade_volume'] else ""
 
         return (

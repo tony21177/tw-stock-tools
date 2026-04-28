@@ -160,6 +160,18 @@ def main():
     print("【步驟 4/5】計算 3 個月評分歷史（Top 10）...", file=sys.stderr)
     add_score_history(concepts, results[:10], stocks, taiex)
 
+    # Save results for downstream tools (e.g., tw_broker_monitor reads strong concepts)
+    results_dir = os.path.join(HERE, "cache", "results")
+    os.makedirs(results_dir, exist_ok=True)
+    results_file = os.path.join(results_dir, f"analysis_{datetime.now().strftime('%Y%m%d')}.json")
+    serializable = []
+    for r in results:
+        rcopy = {k: v for k, v in r.items() if k != "concept_index"}
+        serializable.append(rcopy)
+    with open(results_file, "w") as f:
+        json.dump(serializable, f, ensure_ascii=False, indent=2)
+    print(f"  已存 {results_file}", file=sys.stderr)
+
     # Charts
     print("【步驟 5/5】生成圖表...", file=sys.stderr)
     target_date = datetime.now().strftime("%Y-%m-%d")

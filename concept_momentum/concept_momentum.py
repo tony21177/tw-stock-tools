@@ -80,15 +80,58 @@ def compute_volume_ratio(stocks_data: list[dict]) -> float:
     return avg5 / avg20 if avg20 > 0 else 1.0
 
 
-def build_concept_index(stocks_data: list[dict]) -> list[dict]:
-    """Equal-weighted concept index. Returns list of {date, value} sorted ascending.
-    Value is normalized to 100 at start."""
+MIN_AVG_LOTS = 500  # 20d 平均成交張數，低於此門檻的個股排除（避免低流動性股污染族群）
+
+
+def avg_daily_volume_shares(stock: dict, days: int = 20) -> float:
+    """20d 平均成交股數（volume column 的單位是「股」）。"""
+    rows = stock.get("rows", [])
+    if not rows:
+        return 0.0
+    last = rows[-days:] if len(rows) > days else rows
+    total = sum((r.get("volume", 0) or 0) for r in last)
+    return total / len(last) if last else 0.0
+
+
+def avg_daily_lots(stock: dict, days: int = 20) -> float:
+    """20d 平均張數 = 平均股數 / 1000。"""
+    return avg_daily_volume_shares(stock, days) / 1000.0
+
+
+def avg_daily_turnover(stock: dict, days: int = 20) -> float:
+    """20d 平均成交額 (NT$) = sum(close × shares) / N。"""
+    rows = stock.get("rows", [])
+    if not rows:
+        return 0.0
+    last = rows[-days:] if len(rows) > days else rows
+    total = sum((r.get("close", 0) or 0) * (r.get("volume", 0) or 0) for r in last)
+    return total / len(last) if last else 0.0
+
+
+def filter_liquid_stocks(stocks_data: list[dict],
+                         min_lots: float = MIN_AVG_LOTS) -> list[dict]:
+    """Drop stocks whose 20d 平均張數 < min_lots. Stocks with too few rows are kept
+    (treated as new listings; not enough data to filter)."""
+    keep = []
+    for s in stocks_data:
+        if len(s.get("rows", [])) < 5:
+            keep.append(s)
+            continue
+        if avg_daily_lots(s) >= min_lots:
+            keep.append(s)
+    return keep
+
+
+def build_concept_index(stocks_data: list[dict],
+                        weight_by_turnover: bool = True) -> list[dict]:
+    """Concept index. Default: turnover-weighted (large/liquid stocks dominate).
+    Set weight_by_turnover=False for legacy equal-weight behavior.
+    Returns list of {date, value} sorted ascending. Each stock series normalized to 100 at first day."""
     if not stocks_data:
         return []
 
-    # Build per-stock normalized series
     all_dates = set()
-    stock_series = []
+    stock_series = []  # [(weight, {date: normalized_close})]
     for s in stocks_data:
         rows = s.get("rows", [])
         if len(rows) < 5:
@@ -98,7 +141,13 @@ def build_concept_index(stocks_data: list[dict]) -> list[dict]:
         if first_close <= 0:
             continue
         normalized = {d: c / first_close * 100 for d, c in closes.items()}
-        stock_series.append(normalized)
+        if weight_by_turnover:
+            w = avg_daily_turnover(s)
+            if w <= 0:
+                w = 1.0
+        else:
+            w = 1.0
+        stock_series.append((w, normalized))
         all_dates.update(closes.keys())
 
     if not stock_series:
@@ -107,9 +156,14 @@ def build_concept_index(stocks_data: list[dict]) -> list[dict]:
     sorted_dates = sorted(all_dates)
     index = []
     for date in sorted_dates:
-        values = [s[date] for s in stock_series if date in s]
-        if values:
-            index.append({"date": date, "value": sum(values) / len(values)})
+        weighted_sum = 0.0
+        weight_total = 0.0
+        for w, s in stock_series:
+            if date in s:
+                weighted_sum += s[date] * w
+                weight_total += w
+        if weight_total > 0:
+            index.append({"date": date, "value": weighted_sum / weight_total})
     return index
 
 
@@ -167,7 +221,12 @@ def extract_leaders(concept_stocks: list[dict], top_n: int = 5) -> list[dict]:
 def analyze_concept(theme_key: str, theme_info: dict, stocks_data: dict, taiex_rows: list[dict]) -> dict:
     """Compute all metrics for one concept."""
     codes = theme_info.get("stocks", [])
-    concept_stocks = [stocks_data[c] for c in codes if c in stocks_data]
+    concept_stocks_raw = [stocks_data[c] for c in codes if c in stocks_data]
+
+    # Filter low-liquidity stocks (< NT$100M avg daily turnover) — they distort
+    # equal-weighted analysis (e.g., 5274 信驊 trades only ~300 張/day)
+    concept_stocks = filter_liquid_stocks(concept_stocks_raw)
+    excluded = [s["code"] for s in concept_stocks_raw if s not in concept_stocks]
 
     if len(concept_stocks) < 3:
         return None  # too few stocks
@@ -214,12 +273,21 @@ def analyze_concept(theme_key: str, theme_info: dict, stocks_data: dict, taiex_r
     # Top 5 leader stocks
     leaders = extract_leaders(concept_stocks, top_n=5)
 
+    # Stable equal-weighted index over ALL members (no liquidity filter, no
+    # turnover weighting) — used by rerating_detector so correlations don't
+    # shift when filter or weighting changes.
+    concept_index_equal = build_concept_index(concept_stocks_raw,
+                                              weight_by_turnover=False)
+
     return {
         "theme_key": theme_key,
         "name_zh": theme_info.get("name_zh", theme_key),
         "name_en": theme_info.get("name_en", ""),
         "stock_count": len(concept_stocks),
+        "stock_count_raw": len(concept_stocks_raw),
+        "excluded_low_liquidity": excluded,
         "codes_available": [s["code"] for s in concept_stocks],
+        "concept_index_equal": concept_index_equal,
         "ret_5d": ret_5d,
         "ret_20d": ret_20d,
         "breadth_5d": breadth_5d,

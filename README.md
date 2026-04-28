@@ -345,17 +345,53 @@ FINMIND_TOKEN=xxx python3 ~/project/tw_stock_tools/tw_broker_lookup.py 2313
 TG_BOT_TOKEN=xxx FINMIND_TOKEN=xxx python3 ~/project/tw_stock_tools/tw_broker_monitor.py --top-n 100 --telegram
 ```
 
+### 掃描標的選擇
+
+預設每天掃兩組標的的聯集：
+1. **Top N 大融資餘額**（預設 100）：用 TWSE/TPEx OpenAPI 取得當日融資餘額排序前 N 檔
+2. **概念動能強勢族群成分股**（評分 ≥ 70）：讀 `concept_momentum/cache/results/analysis_{today}.json`，把當天評分達門檻的所有族群成分股加入掃描範圍
+
+效果：避免某檔不在融資 Top 100 但在強勢概念中的個股漏抓 BSR 快取。可用 `--no-concept-strong` 關閉、`--concept-min-score 80` 調整門檻。
+
 ### 排程
 ```
 0 18 * * 1-5 ... tw_broker_monitor.py --top-n 100 --telegram
 ```
 週一到五傍晚 6:00（BSR 約 17:30 公布）累積資料並執行分析。第 5 個交易日起分析開始有效。
+注意：concept_momentum cron 設在 17:00 跑，會把 `analysis_{today}.json` 存好讓 18:00 broker_monitor 讀取。
 
 ### 已知限制
 1. BSR 沒有歷史，需從今日起累積
 2. Cloudflare Turnstile 偶爾偵測（10-20% 失敗率，會自動重試）
 3. 無法區分「分點買進」中現股 vs 融資的比例 — 只能用相關性做 inference
 4. 真實分點融資資料需要付費（FinMind 贊助版的 `TaiwanStockTradingDailyReport`，未實作）
+
+---
+
+## 6. `tw_broker_history_lookup.py` — 個股分點歷史查詢（HiStock 爬蟲）
+
+### 用途
+TWSE BSR 只開放當日資料，本工具用 HiStock 補足歷史視角，輸出指定股票過去 N 天累積買/賣超的 Top 30 分點。
+
+### 資料來源
+HiStock `histock.tw/stock/branch.aspx?no=<code>&day=<N>`
+支援 N：7, 10, 14, 30, 60, 90, 180, 270, 365
+
+### 使用方式
+```bash
+python3 ~/project/tw_stock_tools/tw_broker_history_lookup.py 3035            # 預設 10 天
+python3 ~/project/tw_stock_tools/tw_broker_history_lookup.py 2330 --days 30 --top 20
+```
+
+### 輸出
+- 期間（from-to 日期）
+- 買超 Top N 分點：分點名稱 + 買張 + 賣張 + 淨買 + 60 天均價
+- 賣超 Top N 分點：同上
+
+### 限制
+- HiStock 限制每張表 Top 30 分點，無法取得全部分點
+- 累積買賣超，無單日分布
+- 屬非官方頁面，HiStock 改版會壞
 
 ---
 
@@ -379,7 +415,8 @@ TG_BOT_TOKEN=xxx FINMIND_TOKEN=xxx python3 ~/project/tw_stock_tools/tw_broker_mo
 ├── bsr_scraper.py             # TWSE BSR 爬蟲（ddddocr 解 CAPTCHA）
 ├── tpex_scraper.py            # TPEx 分點爬蟲（patchright + Xvfb 解 Turnstile）
 ├── tw_broker_monitor.py       # 分點+融資連動分析全市場掃描（每日排程）
-├── tw_broker_lookup.py        # 單檔分點+融資連動分析（CLI）
+├── tw_broker_lookup.py        # 單檔分點+融資連動分析（CLI，需 BSR 累積 ≥2 天）
+├── tw_broker_history_lookup.py # 個股 N 天累積分點查詢（HiStock 爬蟲，CLI）
 ├── concept_momentum/          # 概念動能子模組（詳見內部 README.md）
 ├── margin_cache/              # FinMind 融資快取（git ignore）
 │   └── finmind_{code}_{date}.json

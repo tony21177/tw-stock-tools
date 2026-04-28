@@ -89,6 +89,49 @@ def get_top_margin_increase_stocks(top_n: int = 100) -> list[tuple[str, int, int
     return items[:top_n]
 
 
+def get_strong_concept_stocks(min_score: float = 70.0) -> list[str]:
+    """Read latest concept_momentum analysis result, return unique stocks
+    in concepts whose sustainability_score >= min_score.
+
+    If no fresh result file (today's), falls back to concepts.json members
+    of concepts that scored ≥70 in the most recent saved result.
+    Returns [] silently if neither is available.
+    """
+    cm_dir = os.path.join(HERE, "concept_momentum", "cache")
+    results_dir = os.path.join(cm_dir, "results")
+    if not os.path.isdir(results_dir):
+        return []
+
+    files = sorted([f for f in os.listdir(results_dir) if f.startswith("analysis_")])
+    if not files:
+        return []
+
+    latest = os.path.join(results_dir, files[-1])
+    try:
+        with open(latest) as f:
+            results = json.load(f)
+    except Exception:
+        return []
+
+    strong_themes = [r["theme_key"] for r in results
+                     if r.get("sustainability_score", 0) >= min_score]
+    if not strong_themes:
+        return []
+
+    concepts_path = os.path.join(cm_dir, "concepts.json")
+    try:
+        with open(concepts_path) as f:
+            concepts = json.load(f)
+    except Exception:
+        return []
+
+    codes = set()
+    for tk in strong_themes:
+        for code in concepts.get("themes", {}).get(tk, {}).get("stocks", []):
+            codes.add(code)
+    return sorted(codes)
+
+
 def scan_and_save(stock_codes: list[str], delay: float = 0.6) -> dict:
     """Fetch BSR for each stock, save to cache. Returns summary."""
     success, failed = 0, []
@@ -151,6 +194,12 @@ def format_summary(results: list[dict], target_date: str, days_history: int) -> 
 def main():
     parser = argparse.ArgumentParser(description="分點+融資連動每日掃描")
     parser.add_argument("--top-n", type=int, default=100, help="掃描前 N 檔（依今日融資餘額排序）")
+    parser.add_argument("--include-concept-strong", action="store_true", default=True,
+                        help="同步加入概念動能評分 ≥70 的成分股（預設開啟）")
+    parser.add_argument("--no-concept-strong", dest="include_concept_strong",
+                        action="store_false", help="關閉概念動能加入")
+    parser.add_argument("--concept-min-score", type=float, default=70.0,
+                        help="概念動能最低評分門檻，預設 70")
     parser.add_argument("--days", type=int, default=5)
     parser.add_argument("--min-corr", type=float, default=0.5)
     parser.add_argument("--min-days", type=int, default=3)
@@ -172,8 +221,19 @@ def main():
 
     print(f"【步驟 1/3】取得 Top {args.top_n} 大融資餘額股票...", file=sys.stderr)
     top_stocks = get_top_margin_increase_stocks(args.top_n)
-    codes = [c for c, _, _ in top_stocks]
-    print(f"  目標股票: {len(codes)} 檔", file=sys.stderr)
+    margin_codes = [c for c, _, _ in top_stocks]
+    print(f"  融資餘額 Top {args.top_n}: {len(margin_codes)} 檔", file=sys.stderr)
+
+    concept_codes = []
+    if args.include_concept_strong:
+        concept_codes = get_strong_concept_stocks(args.concept_min_score)
+        print(f"  概念動能 ≥{args.concept_min_score:.0f} 分成份股: {len(concept_codes)} 檔",
+              file=sys.stderr)
+
+    codes = list(dict.fromkeys(margin_codes + concept_codes))
+    extra = len(codes) - len(margin_codes)
+    print(f"  合併目標: {len(codes)} 檔（融資 {len(margin_codes)} + 新增 {extra}）",
+          file=sys.stderr)
 
     if not args.analyze_only:
         print(f"【步驟 2/3】抓 BSR 分點資料...", file=sys.stderr)

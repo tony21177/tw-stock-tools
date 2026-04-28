@@ -82,7 +82,20 @@ def detect_drift(concepts: dict, stocks_data: dict | None = None,
             # Fallback: use all titles (Yahoo TW page is already stock-specific)
             relevant = titles
 
-        counts = count_theme_mentions(relevant)
+        # Strip company name + code from titles before keyword matching, so a
+        # company called e.g. "萊德光電-KY" cannot match the 綠能 keyword "光電"
+        # via its own name. Also strip the bare stem (萊德光電) when name has -KY.
+        name_variants = {name, code}
+        if name.endswith("-KY"):
+            name_variants.add(name[:-3])
+        cleaned = []
+        for t in relevant:
+            for v in name_variants:
+                if v:
+                    t = t.replace(v, "")
+            cleaned.append(t)
+
+        counts = count_theme_mentions(cleaned)
         # Skip if no theme mentioned
         total_mentions = sum(counts.values())
         if total_mentions == 0:

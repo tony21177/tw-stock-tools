@@ -92,7 +92,8 @@ def compute_rerating(concepts: dict, results: list[dict], stocks_data: dict,
     concept_excess_rets = {}
     concept_dates = {}
     for r in results:
-        ci = r.get("concept_index", [])
+        # Prefer equal-weighted index for correlation (stable across filter/weighting changes)
+        ci = r.get("concept_index_equal") or r.get("concept_index", [])
         if not ci or len(ci) < 6:
             continue
         values = [p["value"] for p in ci]

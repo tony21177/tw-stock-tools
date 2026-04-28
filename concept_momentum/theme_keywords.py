@@ -4,7 +4,14 @@
 
 每個概念列出多個關鍵字（中英混合），匹配「至少一個」即視為提及該概念。
 關鍵字應該是該概念的標誌性詞彙，避免過度泛用導致誤判。
+
+匹配規則：
+  - 中文 / 含中文 / 長英文（>5 字）關鍵字：子字串匹配
+  - 短 ASCII 關鍵字（≤5 字、全英文 / 數字）：必須前後都不是英文或數字
+    避免「ESS」誤匹配「PharmaEssentia」、「ASIC」誤匹配「classic」這類問題
 """
+
+import re
 
 THEME_KEYWORDS = {
     "CPO_矽光子": [
@@ -85,8 +92,9 @@ THEME_KEYWORDS = {
         "盲點偵測", "車道偏移", "前向碰撞",
     ],
     "綠能_太陽能": [
-        "太陽能", "Solar", "光電", "PV", "矽晶圓",
-        "綠能", "再生能源",
+        "太陽能", "Solar", "太陽能光電", "光電案場", "光電廠",
+        "PV", "綠能", "再生能源", "光電板", "屋頂型光電",
+        "地面型光電", "電廠開發",
     ],
     "蘋果概念": [
         "蘋果", "Apple", "iPhone", "iPad", "MacBook", "AirPods",
@@ -123,6 +131,14 @@ THEME_KEYWORDS = {
 }
 
 
+def _kw_matches(kw: str, title: str) -> bool:
+    is_short_ascii = len(kw) <= 5 and all(ord(c) < 128 for c in kw)
+    if is_short_ascii:
+        pattern = r"(?<![A-Za-z0-9])" + re.escape(kw) + r"(?![A-Za-z0-9])"
+        return re.search(pattern, title, re.IGNORECASE) is not None
+    return kw.lower() in title.lower()
+
+
 def count_theme_mentions(news_titles: list[str], theme_keywords: dict = None) -> dict:
     """For a list of news titles, count how many titles mention each theme.
     A title is counted once per theme even if it has multiple keyword matches.
@@ -132,7 +148,7 @@ def count_theme_mentions(news_titles: list[str], theme_keywords: dict = None) ->
     counts = {k: 0 for k in theme_keywords}
     for title in news_titles:
         for theme_key, keywords in theme_keywords.items():
-            if any(kw.lower() in title.lower() for kw in keywords):
+            if any(_kw_matches(kw, title) for kw in keywords):
                 counts[theme_key] += 1
     return counts
 
