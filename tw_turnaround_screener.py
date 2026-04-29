@@ -361,12 +361,36 @@ def load_universe(universe_arg: str) -> list[tuple[str, str]]:
         codes = set()
         for v in c["themes"].values():
             codes.update(v.get("stocks", []))
-        # Names will be filled when we fetch yahoo
         return [(c, c) for c in sorted(codes)]
     elif universe_arg == "all":
-        # TODO: full TWSE/TPEx; for v1 just concepts
-        print("--universe all 尚未實作，改用 concepts", file=sys.stderr)
-        return load_universe("concepts")
+        # Fetch full TWSE + TPEx common-stock list from FinMind. Cached 7 days.
+        cache_path = os.path.join(CACHE_DIR, "universe_all.json")
+        if os.path.exists(cache_path) and time.time() - os.path.getmtime(cache_path) < 7 * 86400:
+            with open(cache_path) as f:
+                return [tuple(x) for x in json.load(f)]
+        url = "https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInfo"
+        data = http_json(url)
+        if not data or data.get("msg") != "success":
+            print("無法取得全市場列表，改用 concepts", file=sys.stderr)
+            return load_universe("concepts")
+        codes = []
+        seen = set()
+        for r in data.get("data", []):
+            sid = r.get("stock_id", "")
+            mkt = r.get("type", "")
+            if mkt not in ("twse", "tpex"):
+                continue
+            # Only 4-digit numeric (common stocks; excludes ETFs/REITs/warrants)
+            if len(sid) != 4 or not sid.isdigit():
+                continue
+            if sid in seen:
+                continue
+            seen.add(sid)
+            codes.append((sid, r.get("stock_name", sid)))
+        codes.sort()
+        with open(cache_path, "w") as f:
+            json.dump(codes, f, ensure_ascii=False)
+        return codes
     else:
         # Comma-separated codes
         codes = [c.strip() for c in universe_arg.split(",") if c.strip()]
@@ -392,8 +416,9 @@ def main():
     ap.add_argument("--ma-curv-ratio", type=float, default=0.5,
                     help="MA60 曲率寬鬆度（slope_recent ≥ ratio × slope_earlier）"
                          "；1.0=嚴格加速、0.5=允許動能減半（預設）、0.0=只要求斜率為正")
-    ap.add_argument("--universe", default="concepts",
-                    help="掃描範圍：concepts(預設) / all / 逗號分隔代號")
+    ap.add_argument("--universe", default="all",
+                    help="掃描範圍：all (全 TWSE+TPEx 4 位數普通股，預設) / "
+                         "concepts (concepts.json 內 ~190 檔，較快) / 逗號分隔代號")
     ap.add_argument("--token", default=os.environ.get("FINMIND_TOKEN", ""),
                     help="FinMind token（free tier 也可，但有 rate limit）")
     ap.add_argument("--quiet", action="store_true", help="不顯示掃描進度")

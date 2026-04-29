@@ -519,8 +519,11 @@ python3 ~/project/tw_stock_tools/tw_us_correlation.py --list
 
 ### 使用方式
 ```bash
-# 預設掃描 concepts.json (~190 檔)
+# 預設掃描全市場 TWSE + TPEx 4 位數普通股（~3000 檔，首跑 ~2-4 小時，後續快取後 ~30 分）
 python3 ~/project/tw_stock_tools/tw_turnaround_screener.py
+
+# 只掃 concepts.json (~190 檔，快很多，10-15 分)
+python3 ~/project/tw_stock_tools/tw_turnaround_screener.py --universe concepts
 
 # 調整門檻
 python3 ~/project/tw_stock_tools/tw_turnaround_screener.py \
@@ -534,6 +537,11 @@ python3 ~/project/tw_stock_tools/tw_turnaround_screener.py \
 python3 ~/project/tw_stock_tools/tw_turnaround_screener.py \
   --token $FINMIND_TOKEN
 ```
+
+### Universe 選項
+- `--universe all`（預設）：FinMind TaiwanStockInfo 撈全 TWSE + TPEx，篩 4 位數純數字代號（避開 ETF 0050、REITs 01001T、權證等），約 3000 檔。Universe 列表 cache 7 天。
+- `--universe concepts`：concepts.json 內 ~190 檔（已分類在主題板塊，掃描較快）
+- `--universe 2330,2454,3491`：指定股票測試
 
 ### 輸出
 1. 表格列出通過所有 3 條件的標的（按綜合分數排序）
