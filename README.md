@@ -407,7 +407,7 @@ python3 ~/project/tw_stock_tools/tw_broker_history_lookup.py 2330 --days 30 --to
 - 「同一家公司 ADR vs 母股，相關性能多高？」（TSM vs 2330 = +0.47，揭示日線級別 ADR 連動上限）
 
 ### 資料來源
-Yahoo Finance（query1.finance.yahoo.com）— 同 `concept_momentum/data_fetcher.py`，台股自動加 `.TW` / `.TWO` 後綴，美股直接用 ticker。`6mo` 資料供 60-day window，`1y` 資料供 180-day window（自動切換）。
+Yahoo Finance（query1.finance.yahoo.com）— 同 `concept_momentum/data_fetcher.py`，台股自動加 `.TW` / `.TWO` 後綴，美股直接用 ticker。資料範圍依 window 自動切換：window ≤ 100 用 `6mo`，101–200 用 `1y`，> 200 用 `2y`。
 
 ### 計算邏輯（β 調整版，預設）
 1. 抓近 6 個月或 1 年日線
@@ -418,7 +418,7 @@ Yahoo Finance（query1.finance.yahoo.com）— 同 `concept_momentum/data_fetche
    - excess_return = stock_return - β × market_return
    - 目的：去除「全球 risk-on 共漲」的雜訊，留下真正的個股 idiosyncratic 連動
 4. **時差對齊**：TPE D ↔ US D-1（TPE D 反應的是前一晚 US 收盤，US D 的 session 在 TPE D 之後才發生）
-5. Pearson 相關係數於指定視窗（預設 60 個 TPE 交易日，可改 180）
+5. Pearson 相關係數於指定視窗（預設 240 個 TPE 交易日，約 1 年；可用 `--window 60` 看近期 narrative）
 
 ### 兩種模式
 | 模式 | 用途 | 數值範圍 | 風險 |
@@ -438,11 +438,14 @@ python3 ~/project/tw_stock_tools/tw_us_correlation.py ASIC自研晶片
 # 指定特定 peer
 python3 ~/project/tw_stock_tools/tw_us_correlation.py ASIC自研晶片 --peer MRVL
 
-# 全市場掃描（推薦）— 不漏掉跨概念的高相關股
-python3 ~/project/tw_stock_tools/tw_us_correlation.py --peer NVDA --window 180
+# 全市場掃描（推薦）— 不漏掉跨概念的高相關股；預設 240 天視窗
+python3 ~/project/tw_stock_tools/tw_us_correlation.py --peer NVDA
 
-# 跑 raw 看共動 narrative
-python3 ~/project/tw_stock_tools/tw_us_correlation.py --peer BE --raw --window 60
+# 看近期 narrative（60 天視窗）
+python3 ~/project/tw_stock_tools/tw_us_correlation.py --peer BE --window 60
+
+# 跑 raw 看共動，含全球 β（小心雜訊）
+python3 ~/project/tw_stock_tools/tw_us_correlation.py --peer BE --raw
 
 # 列出所有概念與預設 peer mapping
 python3 ~/project/tw_stock_tools/tw_us_correlation.py --list
@@ -475,7 +478,8 @@ python3 ~/project/tw_stock_tools/tw_us_correlation.py --list
 - 日線資料的時差對齊已盡量處理（TPE D ↔ US D-1），但仍有 ADR 溢價、隔夜 gap、匯率影響
 - `--raw` 模式的高相關常常是「共同蹭 macro narrative」，要用 β 調整版驗證
 - ADR 同公司（TSM vs 2330）的相關性上限約 +0.47（時段錯開、資訊分裂）— 不要期待 1.0
-- 視窗選擇影響大：60 天反映近期 narrative，180 天反映中期；兩者差距大代表近期有 regime change
+- 視窗選擇影響大：60 天反映近期 narrative，180/240 天反映中長期；兩者差距大代表近期有 regime change（如台船 60 天 +0.46 vs 240 天 +0.14，60 天為短期巧合）
+- 預設 240 天是為了過濾掉短期雜訊，得到較穩定的相關性畫面；要看近期變化用 `--window 60`
 
 ---
 

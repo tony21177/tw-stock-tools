@@ -205,8 +205,8 @@ def main():
     )
     parser.add_argument("concept", nargs="?",
                         help="台股概念 key（例：ASIC自研晶片）。省略+--peer 即進入掃描全市場模式。")
-    parser.add_argument("--window", type=int, default=60,
-                        help="相關係數計算視窗天數（預設 60）")
+    parser.add_argument("--window", type=int, default=240,
+                        help="相關係數計算視窗天數（預設 240，約 1 年 TPE 交易日）")
     parser.add_argument("--peer", help="美股 peer ticker（覆蓋預設或啟用全掃模式）")
     parser.add_argument("--top", type=int, default=20, help="顯示前 N 檔")
     parser.add_argument("--raw", action="store_true",
@@ -269,8 +269,14 @@ def main():
     print(f"=== {title} vs {','.join(us_peers)} ===")
     print(f"視窗：{args.window} 個 TPE 交易日 | {mode} | 配對：TPE D ↔ US D-1\n")
 
-    # Auto-extend Yahoo range to cover the requested window (default 6mo ≈ 130 td)
-    yahoo_range = "1y" if args.window > 100 else "6mo"
+    # Auto-extend Yahoo range to cover the requested window
+    # (6mo ≈ 130 td, 1y ≈ 252 td, 2y ≈ 504 td)
+    if args.window > 200:
+        yahoo_range = "2y"
+    elif args.window > 100:
+        yahoo_range = "1y"
+    else:
+        yahoo_range = "6mo"
 
     market_us = None if args.raw else "^GSPC"
     us_excess = {}
