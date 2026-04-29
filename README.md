@@ -1,6 +1,6 @@
 # 台股借券 / 融資 / 籌碼 / 概念動能分析工具組
 
-八大功能：
+九大功能：
 
 1. 借券議借異常監控（每日排程推送）→ `tw_lending_monitor.py`
 2. 借券賣出餘額大幅減少監控（每日排程推送）→ `tw_lending_monitor.py`
@@ -10,6 +10,7 @@
 6. **分點+融資連動分析（每日排程推送）** → `tw_broker_monitor.py` / `tw_broker_lookup.py`
 7. **概念動能監控 + Rerating 偵測（每日排程推送 PNG + 網頁儀表板）** → `concept_momentum/`
 8. **台股 ↔ 美股 peer 相關性查詢（CLI）** → `tw_us_correlation.py`
+9. **Turnaround 篩選器（毛利率改善 + 量能放大 + 借券回補）** → `tw_turnaround_screener.py`
 
 所有工具放在 `~/project/tw_stock_tools/`，cron 設定每天排程推送到 Telegram 群組。
 概念動能子模組詳見 `concept_momentum/README.md`。
@@ -483,6 +484,76 @@ python3 ~/project/tw_stock_tools/tw_us_correlation.py --list
 
 ---
 
+## 8. `tw_turnaround_screener.py` — Turnaround 篩選器
+
+### 用途
+找出同時滿足三條件的「基本面改善 + 量能進場 + 空方撤退」標的：
+- 毛利率近 4 季向上（基本面改善）
+- 量能放大（資金開始流入）
+- 借券賣出餘額減少（空方回補）
+
+對應的市場 narrative：「公司轉好 + 法人買進 + 之前空它的人開始認輸」 — 經典 turnaround setup。
+
+### 過濾條件（可調）
+| 條件 | 預設值 | 意義 |
+|------|--------|------|
+| `--gm-pp` | 1.5 | GM_Q-0 - GM_Q-3 ≥ N pp（4 季累積增幅） |
+| `--gm-qoq` | 2 | 4 季中至少 N 次 QoQ 增長 |
+| `--vol-ratio` | 1.3 | 近 20 日均量 / 近 60 日均量 ≥ N |
+| `--sbl-decline` | 0.95 | 近 10 日借券賣出餘額均 / 前 30 日均 ≤ N |
+
+### 資料來源
+| 指標 | 來源 |
+|------|------|
+| 季毛利率 | FinMind `TaiwanStockFinancialStatements`（Revenue + GrossProfit） |
+| 量能 | Yahoo Finance（6mo 日線） |
+| 借券賣出餘額 | FinMind `TaiwanDailyShortSaleBalances` 的 `SBLShortSalesCurrentDayBalance` |
+
+注意：融券餘額（`MarginShortSalesCurrentDayBalance`）也會抓但只顯示作參考，不納入過濾。設計上「借券賣出餘額」是法人空方主戰場，融券是散戶/投機部位，兩者邏輯不同。
+
+### 使用方式
+```bash
+# 預設掃描 concepts.json (~190 檔)
+python3 ~/project/tw_stock_tools/tw_turnaround_screener.py
+
+# 調整門檻
+python3 ~/project/tw_stock_tools/tw_turnaround_screener.py \
+  --gm-pp 2.0 --vol-ratio 1.5 --sbl-decline 0.90
+
+# 指定股票
+python3 ~/project/tw_stock_tools/tw_turnaround_screener.py \
+  --universe 2330,2454,3491
+
+# 用 FinMind token 加速（避免 free tier rate limit）
+python3 ~/project/tw_stock_tools/tw_turnaround_screener.py \
+  --token $FINMIND_TOKEN
+```
+
+### 輸出
+1. 表格列出通過所有 3 條件的標的（按綜合分數排序）
+2. 每檔詳細：
+   - 4 季毛利率 + Δpp + QoQ 次數
+   - 量能 20d / 60d
+   - 借券賣出 10d 均 vs 前 30d 均
+   - （參考）融券同期變化
+
+### 限制
+- FinMind free tier 有 rate limit（600/小時），全市場掃約 8-15 分鐘；用 token 可加速
+- 季財報有 lag：Q1 財報通常 5 月公告，Q4 財報 3-4 月，掃出來的 GM 可能不是即時最新季
+- SBL 餘額只反映「沒回補的部分」，不直接等於「主力多空態度」 — 配合分點/法人籌碼一起看更準
+- 預設 universe 是 concepts.json (~190 檔)；`--universe all` 全市場尚未實作
+
+### 實例（2026-04-29 跑出 7 檔）
+3105 穩懋 GM 16.7→31.8% / Vol 1.30x / SBL -10.9%（融券 +94% — 散戶仍在空）
+6173 信昌電 GM 22.3→26.8% / Vol 1.62x / SBL -26.3%
+3491 昇達科 GM 50.6→58.6% / Vol 1.55x / SBL -16.2%
+4576 大銀微 GM 35.8→38.4% / Vol 1.64x / SBL -47.5%（融券 +246% — 對立明顯）
+3406 玉晶光 GM 30.9→34.3% / Vol 1.56x / SBL -31.3%（融券也 -85%，最乾淨訊號）
+6166 凌華 GM 34.5→36.7% / Vol 1.96x / SBL -5.7%
+2314 台揚 GM -7.4→2.9% / Vol 1.35x / SBL 0%（流動性過低，待驗）
+
+---
+
 ## 環境變數
 
 | 變數 | 用途 | 來源 |
@@ -506,6 +577,8 @@ python3 ~/project/tw_stock_tools/tw_us_correlation.py --list
 ├── tw_broker_lookup.py        # 單檔分點+融資連動分析（CLI，需 BSR 累積 ≥2 天）
 ├── tw_broker_history_lookup.py # 個股 N 天累積分點查詢（HiStock 爬蟲，CLI）
 ├── tw_us_correlation.py       # 台股 ↔ 美股 peer 相關性查詢（CLI，β 調整 / 全市場掃描）
+├── tw_turnaround_screener.py  # Turnaround 篩選（毛利率↑+量能↑+借券↓，CLI）
+├── screener_cache/            # FinMind 季報 + 借券餘額快取（git ignore）
 ├── concept_momentum/          # 概念動能子模組（詳見內部 README.md）
 ├── margin_cache/              # FinMind 融資快取（git ignore）
 │   └── finmind_{code}_{date}.json
