@@ -162,29 +162,52 @@ def volume_passes(rows: list[dict], min_ratio: float):
     return (ratio >= min_ratio), {"v20": v20, "v60": v60, "ratio": ratio}
 
 
-def ma60_passes(rows: list[dict], trend_days: int = 10):
-    """季線多頭排列：收盤 ≥ MA60，且 MA60 較 trend_days 前上揚。
-    Returns (bool, dict)."""
-    if len(rows) < 60 + trend_days:
+def ma60_passes(rows: list[dict], accel_days: int = 5):
+    """季線多頭排列 + 曲率向上：
+    - 收盤 ≥ MA60（季線之上）
+    - MA60 斜率為正（rising）
+    - MA60 曲率為正：近期斜率 > 較早斜率（accelerating up，2 階導數 > 0）
+
+    用 3 個時點的 MA60 算斜率變化：
+      slope_recent  = MA60(today) - MA60(today - accel_days)
+      slope_earlier = MA60(today - accel_days) - MA60(today - 2*accel_days)
+    曲率向上 = slope_recent > slope_earlier。
+    """
+    needed = 60 + 2 * accel_days
+    if len(rows) < needed:
         return False, {"reason": "資料不足"}
     closes = [r.get("close") for r in rows if r.get("close")]
-    if len(closes) < 60 + trend_days:
+    if len(closes) < needed:
         return False, {"reason": "資料不足"}
-    ma60_today = sum(closes[-60:]) / 60
-    ma60_prev = sum(closes[-60 - trend_days:-trend_days]) / 60
+
+    def ma60_at(offset: int) -> float:
+        return sum(closes[-60 - offset: len(closes) - offset if offset > 0 else len(closes)]) / 60
+
+    ma60_today = ma60_at(0)
+    ma60_mid = ma60_at(accel_days)
+    ma60_old = ma60_at(2 * accel_days)
+
+    slope_recent = ma60_today - ma60_mid
+    slope_earlier = ma60_mid - ma60_old
+
     last_close = closes[-1]
     above_ma = last_close >= ma60_today
-    rising = ma60_today > ma60_prev
-    pct_above = (last_close / ma60_today - 1) * 100 if ma60_today > 0 else 0
-    pct_slope = (ma60_today / ma60_prev - 1) * 100 if ma60_prev > 0 else 0
-    return (above_ma and rising), {
+    rising = slope_recent > 0
+    curving_up = slope_recent > slope_earlier
+
+    return (above_ma and rising and curving_up), {
         "close": last_close,
         "ma60": ma60_today,
-        "ma60_prev": ma60_prev,
-        "pct_above": pct_above,
-        "pct_slope": pct_slope,
+        "ma60_mid": ma60_mid,
+        "ma60_old": ma60_old,
+        "slope_recent": slope_recent,
+        "slope_earlier": slope_earlier,
         "above_ma": above_ma,
         "rising": rising,
+        "curving_up": curving_up,
+        "pct_above": (last_close / ma60_today - 1) * 100 if ma60_today > 0 else 0,
+        "pct_slope_recent": (slope_recent / ma60_mid * 100) if ma60_mid > 0 else 0,
+        "pct_slope_earlier": (slope_earlier / ma60_old * 100) if ma60_old > 0 else 0,
     }
 
 
@@ -355,8 +378,8 @@ def main():
                     help="20d/60d 成交量比門檻（預設 1.3）")
     ap.add_argument("--sbl-decline", type=float, default=0.95,
                     help="借券賣出餘額 10d/30d-prior 比門檻（預設 0.95，需 ≤ 此值）")
-    ap.add_argument("--ma-trend-days", type=int, default=10,
-                    help="季線（MA60）上揚比較天數（預設 10td 前 vs 今）")
+    ap.add_argument("--ma-accel-days", type=int, default=5,
+                    help="季線（MA60）曲率比較窗口（預設 5td：比較近 5 天斜率 vs 前 5 天斜率）")
     ap.add_argument("--universe", default="concepts",
                     help="掃描範圍：concepts(預設) / all / 逗號分隔代號")
     ap.add_argument("--token", default=os.environ.get("FINMIND_TOKEN", ""),
@@ -369,7 +392,8 @@ def main():
         print(f"掃描範圍：{len(universe)} 檔", file=sys.stderr)
         print(f"門檻：GM Δ≥{args.gm_pp}pp / QoQ≥{args.gm_qoq} / "
               f"Vol 20d/60d≥{args.vol_ratio} / 借券賣出 10d/prior≤{args.sbl_decline} / "
-              f"收盤≥MA60 且 MA60 較 {args.ma_trend_days}td 前上揚", file=sys.stderr)
+              f"收盤≥MA60 且 MA60 曲率向上 (近{args.ma_accel_days}td 斜率 > 前{args.ma_accel_days}td 斜率)",
+              file=sys.stderr)
 
     survivors = []
     counts = {"start": len(universe), "A": 0, "AB": 0, "ABC": 0, "ABCD": 0}
@@ -402,8 +426,8 @@ def main():
             continue
         counts["ABC"] += 1
 
-        # Filter D: 季線多頭排列 (close ≥ MA60 AND MA60 rising)
-        ok_d, m_d = ma60_passes(info["rows"], trend_days=args.ma_trend_days)
+        # Filter D: 季線多頭排列 + 曲率向上 (close ≥ MA60, slope > 0, curvature > 0)
+        ok_d, m_d = ma60_passes(info["rows"], accel_days=args.ma_accel_days)
         if not ok_d:
             continue
         counts["ABCD"] += 1
@@ -458,8 +482,10 @@ def main():
         print(f"  借券賣出：近 10d 均 {b['avg10']:.0f} 張 vs 前 30d 均 {b['avg_prior']:.0f} 張"
               f"  →  {b['ratio']:.2f}x ({(b['ratio']-1)*100:+.1f}%)")
         print(f"  季線：收盤 {ma['close']:.2f} vs MA60 {ma['ma60']:.2f}"
-              f" ({ma['pct_above']:+.1f}%)，MA60 較前 {args.ma_trend_days}td 上揚 "
-              f"{ma['pct_slope']:+.1f}%")
+              f" ({ma['pct_above']:+.1f}%)")
+        print(f"     ├ 近 {args.ma_accel_days}td 斜率: {ma['pct_slope_recent']:+.2f}%"
+              f"  vs 前 {args.ma_accel_days}td 斜率: {ma['pct_slope_earlier']:+.2f}%"
+              f"  → 曲率 {'+' if ma['curving_up'] else '−'}")
         # margin (融券) display only
         mgn_change = ((b['margin_last'] / b['margin_prior'] - 1) * 100
                       if b['margin_prior'] > 0 else 0)
