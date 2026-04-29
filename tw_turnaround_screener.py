@@ -162,16 +162,20 @@ def volume_passes(rows: list[dict], min_ratio: float):
     return (ratio >= min_ratio), {"v20": v20, "v60": v60, "ratio": ratio}
 
 
-def ma60_passes(rows: list[dict], accel_days: int = 5):
-    """季線多頭排列 + 曲率向上：
+def ma60_passes(rows: list[dict], accel_days: int = 5,
+                curvature_min_ratio: float = 0.5):
+    """季線多頭排列 + 曲率「不嚴重衰減」：
     - 收盤 ≥ MA60（季線之上）
     - MA60 斜率為正（rising）
-    - MA60 曲率為正：近期斜率 > 較早斜率（accelerating up，2 階導數 > 0）
+    - 曲率約束：slope_recent ≥ curvature_min_ratio × slope_earlier
+      (預設 0.5，允許上漲動能減半，不允許更嚴重衰減)
+      ratio=1.0 → 嚴格曲率向上（加速）
+      ratio=0.5 → 寬鬆（中間）— 仍上漲但容忍適度減速
+      ratio=0.0 → 只要求斜率為正
 
     用 3 個時點的 MA60 算斜率變化：
       slope_recent  = MA60(today) - MA60(today - accel_days)
       slope_earlier = MA60(today - accel_days) - MA60(today - 2*accel_days)
-    曲率向上 = slope_recent > slope_earlier。
     """
     needed = 60 + 2 * accel_days
     if len(rows) < needed:
@@ -193,7 +197,12 @@ def ma60_passes(rows: list[dict], accel_days: int = 5):
     last_close = closes[-1]
     above_ma = last_close >= ma60_today
     rising = slope_recent > 0
-    curving_up = slope_recent > slope_earlier
+    # Curvature: slope_recent must be at least curvature_min_ratio × slope_earlier.
+    # When earlier slope is non-positive (rare for already-rising MA60), accept any positive recent slope.
+    if slope_earlier > 0:
+        curving_up = slope_recent >= curvature_min_ratio * slope_earlier
+    else:
+        curving_up = slope_recent > 0
 
     return (above_ma and rising and curving_up), {
         "close": last_close,
@@ -380,6 +389,9 @@ def main():
                     help="借券賣出餘額 10d/30d-prior 比門檻（預設 0.95，需 ≤ 此值）")
     ap.add_argument("--ma-accel-days", type=int, default=5,
                     help="季線（MA60）曲率比較窗口（預設 5td：比較近 5 天斜率 vs 前 5 天斜率）")
+    ap.add_argument("--ma-curv-ratio", type=float, default=0.5,
+                    help="MA60 曲率寬鬆度（slope_recent ≥ ratio × slope_earlier）"
+                         "；1.0=嚴格加速、0.5=允許動能減半（預設）、0.0=只要求斜率為正")
     ap.add_argument("--universe", default="concepts",
                     help="掃描範圍：concepts(預設) / all / 逗號分隔代號")
     ap.add_argument("--token", default=os.environ.get("FINMIND_TOKEN", ""),
@@ -392,8 +404,8 @@ def main():
         print(f"掃描範圍：{len(universe)} 檔", file=sys.stderr)
         print(f"門檻：GM Δ≥{args.gm_pp}pp / QoQ≥{args.gm_qoq} / "
               f"Vol 20d/60d≥{args.vol_ratio} / 借券賣出 10d/prior≤{args.sbl_decline} / "
-              f"收盤≥MA60 且 MA60 曲率向上 (近{args.ma_accel_days}td 斜率 > 前{args.ma_accel_days}td 斜率)",
-              file=sys.stderr)
+              f"收盤≥MA60 且 MA60 斜率 ≥ {args.ma_curv_ratio}×前期斜率 "
+              f"(近{args.ma_accel_days}td vs 前{args.ma_accel_days}td)", file=sys.stderr)
 
     survivors = []
     counts = {"start": len(universe), "A": 0, "AB": 0, "ABC": 0, "ABCD": 0}
@@ -426,8 +438,9 @@ def main():
             continue
         counts["ABC"] += 1
 
-        # Filter D: 季線多頭排列 + 曲率向上 (close ≥ MA60, slope > 0, curvature > 0)
-        ok_d, m_d = ma60_passes(info["rows"], accel_days=args.ma_accel_days)
+        # Filter D: 季線多頭排列 + 曲率不嚴重衰減
+        ok_d, m_d = ma60_passes(info["rows"], accel_days=args.ma_accel_days,
+                                  curvature_min_ratio=args.ma_curv_ratio)
         if not ok_d:
             continue
         counts["ABCD"] += 1

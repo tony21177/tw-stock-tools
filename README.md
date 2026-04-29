@@ -502,7 +502,8 @@ python3 ~/project/tw_stock_tools/tw_us_correlation.py --list
 | `--vol-ratio` | 1.3 | 近 20 日均量 / 近 60 日均量 ≥ N |
 | `--sbl-decline` | 0.95 | 近 10 日借券賣出餘額均 / 前 30 日均 ≤ N |
 | (固定) | 收盤 ≥ MA60 | 收盤價站上季線（quarterly MA） |
-| `--ma-trend-days` | 10 | 季線上揚比較天數（MA60 今 vs MA60 N td 前） |
+| `--ma-accel-days` | 5 | 曲率比較窗口（近 5td 斜率 vs 前 5td 斜率） |
+| `--ma-curv-ratio` | 0.5 | 曲率寬鬆度。slope_recent ≥ ratio × slope_earlier。1.0=嚴格加速、0.5=允許動能減半（預設）、0.0=只要求斜率為正 |
 
 ### 資料來源
 | 指標 | 來源 |
