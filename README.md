@@ -508,8 +508,11 @@ python3 ~/project/tw_stock_tools/tw_us_correlation.py --list
 | 季毛利率 | FinMind `TaiwanStockFinancialStatements`（Revenue + GrossProfit） |
 | 量能 | Yahoo Finance（6mo 日線） |
 | 借券賣出餘額 | FinMind `TaiwanDailyShortSaleBalances` 的 `SBLShortSalesCurrentDayBalance` |
+| 借券交易量（proxy） | FinMind `TaiwanStockSecuritiesLending` aggregated daily |
 
-注意：融券餘額（`MarginShortSalesCurrentDayBalance`）也會抓但只顯示作參考，不納入過濾。設計上「借券賣出餘額」是法人空方主戰場，融券是散戶/投機部位，兩者邏輯不同。
+注意：
+- 融券餘額（`MarginShortSalesCurrentDayBalance`）也會抓但只顯示作參考，不納入過濾。設計上「借券賣出餘額」是法人空方主戰場，融券是散戶/投機部位，兩者邏輯不同。
+- 借券餘額（gross outstanding）TWSE 不公開逐日資料，本工具改抓「借券交易量」作為 proxy 顯示。借券賣出餘額減少 + 借券交易量也減少 = 空方收手；借券賣出餘額減少但借券交易量增加 = 法人換手，需警覺。
 
 ### 使用方式
 ```bash

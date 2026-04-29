@@ -15,6 +15,8 @@
   量能：Yahoo Finance（同 concept_momentum/data_fetcher.py）
   借券賣出餘額：FinMind TaiwanDailyShortSaleBalances 的 SBLShortSalesCurrentDayBalance 欄
                 融券餘額（MarginShortSalesCurrentDayBalance）也一併抓但只顯示不過濾
+                借券餘額（gross outstanding，TWSE 不公開逐日）改用 借券交易量
+                作為 proxy（FinMind TaiwanStockSecuritiesLending）
 
 Usage:
   python3 tw_turnaround_screener.py
@@ -162,6 +164,59 @@ def volume_passes(rows: list[dict], min_ratio: float):
 # ============================================================
 # Filter C: SBL outstanding balance decline
 # ============================================================
+
+def fetch_lending_flow(code: str, token: str = "") -> dict:
+    """Fetch 借券交易（borrow transactions）flow from FinMind. Used as a proxy
+    for 借券餘額 (gross outstanding) trend, since TWSE doesn't publicly expose
+    per-stock gross outstanding daily.
+
+    Returns {avg10, avg_prior30} (張) — last 10 td vs prior 30 td borrow volume.
+    Higher recent = more new borrows being booked (potential future shorts).
+    Lower recent = borrowing slowing down."""
+    cache_path = os.path.join(CACHE_DIR, f"lend_{code}_{datetime.now().strftime('%Y%m%d')}.json")
+    if os.path.exists(cache_path):
+        with open(cache_path) as f:
+            return json.load(f)
+
+    end = datetime.now().strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=80)).strftime("%Y-%m-%d")
+    params = urllib.parse.urlencode({
+        "dataset": "TaiwanStockSecuritiesLending",
+        "data_id": code,
+        "start_date": start,
+        "end_date": end,
+    })
+    url = f"https://api.finmindtrade.com/api/v4/data?{params}"
+    if token:
+        url += f"&token={token}"
+    data = http_json(url)
+    result = {"avg10": 0, "avg_prior30": 0}
+    if not data or data.get("msg") != "success":
+        with open(cache_path, "w") as f:
+            json.dump(result, f)
+        return result
+    # Aggregate per date
+    by_date: dict[str, int] = {}
+    for r in data.get("data", []):
+        d = r.get("date")
+        v = r.get("volume", 0) or 0
+        if d:
+            by_date[d] = by_date.get(d, 0) + v  # already in 張 (lots)
+    if not by_date:
+        with open(cache_path, "w") as f:
+            json.dump(result, f)
+        return result
+    sorted_dates = sorted(by_date.keys())
+    last10 = sorted_dates[-10:]
+    prior30 = sorted_dates[-40:-10] if len(sorted_dates) >= 40 else sorted_dates[:-10]
+    if last10:
+        result["avg10"] = sum(by_date[d] for d in last10) / len(last10)
+    if prior30:
+        result["avg_prior30"] = sum(by_date[d] for d in prior30) / len(prior30)
+    with open(cache_path, "w") as f:
+        json.dump(result, f)
+    return result
+
 
 def fetch_short_balance(code: str, token: str = "") -> list[dict]:
     """Fetch ~80 days of 借券賣出餘額 (SBLShortSalesCurrentDayBalance) from FinMind.
@@ -311,16 +366,20 @@ def main():
             continue
         counts["AB"] += 1
 
-        # Filter C: total short balance (融券 + 借券賣出)
+        # Filter C: 借券賣出餘額 (SBL only)
         shorts = fetch_short_balance(code, args.token)
         ok_c, m_c = short_passes(shorts, args.sbl_decline)
         if not ok_c:
             continue
         counts["ABC"] += 1
 
+        # Reference: 借券交易量 trend (proxy for gross 借券餘額)
+        lending_flow = fetch_lending_flow(code, args.token)
+
         survivors.append({
             "code": code, "name": name,
             "margin": m_a, "volume": m_b, "short": m_c,
+            "lending_flow": lending_flow,
             "market": info.get("market", ""),
         })
 
@@ -367,6 +426,14 @@ def main():
                       if b['margin_prior'] > 0 else 0)
         print(f"  （參考）融券：近 10d 均 {b['margin_last']:.0f} 張 vs 前 30d 均 "
               f"{b['margin_prior']:.0f} 張  →  {mgn_change:+.1f}%")
+        # 借券交易量 (proxy for gross 借券餘額 trend)
+        lf = s.get("lending_flow", {"avg10": 0, "avg_prior30": 0})
+        if lf["avg_prior30"] > 0:
+            lf_change = (lf["avg10"] / lf["avg_prior30"] - 1) * 100
+            print(f"  （參考）借券交易量：近 10d 均 {lf['avg10']:.0f} 張 vs 前 30d 均 "
+                  f"{lf['avg_prior30']:.0f} 張  →  {lf_change:+.1f}%")
+        else:
+            print(f"  （參考）借券交易量：資料不足（近 10d 均 {lf['avg10']:.0f} 張）")
 
 
 if __name__ == "__main__":
