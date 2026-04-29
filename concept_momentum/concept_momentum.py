@@ -184,8 +184,11 @@ def normalize(value: float, min_v: float, max_v: float) -> float:
     return max(0.0, min(100.0, (value - min_v) / (max_v - min_v) * 100))
 
 
-def extract_leaders(concept_stocks: list[dict], top_n: int = 5) -> list[dict]:
-    """Identify top N leader stocks: sort by 20d return desc, filter 5d return > 0."""
+LEADER_MIN_RET_5D = -5.0  # %; threshold splitting leaders from laggards
+
+
+def _score_concept_members(concept_stocks: list[dict]) -> list[dict]:
+    """Compute per-stock metrics (5d/20d return, vol ratio) for ranking."""
     candidates = []
     for s in concept_stocks:
         rows = s.get("rows", [])
@@ -195,7 +198,6 @@ def extract_leaders(concept_stocks: list[dict], top_n: int = 5) -> list[dict]:
         volumes = [r["volume"] for r in rows]
         ret_5d = pct_change(closes, 5)
         ret_20d = pct_change(closes, 20)
-        # volume ratio: last 5d avg / last 20d avg
         vol5 = sum(volumes[-5:]) / 5 if volumes else 0
         vol20 = sum(volumes[-20:]) / 20 if volumes else 0
         vol_ratio = vol5 / vol20 if vol20 > 0 else 1.0
@@ -208,14 +210,26 @@ def extract_leaders(concept_stocks: list[dict], top_n: int = 5) -> list[dict]:
             "ret_20d": ret_20d,
             "vol_ratio": vol_ratio,
         })
+    return candidates
 
-    # Filter: 5d > 0 (still up short-term), sort by 20d desc
-    filtered = [c for c in candidates if c["ret_5d"] > 0]
-    if len(filtered) < top_n:
-        # Fallback: no 5d filter
-        filtered = candidates
+
+def extract_leaders(concept_stocks: list[dict], top_n: int = 5) -> list[dict]:
+    """Top N leaders: 5d > LEADER_MIN_RET_5D, sorted by 20d desc.
+    Long candidates for pairs trading."""
+    candidates = _score_concept_members(concept_stocks)
+    filtered = [c for c in candidates if c["ret_5d"] > LEADER_MIN_RET_5D]
     filtered.sort(key=lambda x: x["ret_20d"], reverse=True)
     return filtered[:top_n]
+
+
+def extract_laggards(concept_stocks: list[dict], top_n: int = 5) -> list[dict]:
+    """Bottom N laggards: 5d <= LEADER_MIN_RET_5D, sorted by 5d asc (worst first).
+    Short candidates for pairs trading — long leaders / short laggards inside
+    the same concept hedges away most beta + sector risk."""
+    candidates = _score_concept_members(concept_stocks)
+    laggards = [c for c in candidates if c["ret_5d"] <= LEADER_MIN_RET_5D]
+    laggards.sort(key=lambda x: x["ret_5d"])
+    return laggards[:top_n]
 
 
 def analyze_concept(theme_key: str, theme_info: dict, stocks_data: dict, taiex_rows: list[dict]) -> dict:
@@ -270,8 +284,9 @@ def analyze_concept(theme_key: str, theme_info: dict, stocks_data: dict, taiex_r
         0.20 * duration_score
     )
 
-    # Top 5 leader stocks
+    # Top 5 leaders + bottom 5 laggards (for pairs trading)
     leaders = extract_leaders(concept_stocks, top_n=5)
+    laggards = extract_laggards(concept_stocks, top_n=5)
 
     # Stable equal-weighted index over ALL members (no liquidity filter, no
     # turnover weighting) — used by rerating_detector so correlations don't
@@ -303,6 +318,7 @@ def analyze_concept(theme_key: str, theme_info: dict, stocks_data: dict, taiex_r
         "sustainability_score": sustainability_score,
         "concept_index": concept_index,
         "leaders": leaders,
+        "laggards": laggards,
     }
 
 

@@ -283,16 +283,16 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str)
     )
     index_html = fig3.to_html(include_plotlyjs=False, div_id="index", full_html=False)
 
-    # ============ Leaders table ============
-    leader_sections = ""
-    high_results = [r for r in results if r["sustainability_score"] >= 70]
-    for r in high_results:
-        rows_html = ""
-        for L in r.get("leaders", []):
+    # ============ Leaders + Laggards table (pairs trading view) ============
+    def _member_rows(members, side):
+        out = ""
+        for L in members:
             five_class = "pos" if L["ret_5d"] > 0 else "neg"
             twenty_class = "pos" if L["ret_20d"] > 0 else "neg"
-            rows_html += f"""
-            <tr>
+            tag = "🟢 多" if side == "leader" else "🔴 空"
+            out += f"""
+            <tr class="row-{side}">
+                <td>{tag}</td>
                 <td>{L['code']}</td>
                 <td>{L['name']}</td>
                 <td>[{L['market']}]</td>
@@ -301,10 +301,24 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str)
                 <td class="{twenty_class}">{L['ret_20d']:+.2f}%</td>
                 <td>{L['vol_ratio']:.2f}x</td>
             </tr>"""
+        return out
+
+    leader_sections = ""
+    high_results = [r for r in results if r["sustainability_score"] >= 50]
+    for r in high_results:
+        leaders = r.get("leaders", [])
+        laggards = r.get("laggards", [])
+        if not leaders and not laggards:
+            continue
+        rows_html = _member_rows(leaders, "leader") + _member_rows(laggards, "laggard")
+        pair_hint = ""
+        if leaders and laggards:
+            pair_hint = (f" <span class=\"badge\">配對：多 {leaders[0]['code']} "
+                         f"／ 空 {laggards[0]['code']}</span>")
         leader_sections += f"""
-        <h3>{r['name_zh']} <span class="badge">評分 {r['sustainability_score']:.0f}</span></h3>
+        <h3>{r['name_zh']} <span class="badge">評分 {r['sustainability_score']:.0f}</span>{pair_hint}</h3>
         <table class="leader-table">
-            <thead><tr><th>代號</th><th>名稱</th><th>市場</th><th>現價</th><th>5d%</th><th>20d%</th><th>量比</th></tr></thead>
+            <thead><tr><th>方向</th><th>代號</th><th>名稱</th><th>市場</th><th>現價</th><th>5d%</th><th>20d%</th><th>量比</th></tr></thead>
             <tbody>{rows_html}</tbody>
         </table>"""
 
@@ -351,6 +365,10 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str)
   .score-mid {{ background: #ff7f0e; color: white; font-weight: bold; text-align: center; }}
   .score-low {{ background: #e0e0e0; text-align: center; }}
   .leader-table th {{ background: #444; font-size: 13px; }}
+  .row-leader {{ background: #fff5f5; }}
+  .row-laggard {{ background: #f0fdf4; }}
+  .row-leader:hover {{ background: #ffe0e0; }}
+  .row-laggard:hover {{ background: #d4f4dc; }}
   .meta {{ color: #666; font-size: 14px; margin-bottom: 20px; }}
   .tabs {{ display: flex; gap: 8px; margin-bottom: 16px; }}
   .tab {{ padding: 10px 20px; background: #e0e0e0; border-radius: 8px 8px 0 0; cursor: pointer; user-select: none; }}
@@ -374,8 +392,8 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str)
 <div id="tab-snap" class="tab-content active chart-wrap">{snapshot_html}</div>
 <div id="tab-trend" class="tab-content chart-wrap">{trend_html}{index_html}</div>
 <div id="tab-leaders" class="tab-content chart-wrap">
-  <h2>高動能族群的 Top 5 領漲股（評分 ≥70）</h2>
-  <p class="meta">篩選規則：5 日漲幅 &gt;0（短線續強），依 20 日漲幅排序</p>
+  <h2>族群領漲股 + 弱勢成員（評分 ≥50，可配對交易）</h2>
+  <p class="meta">🟢 多：5d &gt; -5%，依 20d 漲幅排序前 5；🔴 空：5d ≤ -5%，依 5d 跌幅最深排序前 5</p>
   {leader_sections if leader_sections else '<p>今日無評分 ≥70 的高動能族群</p>'}
 </div>
 <div id="tab-full" class="tab-content">
