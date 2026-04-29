@@ -7,6 +7,7 @@
   B. 量能：近 20 td 平均量 ≥ 近 60 td 平均量 × 1.3
   C. 借券賣出餘額回補：近 10 td 借券賣出餘額均值 ≤ 前 30 td 平均 × 0.95
      （融券餘額僅作參考顯示，不納入過濾條件）
+  D. 季線多頭排列：收盤 ≥ 60 日均線 且 60 日均線（vs 10 td 前）上揚
 
 預設掃描 concepts.json 裡 ~190 檔（避免太慢；可改 --universe all 全市場）。
 
@@ -159,6 +160,32 @@ def volume_passes(rows: list[dict], min_ratio: float):
     v60 = sum(vols) / 60 / 1000
     ratio = v20 / v60 if v60 > 0 else 0
     return (ratio >= min_ratio), {"v20": v20, "v60": v60, "ratio": ratio}
+
+
+def ma60_passes(rows: list[dict], trend_days: int = 10):
+    """季線多頭排列：收盤 ≥ MA60，且 MA60 較 trend_days 前上揚。
+    Returns (bool, dict)."""
+    if len(rows) < 60 + trend_days:
+        return False, {"reason": "資料不足"}
+    closes = [r.get("close") for r in rows if r.get("close")]
+    if len(closes) < 60 + trend_days:
+        return False, {"reason": "資料不足"}
+    ma60_today = sum(closes[-60:]) / 60
+    ma60_prev = sum(closes[-60 - trend_days:-trend_days]) / 60
+    last_close = closes[-1]
+    above_ma = last_close >= ma60_today
+    rising = ma60_today > ma60_prev
+    pct_above = (last_close / ma60_today - 1) * 100 if ma60_today > 0 else 0
+    pct_slope = (ma60_today / ma60_prev - 1) * 100 if ma60_prev > 0 else 0
+    return (above_ma and rising), {
+        "close": last_close,
+        "ma60": ma60_today,
+        "ma60_prev": ma60_prev,
+        "pct_above": pct_above,
+        "pct_slope": pct_slope,
+        "above_ma": above_ma,
+        "rising": rising,
+    }
 
 
 # ============================================================
@@ -328,6 +355,8 @@ def main():
                     help="20d/60d 成交量比門檻（預設 1.3）")
     ap.add_argument("--sbl-decline", type=float, default=0.95,
                     help="借券賣出餘額 10d/30d-prior 比門檻（預設 0.95，需 ≤ 此值）")
+    ap.add_argument("--ma-trend-days", type=int, default=10,
+                    help="季線（MA60）上揚比較天數（預設 10td 前 vs 今）")
     ap.add_argument("--universe", default="concepts",
                     help="掃描範圍：concepts(預設) / all / 逗號分隔代號")
     ap.add_argument("--token", default=os.environ.get("FINMIND_TOKEN", ""),
@@ -339,11 +368,11 @@ def main():
     if not args.quiet:
         print(f"掃描範圍：{len(universe)} 檔", file=sys.stderr)
         print(f"門檻：GM Δ≥{args.gm_pp}pp / QoQ≥{args.gm_qoq} / "
-              f"Vol 20d/60d≥{args.vol_ratio} / 借券賣出 10d/prior≤{args.sbl_decline}",
-              file=sys.stderr)
+              f"Vol 20d/60d≥{args.vol_ratio} / 借券賣出 10d/prior≤{args.sbl_decline} / "
+              f"收盤≥MA60 且 MA60 較 {args.ma_trend_days}td 前上揚", file=sys.stderr)
 
     survivors = []
-    counts = {"start": len(universe), "A": 0, "AB": 0, "ABC": 0}
+    counts = {"start": len(universe), "A": 0, "AB": 0, "ABC": 0, "ABCD": 0}
 
     for i, (code, _) in enumerate(universe):
         if not args.quiet and i % 20 == 0:
@@ -373,18 +402,24 @@ def main():
             continue
         counts["ABC"] += 1
 
+        # Filter D: 季線多頭排列 (close ≥ MA60 AND MA60 rising)
+        ok_d, m_d = ma60_passes(info["rows"], trend_days=args.ma_trend_days)
+        if not ok_d:
+            continue
+        counts["ABCD"] += 1
+
         # Reference: 借券交易量 trend (proxy for gross 借券餘額)
         lending_flow = fetch_lending_flow(code, args.token)
 
         survivors.append({
             "code": code, "name": name,
-            "margin": m_a, "volume": m_b, "short": m_c,
+            "margin": m_a, "volume": m_b, "short": m_c, "ma": m_d,
             "lending_flow": lending_flow,
             "market": info.get("market", ""),
         })
 
     print(f"\n掃描結果：總 {counts['start']} → A:{counts['A']} → A+B:{counts['AB']}"
-          f" → A+B+C: {counts['ABC']} 檔")
+          f" → A+B+C:{counts['ABC']} → A+B+C+D: {counts['ABCD']} 檔")
     print()
     if not survivors:
         print("無候選 — 可調寬門檻（--gm-pp 1.0 / --vol-ratio 1.2 / --sbl-decline 0.98）")
@@ -397,23 +432,24 @@ def main():
     survivors.sort(key=score, reverse=True)
 
     print(f"{'代號':<6}{'名稱':<10}{'GM Δ':<10}{'QoQ':<6}"
-          f"{'Vol 20/60':<11}{'借券賣出 10/前30':<16}{'最新 GM':<8}")
+          f"{'Vol 20/60':<11}{'借券賣出':<11}{'季線':<10}{'最新 GM':<8}")
     print("-" * 65)
     for s in survivors:
-        m = s["margin"]; v = s["volume"]; b = s["short"]
+        m = s["margin"]; v = s["volume"]; b = s["short"]; ma = s["ma"]
         latest_gm = m["gms"][-1]
         print(f"{s['code']:<6}{s['name'][:8]:<10}"
               f"+{m['delta_pp']:>4.1f}pp  "
               f"{m['qoq_inc']}/3  "
               f"{v['ratio']:>4.2f}x      "
-              f"{b['ratio']:>4.2f}         "
+              f"{b['ratio']:>4.2f}      "
+              f"{ma['pct_above']:>+4.1f}%  "
               f"{latest_gm:>5.1f}%")
 
     # Detail
     print()
     print("【詳細】（filter 只看借券賣出餘額；融券僅顯示參考）")
     for s in survivors:
-        m = s["margin"]; v = s["volume"]; b = s["short"]
+        m = s["margin"]; v = s["volume"]; b = s["short"]; ma = s["ma"]
         gms_str = " → ".join(f"{g:.1f}%" for g in m["gms"])
         print(f"\n{s['code']} {s['name']} [{s['market']}]")
         print(f"  毛利率 4Q: {gms_str}  (Δ +{m['delta_pp']:.1f}pp, {m['qoq_inc']}/3 QoQ ↑)")
@@ -421,6 +457,9 @@ def main():
               f"{v['ratio']:.2f}x")
         print(f"  借券賣出：近 10d 均 {b['avg10']:.0f} 張 vs 前 30d 均 {b['avg_prior']:.0f} 張"
               f"  →  {b['ratio']:.2f}x ({(b['ratio']-1)*100:+.1f}%)")
+        print(f"  季線：收盤 {ma['close']:.2f} vs MA60 {ma['ma60']:.2f}"
+              f" ({ma['pct_above']:+.1f}%)，MA60 較前 {args.ma_trend_days}td 上揚 "
+              f"{ma['pct_slope']:+.1f}%")
         # margin (融券) display only
         mgn_change = ((b['margin_last'] / b['margin_prior'] - 1) * 100
                       if b['margin_prior'] > 0 else 0)
