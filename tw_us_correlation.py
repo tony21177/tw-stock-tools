@@ -144,23 +144,28 @@ def fetch_excess_series(ticker: str, market_ticker: str | None,
     return dict(zip(ds, ex))
 
 
-def fetch_tw_excess(code: str, raw: bool = False):
+def fetch_tw_excess(code: str, raw: bool = False, range_str: str = "6mo"):
     """Fetch TPE stock's returns. β-adjust vs ^TWII unless raw=True.
     Returns ({date: return}, name)."""
-    info = fetch_stock(code)
-    if not info or not info.get("rows"):
-        return {}, code
-    rows = info["rows"]
-    if len(rows) < 30:
-        return {}, info.get("name", code)
+    rows = []
+    name = code
+    for suffix in [".TW", ".TWO"]:
+        rows = fetch_yahoo(code + suffix, range_str)
+        if rows:
+            # We need the company name; fetch_stock returns it. Run once for name.
+            info = fetch_stock(code)
+            if info:
+                name = info.get("name", code)
+            break
+    if not rows or len(rows) < 30:
+        return {}, name
     closes = [r["close"] for r in rows if r.get("close")]
     rets = daily_returns(closes)
     dates = [r["date"] for r in rows if r.get("close")][1:]
-    name = info.get("name", code)
     if raw:
         return dict(zip(dates, rets)), name
 
-    twi_rows = fetch_yahoo("^TWII", "6mo")
+    twi_rows = fetch_yahoo("^TWII", range_str)
     twi_closes = [r["close"] for r in twi_rows if r.get("close")]
     twi_rets = daily_returns(twi_closes)
     twi_dates = [r["date"] for r in twi_rows if r.get("close")][1:]
@@ -198,14 +203,18 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("concept", nargs="?", help="台股概念 key（例：ASIC自研晶片）")
+    parser.add_argument("concept", nargs="?",
+                        help="台股概念 key（例：ASIC自研晶片）。省略+--peer 即進入掃描全市場模式。")
     parser.add_argument("--window", type=int, default=60,
                         help="相關係數計算視窗天數（預設 60）")
-    parser.add_argument("--peer", help="覆蓋預設美股 peer（單一 ticker）")
+    parser.add_argument("--peer", help="美股 peer ticker（覆蓋預設或啟用全掃模式）")
     parser.add_argument("--top", type=int, default=20, help="顯示前 N 檔")
     parser.add_argument("--raw", action="store_true",
                         help="使用原始報酬（不做 β 調整）— 直觀的「NVDA 漲台股也漲」"
                              "視角；預設 β 調整則只看「扣除大盤後仍同步」的部分")
+    parser.add_argument("--scan", action="store_true",
+                        help="掃描全部 34 個概念裡的所有股票，跟指定 --peer 算相關性。"
+                             "需搭配 --peer。省略 concept 直接 --peer X 也會自動進入掃全模式。")
     parser.add_argument("--list", action="store_true", help="列出所有概念與預設 peer")
     args = parser.parse_args()
 
@@ -221,34 +230,52 @@ def main():
             print(f"  {k:24s} ({len(v['stocks'])}檔) → {','.join(peers)}")
         return
 
-    if not args.concept:
-        parser.print_help()
+    # Decide mode: scan-all vs concept-scoped
+    scan_mode = args.scan or (not args.concept and args.peer)
+    if scan_mode and not args.peer:
+        print("--scan 必須搭配 --peer 指定一個美股 ticker")
         sys.exit(1)
 
-    if args.concept not in concepts["themes"]:
-        print(f"概念 '{args.concept}' 不存在")
-        print("用 --list 看所有可用概念")
-        sys.exit(1)
-
-    theme = concepts["themes"][args.concept]
-    stocks = theme["stocks"]
-
-    if args.peer:
+    if scan_mode:
+        # Build deduplicated stock list across all concepts, plus a code→concepts map
+        code_to_concepts: dict[str, list[str]] = {}
+        for k, v in concepts["themes"].items():
+            for s in v.get("stocks", []):
+                code_to_concepts.setdefault(s, []).append(k)
+        stocks = list(code_to_concepts.keys())
         us_peers = [args.peer]
+        title = f"全市場 ({len(stocks)} 檔)"
     else:
-        us_peers = US_PEERS.get(args.concept, [])
-        if not us_peers:
-            print(f"概念 '{args.concept}' 沒有預設美股 peer。用 --peer 指定")
+        if not args.concept:
+            parser.print_help()
             sys.exit(1)
+        if args.concept not in concepts["themes"]:
+            print(f"概念 '{args.concept}' 不存在")
+            print("用 --list 看所有可用概念")
+            sys.exit(1)
+        theme = concepts["themes"][args.concept]
+        stocks = theme["stocks"]
+        code_to_concepts = None
+        if args.peer:
+            us_peers = [args.peer]
+        else:
+            us_peers = US_PEERS.get(args.concept, [])
+            if not us_peers:
+                print(f"概念 '{args.concept}' 沒有預設美股 peer。用 --peer 指定")
+                sys.exit(1)
+        title = theme["name_zh"]
 
     mode = "原始報酬（不扣大盤 β）" if args.raw else "β 調整：TPE 對 ^TWII / US 對 ^GSPC"
-    print(f"=== {theme['name_zh']} vs {','.join(us_peers)} ===")
+    print(f"=== {title} vs {','.join(us_peers)} ===")
     print(f"視窗：{args.window} 個 TPE 交易日 | {mode} | 配對：TPE D ↔ US D-1\n")
+
+    # Auto-extend Yahoo range to cover the requested window (default 6mo ≈ 130 td)
+    yahoo_range = "1y" if args.window > 100 else "6mo"
 
     market_us = None if args.raw else "^GSPC"
     us_excess = {}
     for p in us_peers:
-        ex = fetch_excess_series(p, market_us, "6mo")
+        ex = fetch_excess_series(p, market_us, yahoo_range)
         if ex:
             us_excess[p] = ex
         else:
@@ -261,7 +288,7 @@ def main():
     # Fetch each TPE stock, compute lagged correlation per peer
     rows_out = []
     for code in stocks:
-        tw_map, name = fetch_tw_excess(code, raw=args.raw)
+        tw_map, name = fetch_tw_excess(code, raw=args.raw, range_str=yahoo_range)
         if not tw_map:
             continue
         # Take last `window` days
@@ -298,8 +325,10 @@ def main():
     for p in us_peers:
         header += f"{p:<{col_w}}"
     header += "max"
+    if scan_mode:
+        header += "  概念"
     print(header)
-    print("-" * (8 + name_w + col_w * len(us_peers) + 6))
+    print("-" * (8 + name_w + col_w * len(us_peers) + 6 + (20 if scan_mode else 0)))
 
     for code, name, corrs in rows_out[:args.top]:
         line = f"{code:<8}{name[:name_w-1]:<{name_w}}"
@@ -315,6 +344,10 @@ def main():
             mc = max(cs_vals)
             tag = "🟢" if mc >= 0.6 else "🟡" if mc >= 0.3 else "⚪"
             line += f" {tag}{mc:+.2f}"
+        if scan_mode and code_to_concepts:
+            cc = code_to_concepts.get(code, [])
+            cc_short = "/".join([k.split("_")[0] for k in cc[:2]])
+            line += f"  {cc_short}"
         print(line)
 
     print(f"\n🟢 ≥0.6 強相關 / 🟡 0.3–0.6 中等 / ⚪ <0.3 弱相關")
