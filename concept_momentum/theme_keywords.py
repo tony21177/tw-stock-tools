@@ -18,10 +18,22 @@ THEME_KEYWORDS = {
         "CPO", "矽光子", "Co-Packaged", "光通訊", "光收發", "光模組",
         "三五族", "InP", "矽光", "光晶片",
     ],
-    "AI伺服器": [
+    "AI伺服器_ODM": [
         "AI伺服器", "AI Server", "GB200", "GB300", "Blackwell", "Hopper",
         "輝達伺服器", "資料中心", "AI 機架", "DGX", "HGX", "Foxconn AI",
-        "NVL", "AI 主板",
+        "NVL", "AI 主板", "AI ODM", "伺服器組裝", "機架式伺服器",
+    ],
+    "AI伺服器_電源": [
+        "伺服器電源", "PSU", "電源供應器", "DC-DC", "BBU", "備援電池",
+        "資料中心電源", "整流器", "Rectifier", "電源模組", "OCP 電源",
+    ],
+    "AI伺服器_線材連接": [
+        "高速連接", "Connector", "高速連接器", "Cable", "高速線材", "DAC",
+        "AEC", "Backplane", "I/O 連接", "Twinax", "高速傳輸線",
+    ],
+    "NVIDIA供應鏈": [
+        "輝達", "NVIDIA", "Jensen", "黃仁勳", "GB200", "GB300", "Blackwell",
+        "Rubin", "GTC", "DGX", "NVL72", "NVL36", "Spectrum-X",
     ],
     "ASIC自研晶片": [
         "ASIC", "自研晶片", "自研 AI", "TPU", "Trainium", "MTIA",
@@ -51,9 +63,14 @@ THEME_KEYWORDS = {
         "軍工", "國防", "Defense", "軍用", "戰機", "導彈", "雷達",
         "潛艦", "海巡", "F-16", "天弓",
     ],
-    "機器人": [
-        "機器人", "Robot", "Humanoid", "人形機器人", "Optimus",
-        "工業機器人", "服務型機器人", "Tesla 機器人", "雙足機器人",
+    "機器人_人形": [
+        "人形機器人", "Humanoid", "Optimus", "Tesla 機器人", "雙足機器人",
+        "Figure", "1X", "Boston Dynamics", "減速機", "滾珠螺桿", "諧波減速",
+    ],
+    "機器人_工業自動化": [
+        "工業機器人", "工業自動化", "Industrial Robot", "AMHS", "AGV",
+        "PLC", "工控", "智慧工廠", "Smart Factory", "服務型機器人",
+        "協作機器人", "Cobot",
     ],
     "無人機": [
         "無人機", "UAV", "Drone", "無人載具", "軍規無人機",
@@ -123,6 +140,15 @@ THEME_KEYWORDS = {
     "半導體設備": [
         "半導體設備", "蝕刻", "微影", "CMP", "EUV",
         "Lam", "AMAT", "ASML", "曝光機",
+    ],
+    "SiC功率元件": [
+        "SiC", "碳化矽", "Silicon Carbide", "GaN", "氮化鎵", "功率元件",
+        "Power Device", "MOSFET", "IGBT", "高壓 EV", "800V 平台",
+        "寬能隙",
+    ],
+    "晶圓代工": [
+        "晶圓代工", "晶圓廠", "Foundry", "Fab", "TSMC", "台積電",
+        "GlobalFoundries", "聯電", "世界先進", "力積電",
     ],
     "光學鏡頭": [
         "光學鏡頭", "鏡頭模組", "光學元件", "Lens", "Optical",
