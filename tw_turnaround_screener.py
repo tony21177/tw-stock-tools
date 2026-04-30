@@ -129,20 +129,24 @@ def fetch_quarterly_margins(code: str, token: str = "") -> list[dict]:
 
 
 def margin_passes(margins: list[dict], min_delta_pp: float, min_qoq_inc: int):
-    """Check 4-quarter trend. Returns (bool, dict_of_metrics)."""
+    """Check 4-quarter trend. Returns (bool, dict_of_metrics).
+    Reject any stock where any of the 4 quarters has GM < 0% (likely 會計異常:
+    處分損失、單季虧損、重列等 — 不適合做趨勢比較)."""
     if len(margins) < 4:
         return False, {"reason": "資料不足"}
     last4 = margins[-4:]
     gms = [m["gross_margin"] for m in last4]
-    delta = gms[-1] - gms[0]
-    qoq_inc = sum(1 for i in range(1, 4) if gms[i] > gms[i - 1])
     metrics = {
         "gms": gms,
-        "delta_pp": delta,
-        "qoq_inc": qoq_inc,
+        "delta_pp": gms[-1] - gms[0],
+        "qoq_inc": sum(1 for i in range(1, 4) if gms[i] > gms[i - 1]),
         "dates": [m["date"] for m in last4],
     }
-    return (delta >= min_delta_pp and qoq_inc >= min_qoq_inc), metrics
+    if any(g < 0 for g in gms):
+        metrics["reason"] = "任一季 GM < 0% (會計異常)"
+        return False, metrics
+    return (metrics["delta_pp"] >= min_delta_pp and
+            metrics["qoq_inc"] >= min_qoq_inc), metrics
 
 
 # ============================================================

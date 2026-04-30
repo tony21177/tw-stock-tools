@@ -501,6 +501,7 @@ python3 ~/project/tw_stock_tools/tw_us_correlation.py --list
 |------|--------|------|
 | `--gm-pp` | 1.5 | GM_Q-0 - GM_Q-3 ≥ N pp（4 季累積增幅） |
 | `--gm-qoq` | 2 | 4 季中至少 N 次 QoQ 增長 |
+| (固定) | 4 季 GM 均 ≥ 0% | 排除任一季 GM < 0% 的股票（避免處分損失/單季虧損等會計異常造成的假信號，例如 2527 宏璟 Q-2 GM -482%） |
 | `--vol-ratio` | 1.3 | 近 20 日均量 / 近 60 日均量 ≥ N |
 | `--sbl-decline` | 0.95 | 近 10 日借券賣出餘額均 / 前 30 日均 ≤ N |
 | (固定) | 收盤 ≥ MA60 | 收盤價站上季線（quarterly MA） |
