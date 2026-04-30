@@ -1,6 +1,6 @@
 # 台股借券 / 融資 / 籌碼 / 概念動能分析工具組
 
-九大功能：
+十大功能：
 
 1. 借券議借異常監控（每日排程推送）→ `tw_lending_monitor.py`
 2. 借券賣出餘額大幅減少監控（每日排程推送）→ `tw_lending_monitor.py`
@@ -11,6 +11,7 @@
 7. **概念動能監控 + Rerating 偵測（每日排程推送 PNG + 網頁儀表板）** → `concept_momentum/`
 8. **台股 ↔ 美股 peer 相關性查詢（CLI）** → `tw_us_correlation.py`
 9. **Turnaround 篩選器（毛利率改善 + 量能放大 + 借券回補）** → `tw_turnaround_screener.py`
+10. **漲停日訊號回測（每日排程推送 / 從前日籌碼判斷可前瞻 vs 純拉抬）** → `tw_limitup_signal.py`
 
 所有工具放在 `~/project/tw_stock_tools/`，cron 設定每天排程推送到 Telegram 群組。
 概念動能子模組詳見 `concept_momentum/README.md`。
@@ -569,6 +570,85 @@ python3 ~/project/tw_stock_tools/tw_turnaround_screener.py \
 
 ---
 
+## 9. `tw_limitup_signal.py` — 漲停日訊號回測
+
+### 用途
+每日 18:00 自動掃描當日所有漲停（≥9.5%），回看**前一個交易日**的四項訊號，
+快速辨識「事後可從前日籌碼預判」的接力型漲停 vs「純突發拉抬」型漲停，
+作為隔日判斷是否續攻 / 反向操作的依據。
+
+設計動機：4576 大銀微系統 (2026-04-30 漲停) 的事後回顧顯示前一日已有三項一致訊號
+(漲停接力 + 借券回補 + 外資集中買進)，可被前瞻識別。本工具將該模板自動化掃全市場。
+
+### 四項訊號（各 1 分，滿分 4）
+| 訊號 | 條件 | 含義 |
+|------|------|------|
+| **A 漲停接力** | 過去 3 日內 (不含今日) 任一日漲幅 ≥ +5% 或 ≥ +9.5% (漲停)，且前日盤中未崩 ≤-4% | 已有突破/強勢動能，今日漲停是接力而非孤立反彈 |
+| **B 借券回補** | 借券賣餘 3d 均 / 前 5d 均 ≤ 0.97 或前日單日 ≤ -3% | 空單在止血、空方信心動搖 |
+| **C 籌碼集中** | 7 天累積外資 (高盛/摩根/瑞銀/野村/JPM/花旗/美林等) ≥ 2 家 in top10 買超，或 top5 買超合計 ≥ top5 賣超合計 | 主流法人/外資進駐 |
+| **D 量能蓄勢** | 前日量 / 20d 均量 ≥ 1.0 或 / 60d 均量 ≥ 1.5 | 前日已有資金提前進場 |
+
+### 輸出分群
+- **4/4 ⭐⭐⭐⭐ 全訊號**：四項都滿足，最高品質前瞻訊號
+- **3/4 ⭐⭐⭐**：三項滿足，明確訊號
+- **2/4 ⭐⭐**：兩項滿足，列摘要 (one-line, 用旗標顯示哪些訊號)
+- **≤1/4**：純拉抬，僅列代碼（事後無前瞻訊號）
+
+### 資料來源
+| 指標 | 來源 |
+|------|------|
+| 漲停清單 | TWSE `MI_INDEX` (上市) + TPEx OpenAPI `tpex_mainboard_daily_close_quotes` (上櫃) |
+| 個股 OHLCV | Yahoo Finance (`.TW` / `.TWO`，3 個月) |
+| 借券賣出餘額 | FinMind `TaiwanDailyShortSaleBalances` (data_id 可在 register tier 用) |
+| 7 天分點 | HiStock `branch.aspx` 爬蟲 (與 `tw_broker_history_lookup` 共享 parser) |
+
+### 使用方式
+```bash
+# 預設掃當日全市場漲停股
+python3 ~/project/tw_stock_tools/tw_limitup_signal.py
+
+# 推送到 Telegram (cron 模式)
+TG_BOT_TOKEN=xxx FINMIND_TOKEN=yyy \
+  python3 ~/project/tw_stock_tools/tw_limitup_signal.py --telegram
+
+# 回測指定日期
+python3 ~/project/tw_stock_tools/tw_limitup_signal.py --date 2026-04-30
+
+# 調整漲幅門檻 (若想看 +5% 以上強勢股)
+python3 ~/project/tw_stock_tools/tw_limitup_signal.py --min-pct 5.0
+
+# 只掃前 N 檔測試
+python3 ~/project/tw_stock_tools/tw_limitup_signal.py --limit 5
+```
+
+### 排程（crontab）
+```cron
+# 每天 18:30 (Mon-Fri) 推送漲停訊號回測（避開 18:00 broker_monitor）
+30 18 * * 1-5 TG_BOT_TOKEN=... FINMIND_TOKEN=... /usr/bin/python3 \
+  /home/kun/project/tw_stock_tools/tw_limitup_signal.py --telegram \
+  >> /home/kun/project/tw_stock_tools/limitup_signal.log 2>&1
+```
+
+### 性能
+- 全市場 (~50 檔漲停) 平行掃描 (6 workers)：約 3-4 分鐘
+- HiStock 為主要瓶頸 (1-2 sec/req)，cache 設計按日期，當日重跑會即時返回
+
+### 限制
+- HiStock 7 天累積買賣超是時間範圍 (~4/22-4/29)，不是純粹「前一天」籌碼，但能補足 TWSE BSR 只有當日資料的限制
+- 4 項訊號是經驗法則 (基於 4576 case study)，未做大規模回測樣本內外驗證
+- D (量能) 對近期已大跌補量的股票 (e.g., 4576) 偏嚴，可能漏判 — 屬已知 false negative
+
+### 實例（2026-04-30 全市場掃描，50 檔漲停 / 12 檔 ≥3/4 訊號）
+**4/4 全訊號（4 檔）**
+- 3707 漢磊 (借券賣餘 -29.2%, 外資 6 家買超 6,639 vs 賣 1,489)
+- 3016 嘉晶 (前日量 5.1x 60d, 外資 5 家 GS+UBS+Merrill 包辦)
+- 4991 環宇-KY (借券賣餘 -3.7%, 前日量 5.6x 60d)
+- 2417 圓剛 (借券賣餘 -19.0%, 前日已連兩漲停)
+
+**3/4（8 檔，含 4576 大銀微系統）**：A+B+C 但量能未爆 / 或 A+C+D 但借券未明顯回補
+
+---
+
 ## 環境變數
 
 | 變數 | 用途 | 來源 |
@@ -593,7 +673,9 @@ python3 ~/project/tw_stock_tools/tw_turnaround_screener.py \
 ├── tw_broker_history_lookup.py # 個股 N 天累積分點查詢（HiStock 爬蟲，CLI）
 ├── tw_us_correlation.py       # 台股 ↔ 美股 peer 相關性查詢（CLI，β 調整 / 全市場掃描）
 ├── tw_turnaround_screener.py  # Turnaround 篩選（毛利率↑+量能↑+借券↓，CLI）
+├── tw_limitup_signal.py       # 漲停日訊號回測（每日 18:00 排程）
 ├── screener_cache/            # FinMind 季報 + 借券餘額快取（git ignore）
+├── limitup_cache/             # 漲停訊號工具快取（市場/個股/SBL/HiStock，git ignore）
 ├── concept_momentum/          # 概念動能子模組（詳見內部 README.md）
 ├── margin_cache/              # FinMind 融資快取（git ignore）
 │   └── finmind_{code}_{date}.json

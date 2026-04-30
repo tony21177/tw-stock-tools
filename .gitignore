@@ -29,3 +29,4 @@ concept_momentum/daily.log
 # BSR scraper cache
 bsr_cache/
 screener_cache/
+limitup_cache/
