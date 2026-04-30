@@ -1,6 +1,6 @@
 # 台股借券 / 融資 / 籌碼 / 概念動能分析工具組
 
-十大功能：
+十一大功能：
 
 1. 借券議借異常監控（每日排程推送）→ `tw_lending_monitor.py`
 2. 借券賣出餘額大幅減少監控（每日排程推送）→ `tw_lending_monitor.py`
@@ -11,7 +11,8 @@
 7. **概念動能監控 + Rerating 偵測（每日排程推送 PNG + 網頁儀表板）** → `concept_momentum/`
 8. **台股 ↔ 美股 peer 相關性查詢（CLI）** → `tw_us_correlation.py`
 9. **Turnaround 篩選器（毛利率改善 + 量能放大 + 借券回補）** → `tw_turnaround_screener.py`
-10. **漲停日訊號回測（每日排程推送 / 從前日籌碼判斷可前瞻 vs 純拉抬）** → `tw_limitup_signal.py`
+10. **ABCD 接力型訊號分析（CLI / 也可吃 Layer 1 candidates 做 Layer 2 過濾）** → `tw_limitup_signal.py`
+11. **每日兩層篩選工作流（19:00 cron）** → `tw_daily_screen.py`
 
 所有工具放在 `~/project/tw_stock_tools/`，cron 設定每天排程推送到 Telegram 群組。
 概念動能子模組詳見 `concept_momentum/README.md`。
@@ -570,15 +571,21 @@ python3 ~/project/tw_stock_tools/tw_turnaround_screener.py \
 
 ---
 
-## 9. `tw_limitup_signal.py` — 漲停日訊號回測
+## 9. `tw_limitup_signal.py` — ABCD 接力型訊號分析
 
 ### 用途
-每日 18:00 自動掃描當日所有漲停（≥9.5%），回看**前一個交易日**的四項訊號，
-快速辨識「事後可從前日籌碼預判」的接力型漲停 vs「純突發拉抬」型漲停，
-作為隔日判斷是否續攻 / 反向操作的依據。
+對輸入的股票清單做 ABCD 四面向訊號評分。兩種使用模式：
+
+**模式 1: Standalone 漲停掃描**
+無 `--codes` 參數時，掃當日全市場漲停股 (≥9.5%)，回看前一交易日訊號。
+適合事後分析「今日漲停的前日訊號是否齊備」。
+
+**模式 2: Layer 2 — 接力型過濾 (cron 用)**
+指定 `--codes` 或 `--codes-file` 時，對提供的清單 (通常來自 Layer 1 turnaround screener) 做 ABCD 評分，
+找出 Layer 1 候選中「明日續攻機率高」的子集。
 
 設計動機：4576 大銀微系統 (2026-04-30 漲停) 的事後回顧顯示前一日已有三項一致訊號
-(漲停接力 + 借券回補 + 外資集中買進)，可被前瞻識別。本工具將該模板自動化掃全市場。
+(漲停接力 + 借券回補 + 外資集中買進)，可被前瞻識別。本工具將該模板抽象為可複用的 ABCD 訊號層。
 
 ### 四項訊號（各 1 分，滿分 4）
 | 訊號 | 條件 | 含義 |
@@ -604,29 +611,34 @@ python3 ~/project/tw_stock_tools/tw_turnaround_screener.py \
 
 ### 使用方式
 ```bash
-# 預設掃當日全市場漲停股
+# Standalone: 掃當日全市場漲停股
 python3 ~/project/tw_stock_tools/tw_limitup_signal.py
 
-# 推送到 Telegram (cron 模式)
-TG_BOT_TOKEN=xxx FINMIND_TOKEN=yyy \
-  python3 ~/project/tw_stock_tools/tw_limitup_signal.py --telegram
+# Layer 2 模式: 對指定股票清單評分
+python3 ~/project/tw_stock_tools/tw_limitup_signal.py --codes 4576,3491,3406
+
+# Layer 2 模式: 從 JSON 檔吃 codes (通常 Layer 1 產生)
+python3 ~/project/tw_stock_tools/tw_limitup_signal.py --codes-file /tmp/layer1.json
+
+# 只列 ≥3/4 (更嚴格 Layer 2)
+python3 ~/project/tw_stock_tools/tw_limitup_signal.py --codes-file ... --min-score 3
+
+# 推送到 Telegram (--bot-token / TG_BOT_TOKEN)
+TG_BOT_TOKEN=xxx python3 ~/project/tw_stock_tools/tw_limitup_signal.py \
+  --codes 4576 --telegram
 
 # 回測指定日期
 python3 ~/project/tw_stock_tools/tw_limitup_signal.py --date 2026-04-30
 
-# 調整漲幅門檻 (若想看 +5% 以上強勢股)
-python3 ~/project/tw_stock_tools/tw_limitup_signal.py --min-pct 5.0
-
-# 只掃前 N 檔測試
-python3 ~/project/tw_stock_tools/tw_limitup_signal.py --limit 5
+# 自訂報告標題 (供 wrapper 用)
+python3 ~/project/tw_stock_tools/tw_limitup_signal.py --codes ... \
+  --header "🎯 Layer 2 — 自訂分析"
 ```
 
-### 排程（crontab）
+通常不直接 cron，由 `tw_daily_screen.py` 包裝呼叫。直接 standalone 排程也可：
 ```cron
-# 每天 18:30 (Mon-Fri) 推送漲停訊號回測（避開 18:00 broker_monitor）
-30 18 * * 1-5 TG_BOT_TOKEN=... FINMIND_TOKEN=... /usr/bin/python3 \
-  /home/kun/project/tw_stock_tools/tw_limitup_signal.py --telegram \
-  >> /home/kun/project/tw_stock_tools/limitup_signal.log 2>&1
+0 18 * * 1-5 TG_BOT_TOKEN=... FINMIND_TOKEN=... /usr/bin/python3 \
+  /home/kun/project/tw_stock_tools/tw_limitup_signal.py --telegram
 ```
 
 ### 性能
@@ -646,6 +658,78 @@ python3 ~/project/tw_stock_tools/tw_limitup_signal.py --limit 5
 - 2417 圓剛 (借券賣餘 -19.0%, 前日已連兩漲停)
 
 **3/4（8 檔，含 4576 大銀微系統）**：A+B+C 但量能未爆 / 或 A+C+D 但借券未明顯回補
+
+---
+
+## 10. `tw_daily_screen.py` — 每日兩層篩選工作流
+
+### 用途
+每日 19:00 (Mon-Fri) 自動執行兩階段篩選：
+
+**Layer 1** (`tw_turnaround_screener.py`)
+基本面 + 技術面初篩 — 毛利率改善 + 量能放大 + 借券回補 + 季線多頭
+全市場 ~3000 檔 → 數檔到數十檔 candidates
+
+**Layer 2** (`tw_limitup_signal.py --codes-file <layer1.json>`)
+對 Layer 1 候選做 ABCD 接力型訊號評分 — 找出「明日續攻機率最高」子集
+
+兩層結果都推送 Telegram，使用者隔日可用實際漲跌「後照鏡」驗證 Layer 2 嚴格度，
+逐步調整 ABCD 訊號條件。
+
+### 流程
+```
+19:00 cron
+  ↓
+Layer 1 (~30 min cached)
+  ├ tw_turnaround_screener --json-out /tmp/layer1.json --telegram
+  │   → 推送 Layer 1 表格摘要到 TG
+  ↓
+Layer 2 (~1-2 min for typical 4-10 candidates)
+  ├ tw_limitup_signal --codes-file /tmp/layer1.json --min-score 2 --telegram
+  │   → 推送 ABCD 評分結果到 TG (4/4/3/4/2/4 分級)
+  ↓
+完成
+```
+
+### 使用方式
+```bash
+# 預設模式：兩層都跑、推送 TG
+TG_BOT_TOKEN=xxx FINMIND_TOKEN=yyy \
+  python3 ~/project/tw_stock_tools/tw_daily_screen.py
+
+# 不推 TG (測試)
+python3 ~/project/tw_stock_tools/tw_daily_screen.py --no-tg
+
+# Layer 2 更嚴格 (只看 ≥3/4)
+python3 ~/project/tw_stock_tools/tw_daily_screen.py --layer2-min 3
+
+# 用 concepts universe (~190 檔，更快)
+python3 ~/project/tw_stock_tools/tw_daily_screen.py --universe concepts
+```
+
+### 排程（crontab）
+```cron
+# 每天 19:00 (Mon-Fri) 兩層篩選
+0 19 * * 1-5 TG_BOT_TOKEN=... FINMIND_TOKEN=... /usr/bin/python3 \
+  /home/kun/project/tw_stock_tools/tw_daily_screen.py \
+  >> /home/kun/project/tw_stock_tools/daily_screen.log 2>&1
+```
+
+### 為什麼分兩層？
+- **Layer 1 嚴格但靜態**：基本面 + 量能 + 借券 — 「值得關注」的池子，可能 4-30 檔
+- **Layer 2 動態 + 接力型**：在 Layer 1 池子內找「明日突破機率高」— 更積極
+- **後照鏡學習**：用實際漲跌結果驗證 Layer 2 訊號是否能 predict，逐步調 ABCD threshold
+
+### 實例（2026-04-30，--universe concepts）
+Layer 1 → 4 檔候選：3491 昇達科, 4576 大銀微系統, 3406 玉晶光, 6166 凌華
+
+Layer 2 → 4576 大銀微系統 3/4 ⭐⭐⭐ (今天剛好漲停 ✅ 印證)
+- A 近 3 日內漲停 +9.9%
+- B 前日借券賣餘 -3.7%
+- C 外資 3 家齊買 (高盛/MS/JPM)
+- D 量能未過門檻 (大銀微平日成交量低)
+
+3491 昇達科 / 3406 玉晶光 各 2/4，未達 ≥3/4 接力門檻。
 
 ---
 
@@ -673,7 +757,8 @@ python3 ~/project/tw_stock_tools/tw_limitup_signal.py --limit 5
 ├── tw_broker_history_lookup.py # 個股 N 天累積分點查詢（HiStock 爬蟲，CLI）
 ├── tw_us_correlation.py       # 台股 ↔ 美股 peer 相關性查詢（CLI，β 調整 / 全市場掃描）
 ├── tw_turnaround_screener.py  # Turnaround 篩選（毛利率↑+量能↑+借券↓，CLI）
-├── tw_limitup_signal.py       # 漲停日訊號回測（每日 18:00 排程）
+├── tw_limitup_signal.py       # ABCD 接力型訊號分析（standalone 漲停掃描 / Layer 2 用）
+├── tw_daily_screen.py         # 每日兩層篩選工作流（Layer 1 + Layer 2，19:00 cron）
 ├── screener_cache/            # FinMind 季報 + 借券餘額快取（git ignore）
 ├── limitup_cache/             # 漲停訊號工具快取（市場/個股/SBL/HiStock，git ignore）
 ├── concept_momentum/          # 概念動能子模組（詳見內部 README.md）

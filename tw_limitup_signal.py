@@ -560,7 +560,7 @@ def score_stock(code: str, name: str, target_date: str, token: str,
 def format_full(s: dict, change_pct: float, close: float) -> str:
     icon = lambda ok: "✅" if ok else "❌"
     return (
-        f"{s['code']} {s['name']} +{change_pct:.2f}% 收{close:.1f}\n"
+        f"{s['code']} {s['name']} {change_pct:+.2f}% 收{close:.1f}\n"
         f"  A {icon(s['a'][0])} {s['a'][1]}\n"
         f"  B {icon(s['b'][0])} {s['b'][1]}\n"
         f"  C {icon(s['c'][0])} {s['c'][1]}\n"
@@ -575,16 +575,23 @@ def format_compact(s: dict, change_pct: float) -> str:
     flags.append("B" if s['b'][0] else "·")
     flags.append("C" if s['c'][0] else "·")
     flags.append("D" if s['d'][0] else "·")
-    return f"  [{ ''.join(flags) }] {s['code']} {s['name']} +{change_pct:.1f}%"
+    return f"  [{ ''.join(flags) }] {s['code']} {s['name']} {change_pct:+.1f}%"
 
 
-def format_report(target_date: str, scored: list[tuple[dict, dict]]) -> str:
+def format_report(target_date: str, scored: list[tuple[dict, dict]],
+                  header: str = "", min_score: int = 0,
+                  source_label: str = "今日漲停") -> str:
     """scored: list of (limitup_info, score_dict)"""
-    lines = [f"🚀 漲停日訊號回測 {target_date}", ""]
+    title = header or f"🚀 ABCD 接力型訊號分析 {target_date}"
+    lines = [title, ""]
     n_total = len(scored)
     n_strong = sum(1 for _, s in scored if s["score"] >= 3)
-    lines.append(f"今日漲停 {n_total} 檔 / 含明確訊號 (≥3/4): {n_strong} 檔")
+    lines.append(f"{source_label} {n_total} 檔 / 含明確訊號 (≥3/4): {n_strong} 檔")
+    if min_score > 0:
+        lines.append(f"(只列分數 ≥ {min_score}/4)")
     lines.append("")
+    # Filter by min_score
+    scored = [(i, s) for i, s in scored if s["score"] >= min_score]
 
     by_score = {4: [], 3: [], 2: [], 1: [], 0: []}
     for info, s in scored:
@@ -660,9 +667,14 @@ def send_telegram(message: str, bot_token: str, chat_id: str) -> bool:
 # ============================================================
 
 def main():
-    p = argparse.ArgumentParser(description="漲停日訊號回測")
+    p = argparse.ArgumentParser(description="ABCD 接力型訊號分析")
     p.add_argument("--date", help="目標日期 YYYY-MM-DD（預設今日）")
     p.add_argument("--min-pct", type=float, default=9.5, help="漲幅門檻 (預設 9.5%)")
+    p.add_argument("--codes", help="逗號分隔代號清單；指定時跳過漲停掃描，直接對這些股票算 ABCD")
+    p.add_argument("--codes-file", help="從 JSON 檔讀代號 (格式: [{code, name, ...}, ...])")
+    p.add_argument("--min-score", type=int, default=0,
+                   help="只列分數 ≥ N 的股票 (Layer 2 嚴格度，預設 0 = 全部分級顯示)")
+    p.add_argument("--header", default="", help="自訂報告標題 (用於 wrapper)")
     p.add_argument("--token", default=os.environ.get("FINMIND_TOKEN", ""),
                    help="FinMind token (或 FINMIND_TOKEN 環境變數)")
     p.add_argument("--telegram", action="store_true", help="推送到 Telegram")
@@ -675,26 +687,68 @@ def main():
 
     target = args.date or datetime.now().strftime("%Y-%m-%d")
 
-    print(f"\n📅 掃描日期: {target}", file=sys.stderr)
-    print(f"📡 抓取全市場行情 ...", file=sys.stderr)
-    quotes = fetch_market_quotes(target, args.token)
-    if not quotes:
-        print("[ERROR] FinMind 無資料 (非交易日或 API 失敗)", file=sys.stderr)
-        sys.exit(1)
+    # Two modes: --codes/--codes-file (Layer 2 over given list) OR scan limit-up (standalone)
+    if args.codes or args.codes_file:
+        codes = []
+        if args.codes_file:
+            try:
+                with open(args.codes_file) as f:
+                    raw = json.load(f)
+                for item in raw:
+                    if isinstance(item, dict) and item.get("code"):
+                        codes.append((item["code"], item.get("name", item["code"])))
+                    elif isinstance(item, str):
+                        codes.append((item, _get_zh_name(item, item)))
+            except Exception as e:
+                print(f"[ERROR] 讀取 {args.codes_file} 失敗: {e}", file=sys.stderr)
+                sys.exit(1)
+        if args.codes:
+            for c in args.codes.split(","):
+                c = c.strip()
+                if c:
+                    codes.append((c, _get_zh_name(c, c)))
+        # Dedup
+        seen = set()
+        codes = [(c, n) for c, n in codes if not (c in seen or seen.add(c))]
 
-    limitup = find_limitup(quotes, args.min_pct)
-    print(f"✅ 找到 {len(limitup)} 檔漲停 (≥{args.min_pct:.1f}%)", file=sys.stderr)
+        if not codes:
+            print("[ERROR] --codes / --codes-file 未提供有效代號", file=sys.stderr)
+            sys.exit(1)
 
-    if args.limit > 0:
-        limitup = limitup[:args.limit]
-        print(f"   (限制掃前 {args.limit} 檔)", file=sys.stderr)
+        print(f"\n📅 分析日期: {target}", file=sys.stderr)
+        print(f"📋 從輸入清單分析 {len(codes)} 檔", file=sys.stderr)
+        # Build pseudo limitup info — we don't have the change_pct/close, fetch from price hist
+        limitup = []
+        for code, name in codes:
+            px = fetch_price_history(code, target, args.token)
+            close = px[-1]["close"] if px else 0
+            prev = px[-2]["close"] if len(px) >= 2 else 0
+            pct = (close - prev) / prev * 100 if prev > 0 else 0
+            limitup.append({
+                "code": code, "name": name, "close": close,
+                "change_pct": pct, "volume": 0, "market": "",
+            })
+    else:
+        print(f"\n📅 掃描日期: {target}", file=sys.stderr)
+        print(f"📡 抓取全市場行情 ...", file=sys.stderr)
+        quotes = fetch_market_quotes(target, args.token)
+        if not quotes:
+            print("[ERROR] 無資料 (非交易日或 API 失敗)", file=sys.stderr)
+            sys.exit(1)
 
-    if not limitup:
-        msg = f"📅 {target} 今日無漲停股 (≥{args.min_pct:.1f}%)"
-        print(msg)
-        if args.telegram and args.bot_token:
-            send_telegram(msg, args.bot_token, args.chat_id)
-        return
+        limitup = find_limitup(quotes, args.min_pct)
+        print(f"✅ 找到 {len(limitup)} 檔漲停 (≥{args.min_pct:.1f}%)", file=sys.stderr)
+
+        if args.limit > 0:
+            limitup = limitup[:args.limit]
+            print(f"   (限制掃前 {args.limit} 檔)", file=sys.stderr)
+
+        if not limitup:
+            msg = f"📅 {target} 今日無漲停股 (≥{args.min_pct:.1f}%)"
+            print(msg)
+            if args.telegram and args.bot_token:
+                send_telegram(msg, args.bot_token, args.chat_id)
+            return
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
     scored = []
@@ -715,7 +769,9 @@ def main():
     # Sort: score desc, change_pct desc within tie
     scored.sort(key=lambda x: (-x[1]["score"], -x[0]["change_pct"]))
 
-    report = format_report(target, scored)
+    source_label = "Layer 1 候選" if (args.codes or args.codes_file) else "今日漲停"
+    report = format_report(target, scored, header=args.header,
+                           min_score=args.min_score, source_label=source_label)
     print(report)
 
     if args.telegram:

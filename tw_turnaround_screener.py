@@ -422,6 +422,11 @@ def main():
     ap.add_argument("--token", default=os.environ.get("FINMIND_TOKEN", ""),
                     help="FinMind token（free tier 也可，但有 rate limit）")
     ap.add_argument("--quiet", action="store_true", help="不顯示掃描進度")
+    ap.add_argument("--json-out", help="把 survivors 結構化寫到檔案 (供 layer 2 讀取)")
+    ap.add_argument("--telegram", action="store_true", help="把表格摘要推送到 Telegram")
+    ap.add_argument("--bot-token", default=os.environ.get("TG_BOT_TOKEN", ""),
+                    help="Telegram Bot Token（或 TG_BOT_TOKEN 環境變數）")
+    ap.add_argument("--chat-id", default="-5229750819", help="Telegram chat_id")
     args = ap.parse_args()
 
     universe = load_universe(args.universe)
@@ -537,6 +542,74 @@ def main():
                   f"{lf['avg_prior30']:.0f} 張  →  {lf_change:+.1f}%")
         else:
             print(f"  （參考）借券交易量：資料不足（近 10d 均 {lf['avg10']:.0f} 張）")
+
+    # JSON output for downstream tools (layer 2)
+    if args.json_out:
+        out = []
+        for s in survivors:
+            m = s["margin"]; v = s["volume"]; b = s["short"]; ma = s["ma"]
+            out.append({
+                "code": s["code"], "name": s["name"], "market": s["market"],
+                "gm_delta_pp": m["delta_pp"], "gm_qoq_inc": m["qoq_inc"],
+                "gm_latest": m["gms"][-1] if m["gms"] else 0,
+                "vol_ratio": v["ratio"],
+                "sbl_ratio": b["ratio"],
+                "ma_pct_above": ma["pct_above"],
+                "ma_curving_up": ma["curving_up"],
+            })
+        with open(args.json_out, "w") as f:
+            json.dump(out, f, ensure_ascii=False, indent=2)
+        if not args.quiet:
+            print(f"\n[json-out] 寫入 {len(out)} 檔到 {args.json_out}", file=sys.stderr)
+
+    # Telegram push (table summary)
+    if args.telegram and survivors:
+        if not args.bot_token:
+            print("[ERROR] --telegram 需要 --bot-token 或 TG_BOT_TOKEN", file=sys.stderr)
+            sys.exit(1)
+        lines = [
+            f"📊 Layer 1 — Turnaround 篩選結果",
+            f"門檻: GM Δ≥{args.gm_pp}pp / QoQ≥{args.gm_qoq} / "
+            f"Vol≥{args.vol_ratio}x / SBL≤{args.sbl_decline} / MA60↑",
+            f"通過: {len(survivors)} 檔",
+            "",
+            f"{'代號':<6}{'名稱':<10}{'GM Δ':<9}{'Vol':<7}{'SBL':<7}{'季線':<8}",
+            "-" * 47,
+        ]
+        for s in survivors:
+            m = s["margin"]; v = s["volume"]; b = s["short"]; ma = s["ma"]
+            lines.append(
+                f"{s['code']:<6}{s['name'][:8]:<10}"
+                f"+{m['delta_pp']:>3.1f}pp  "
+                f"{v['ratio']:>4.2f}x  "
+                f"{b['ratio']:>4.2f}   "
+                f"{ma['pct_above']:>+4.1f}%"
+            )
+        msg = "\n".join(lines)
+        # Reuse simple sender
+        import urllib.parse as _up
+        max_len = 4000
+        chunks = [msg] if len(msg) <= max_len else []
+        if not chunks:
+            cur = ""
+            for line in msg.split("\n"):
+                if len(cur) + len(line) + 1 > max_len:
+                    chunks.append(cur); cur = line
+                else:
+                    cur = cur + "\n" + line if cur else line
+            if cur: chunks.append(cur)
+        for c in chunks:
+            try:
+                data = _up.urlencode({"chat_id": args.chat_id, "text": c}).encode()
+                req = urllib.request.Request(
+                    f"https://api.telegram.org/bot{args.bot_token}/sendMessage",
+                    data=data,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    r.read()
+            except Exception as e:
+                print(f"[ERROR] Telegram 送出失敗: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":
