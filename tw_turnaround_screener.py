@@ -443,51 +443,71 @@ def main():
 
     survivors = []
     counts = {"start": len(universe), "A": 0, "AB": 0, "ABC": 0, "ABCD": 0}
+    counts_lock = __import__("threading").Lock()
 
-    for i, (code, _) in enumerate(universe):
-        if not args.quiet and i % 20 == 0:
-            print(f"  [{i}/{len(universe)}] 掃描中 ({code})...", file=sys.stderr)
-
+    def process_one(code: str):
+        """Run A→B→C→D pipeline for one stock. Returns survivor dict or None."""
         # Filter A: gross margin
         margins = fetch_quarterly_margins(code, args.token)
         ok_a, m_a = margin_passes(margins, args.gm_pp, args.gm_qoq)
         if not ok_a:
-            continue
-        counts["A"] += 1
+            return None
+        with counts_lock:
+            counts["A"] += 1
 
-        # Filter B: volume (also need name from Yahoo)
+        # Filter B: volume + name from Yahoo
         info = fetch_stock_6mo(code)
         if not info or not info.get("rows"):
-            continue
+            return None
         name = info.get("name", code)
         ok_b, m_b = volume_passes(info["rows"], args.vol_ratio)
         if not ok_b:
-            continue
-        counts["AB"] += 1
+            return None
+        with counts_lock:
+            counts["AB"] += 1
 
         # Filter C: 借券賣出餘額 (SBL only)
         shorts = fetch_short_balance(code, args.token)
         ok_c, m_c = short_passes(shorts, args.sbl_decline)
         if not ok_c:
-            continue
-        counts["ABC"] += 1
+            return None
+        with counts_lock:
+            counts["ABC"] += 1
 
         # Filter D: 季線多頭排列 + 曲率不嚴重衰減
         ok_d, m_d = ma60_passes(info["rows"], accel_days=args.ma_accel_days,
                                   curvature_min_ratio=args.ma_curv_ratio)
         if not ok_d:
-            continue
-        counts["ABCD"] += 1
+            return None
+        with counts_lock:
+            counts["ABCD"] += 1
 
-        # Reference: 借券交易量 trend (proxy for gross 借券餘額)
+        # Reference: 借券交易量 trend
         lending_flow = fetch_lending_flow(code, args.token)
-
-        survivors.append({
+        return {
             "code": code, "name": name,
             "margin": m_a, "volume": m_b, "short": m_c, "ma": m_d,
             "lending_flow": lending_flow,
             "market": info.get("market", ""),
-        })
+        }
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    futures_done = 0
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        futs = {ex.submit(process_one, code): code for code, _ in universe}
+        for fut in as_completed(futs):
+            futures_done += 1
+            if not args.quiet and futures_done % 100 == 0:
+                print(f"  [{futures_done}/{len(universe)}] "
+                      f"A:{counts['A']} AB:{counts['AB']} ABC:{counts['ABC']} "
+                      f"ABCD:{counts['ABCD']}", file=sys.stderr)
+            try:
+                result = fut.result()
+                if result:
+                    survivors.append(result)
+            except Exception as e:
+                if not args.quiet:
+                    print(f"  [ERR] {futs[fut]}: {e}", file=sys.stderr)
 
     print(f"\n掃描結果：總 {counts['start']} → A:{counts['A']} → A+B:{counts['AB']}"
           f" → A+B+C:{counts['ABC']} → A+B+C+D: {counts['ABCD']} 檔")
