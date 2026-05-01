@@ -26,12 +26,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 from news_fetcher import fetch_news_for_stock
-from theme_keywords import THEME_KEYWORDS, count_theme_mentions
+from theme_keywords import (
+    THEME_KEYWORDS, count_theme_mentions, count_theme_mentions_detailed,
+)
 
 
 def detect_drift(concepts: dict, stocks_data: dict | None = None,
                  min_news: int = 5, drift_ratio: float = 1.5,
-                 min_top_count: int = 3) -> list[dict]:
+                 min_top_count: int = 3, min_kw_distinct: int = 2) -> list[dict]:
     """For each stock in concepts, fetch news, classify themes, find drift.
 
     Args:
@@ -95,17 +97,26 @@ def detect_drift(concepts: dict, stocks_data: dict | None = None,
                     t = t.replace(v, "")
             cleaned.append(t)
 
-        counts = count_theme_mentions(cleaned)
+        detailed = count_theme_mentions_detailed(cleaned)
+        counts = {k: v["count"] for k, v in detailed.items()}
         # Skip if no theme mentioned
         total_mentions = sum(counts.values())
         if total_mentions == 0:
             continue
 
-        # Top news-implied theme
+        # Top news-implied theme (excluding themes that hit only one keyword,
+        # which usually means same news repeated by multiple media — fake signal)
         sorted_themes = sorted(counts.items(), key=lambda x: -x[1])
-        top_theme, top_count = sorted_themes[0]
-        if top_count < min_top_count:
-            continue  # Not enough mentions to be meaningful signal
+        top_theme = None
+        top_count = 0
+        top_kws = []
+        for theme, cnt in sorted_themes:
+            if detailed[theme]["kw_distinct"] >= min_kw_distinct:
+                top_theme, top_count = theme, cnt
+                top_kws = detailed[theme]["kw_set"]
+                break
+        if top_theme is None or top_count < min_top_count:
+            continue  # Not enough mentions / diversity to be meaningful signal
 
         assigned = code_to_concepts[code]
         own_max_count = max((counts.get(k, 0) for k in assigned), default=0)
@@ -129,6 +140,7 @@ def detect_drift(concepts: dict, stocks_data: dict | None = None,
             "assigned": assigned,
             "news_top_theme": top_theme,
             "news_top_count": top_count,
+            "news_top_kws": top_kws,
             "own_max_count": own_max_count,
             "drift_ratio": ratio,
             "all_counts": dict(sorted_themes[:5]),

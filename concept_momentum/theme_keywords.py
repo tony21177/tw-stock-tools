@@ -57,8 +57,9 @@ THEME_KEYWORDS = {
     ],
     "重電_電網": [
         "重電", "電網", "變壓器", "輸配電", "電力設備", "智慧電網",
-        "台電", "GIS", "高壓電",
+        "GIS", "高壓電", "GIS 開關", "強韌電網", "饋線",
     ],
+    # 註：移除 "台電" — 台電會被無關公司新聞順帶提及（用電大戶、台電合約等）
     "軍工": [
         "軍工", "國防", "Defense", "軍用", "戰機", "導彈", "雷達",
         "潛艦", "海巡", "F-16", "天弓",
@@ -122,9 +123,11 @@ THEME_KEYWORDS = {
         "智慧座艙", "車內娛樂", "TPMS",
     ],
     "被動元件": [
-        "被動元件", "MLCC", "電感", "電阻", "電容",
-        "Murata", "國巨", "華新科",
+        "被動元件", "MLCC", "積層陶瓷", "鋁質電容", "鉭質電容",
+        "薄膜電阻", "電感器", "晶片電阻",
     ],
+    # 註：移除 "電感/電阻/電容/Murata/國巨/華新科"（單字過於泛用、公司名易誤匹配
+    # 為他人新聞中「順帶提到」的競爭對手）
     "Edge_AI": [
         "Edge AI", "邊緣運算", "On-device AI", "邊緣 AI",
         "終端 AI", "AIoT", "Edge Inference",
@@ -147,9 +150,14 @@ THEME_KEYWORDS = {
         "寬能隙",
     ],
     "晶圓代工": [
-        "晶圓代工", "晶圓廠", "Foundry", "Fab", "TSMC", "台積電",
-        "GlobalFoundries", "聯電", "世界先進", "力積電",
+        "晶圓代工", "晶圓廠", "Foundry", "晶圓投片", "晶圓良率",
+        "先進製程", "成熟製程", "代工製程", "N3", "N2", "N5",
     ],
+    # 註：刻意不收 "TSMC/台積電/聯電/世界先進/力積電" 等公司名 —
+    # 這些代工廠在台股新聞中被「順帶提及」的頻率太高（任何 fabless / IDM
+    # 客戶或供應商議題都會點到台積電），會把 IC 設計、封測、EMS 客戶等
+    # 不相干公司誤判為「主導主題＝晶圓代工」。同理也把 "Fab" 移除，
+    # 因為太短且常出現在 fabless / fab equipment 等非代工脈絡。
     "光學鏡頭": [
         "光學鏡頭", "鏡頭模組", "光學元件", "Lens", "Optical",
         "手機鏡頭", "玻璃鏡片",
@@ -177,6 +185,27 @@ def count_theme_mentions(news_titles: list[str], theme_keywords: dict = None) ->
             if any(_kw_matches(kw, title) for kw in keywords):
                 counts[theme_key] += 1
     return counts
+
+
+def count_theme_mentions_detailed(news_titles: list[str], theme_keywords: dict = None) -> dict:
+    """Like count_theme_mentions but also tracks which keywords matched per theme.
+    Returns {theme_key: {"count": N, "kw_distinct": M, "kw_set": set}}.
+
+    用途：detect_drift 可用 kw_distinct 過濾「12 條新聞但全是同一個關鍵字」這種
+    虛假訊號 (通常是同一新聞被多家媒體轉發或同一事件重複報導)。"""
+    if theme_keywords is None:
+        theme_keywords = THEME_KEYWORDS
+    out = {k: {"count": 0, "kw_set": set()} for k in theme_keywords}
+    for title in news_titles:
+        for theme_key, keywords in theme_keywords.items():
+            matched_kws = [kw for kw in keywords if _kw_matches(kw, title)]
+            if matched_kws:
+                out[theme_key]["count"] += 1
+                out[theme_key]["kw_set"].update(matched_kws)
+    for k in out:
+        out[k]["kw_distinct"] = len(out[k]["kw_set"])
+        out[k]["kw_set"] = sorted(out[k]["kw_set"])  # Make JSON-friendly
+    return out
 
 
 if __name__ == "__main__":
