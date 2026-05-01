@@ -84,12 +84,14 @@ def send_telegram_text(message: str, bot_token: str, chat_id: str) -> bool:
 
 
 def build_summary(results: list[dict], target_date: str) -> str:
-    """Build main summary: high-momentum concepts with top 5 leaders each."""
+    """Build main summary: high-momentum concepts with leaders 🟢 + laggards 🔴.
+
+    族群內配對交易視角：做多 leader / 放空 laggard。"""
     if not results:
         return f"概念動能監控 {target_date}\n\n無資料"
 
     lines = [f"概念動能監控 {target_date}"]
-    lines.append("高動能族群（評分 ≥70）+ 領漲 Top 5")
+    lines.append("高動能族群（評分 ≥70）— 🟢 多 leaders / 🔴 空 laggards")
     lines.append("━━━━━━━━━━━━")
     high = [r for r in results if r["sustainability_score"] >= 70]
     if not high:
@@ -102,12 +104,21 @@ def build_summary(results: list[dict], target_date: str) -> str:
                 f"量比 {r['volume_ratio']:.1f}x  RS {r['rs_20d']:+.1f}%  持續 {r['duration']}天"
             )
             leaders = r.get("leaders", [])
-            if leaders:
-                for L in leaders[:5]:
-                    lines.append(
-                        f"   • {L['code']} {L['name'][:20]}  "
-                        f"5d:{L['ret_5d']:+.1f}% 20d:{L['ret_20d']:+.1f}%"
-                    )
+            laggards = r.get("laggards", [])
+            for L in leaders[:5]:
+                lines.append(
+                    f"   🟢 {L['code']} {L['name'][:18]}  "
+                    f"5d:{L['ret_5d']:+.1f}% 20d:{L['ret_20d']:+.1f}%"
+                )
+            for L in laggards[:5]:
+                lines.append(
+                    f"   🔴 {L['code']} {L['name'][:18]}  "
+                    f"5d:{L['ret_5d']:+.1f}% 20d:{L['ret_20d']:+.1f}%"
+                )
+            if leaders and laggards:
+                lines.append(
+                    f"   ↳ 配對提示：多 {leaders[0]['code']} / 空 {laggards[0]['code']}"
+                )
     return "\n".join(lines)
 
 
