@@ -12,7 +12,7 @@
 8. **台股 ↔ 美股 peer 相關性查詢（CLI）** → `tw_us_correlation.py`
 9. **Turnaround 篩選器（毛利率改善 + 量能放大 + 借券回補）** → `tw_turnaround_screener.py`
 10. **ABCD 接力型訊號分析（CLI / 也可吃 Layer 1 candidates 做 Layer 2 過濾）** → `tw_limitup_signal.py`
-11. **每日兩層篩選工作流（19:00 cron）** → `tw_daily_screen.py`
+11. **每日兩層篩選工作流（盤前 07:30 cron）** → `tw_daily_screen.py`
 12. **沉睡巨人篩選器（曾 10 倍 / 跌 ≥50% / 沉睡 ≥5y / 量縮整理）** → `tw_dormant_giants.py`
 
 所有工具放在 `~/project/tw_stock_tools/`，cron 設定每天排程推送到 Telegram 群組。
@@ -663,10 +663,10 @@ python3 ~/project/tw_stock_tools/tw_limitup_signal.py --codes ... \
 
 ---
 
-## 10. `tw_daily_screen.py` — 每日兩層篩選工作流
+## 10. `tw_daily_screen.py` — 每日兩層篩選工作流（轉機接力策略）
 
 ### 用途
-每日 19:00 (Mon-Fri) 自動執行兩階段篩選：
+每日盤前 07:30 (Mon-Fri) 自動執行兩階段篩選 — 名為「**轉機接力**」策略：
 
 **Layer 1** (`tw_turnaround_screener.py`)
 基本面 + 技術面初篩 — 毛利率改善 + 量能放大 + 借券回補 + 季線多頭
@@ -680,18 +680,23 @@ python3 ~/project/tw_stock_tools/tw_limitup_signal.py --codes ... \
 
 ### 流程
 ```
-19:00 cron
+07:30 cron (盤前 1.5 hr)
   ↓
-Layer 1 (~30 min cached)
+Layer 1 — 轉機 (~1 min warm cache, ~5-10 min cold cache)
   ├ tw_turnaround_screener --json-out /tmp/layer1.json --telegram
+  │   毛利率↑ + 量能↑ + 借券↓ + 季線多頭排列 + 排除 GM<0%
   │   → 推送 Layer 1 表格摘要到 TG
   ↓
-Layer 2 (~1-2 min for typical 4-10 candidates)
+Layer 2 — 接力 (~1-2 min, 視 Layer 1 候選數)
   ├ tw_limitup_signal --codes-file /tmp/layer1.json --min-score 2 --telegram
-  │   → 推送 ABCD 評分結果到 TG (4/4/3/4/2/4 分級)
+  │   ABCD 接力訊號評分 (漲停接力/借券回補/籌碼集中/量能蓄勢)
+  │   → 推送 ABCD 分級結果到 TG (4/4/3/4/2/4)
   ↓
-完成
+完成 (盤前可看完，9:00 開盤前布局)
 ```
+
+「**轉機接力**」(Turnaround Relay) — Layer 1 找已轉機的標的池，Layer 2 從中
+挑出技術面準備接力突破的子集。資料用前一交易日收盤，盤前推給使用者參考布局。
 
 ### 使用方式
 ```bash
@@ -711,8 +716,8 @@ python3 ~/project/tw_stock_tools/tw_daily_screen.py --universe concepts
 
 ### 排程（crontab）
 ```cron
-# 每天 19:00 (Mon-Fri) 兩層篩選
-0 19 * * 1-5 TG_BOT_TOKEN=... FINMIND_TOKEN=... /usr/bin/python3 \
+# 每天盤前 07:30 (Mon-Fri) 兩層篩選 — 轉機接力策略
+30 7 * * 1-5 TG_BOT_TOKEN=... FINMIND_TOKEN=... /usr/bin/python3 \
   /home/kun/project/tw_stock_tools/tw_daily_screen.py \
   >> /home/kun/project/tw_stock_tools/daily_screen.log 2>&1
 ```
