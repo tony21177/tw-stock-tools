@@ -1,32 +1,51 @@
 # 台股借券 / 融資 / 籌碼 / 概念動能分析工具組
 
-十三大功能：
+## 🎯 八大策略總覽
 
-1. 借券議借異常監控（每日排程推送）→ `tw_lending_monitor.py`
-2. 借券賣出餘額大幅減少監控（每日排程推送）→ `tw_lending_monitor.py`
+| 策略名 | 工具 | 排程 | 用途 |
+|--------|------|------|------|
+| 🌅 **轉機接力** (TR) | `tw_daily_screen.py` | 盤前 07:30 | Layer 1 turnaround + Layer 2 ABCD 接力 兩層篩選 |
+| 🌅 **強勢股第二波** | `tw_second_wave.py` | 盤前 07:40 | 強勢漲 → 急殺 15-25% → 反彈啟動 |
+| 🌙 **借券雷達** | `tw_lending_monitor.py --mode lending` | 盤後 16:00 | 議借量突增 + 利率異常 |
+| 🌙 **族群熱力** | `concept_momentum/run_daily.py` | 盤後 17:00 | 概念動能評分 + Rerating + 業務轉型 |
+| 🌙 **主力雷達** | `tw_broker_monitor.py` | 盤後 18:00 | 分點買賣超 + 融資連動 = 主力建倉 |
+| 🌙 **空頭撤退** | `tw_lending_monitor.py --mode sbl` | 盤後 21:30 | 借券賣餘大幅減少 = 空方回補 |
+| 🔍 **沉睡巨人** | `tw_dormant_giants.py` | CLI | 曾 5x、跌 ≥30%、沉睡 ≥5y、量縮整理 |
+| 🔍 **美台聯動** | `tw_us_correlation.py` | CLI | β 調整 TW vs US peer 相關性 |
+
+---
+
+## 📦 全部工具清單 (十三項)
+
+1. **借券雷達** — 借券議借異常監控（盤後 16:00 排程） → `tw_lending_monitor.py --mode lending`
+2. **空頭撤退** — 借券賣出餘額大幅減少監控（盤後 21:30 排程） → `tw_lending_monitor.py --mode sbl`
 3. 單檔借券狀況查詢（CLI）→ `tw_lending_lookup.py`
 4. 融資維持率預警全市場掃描（含批次分布）→ `tw_margin_monitor.py`
 5. 單檔融資維持率估算 + 批次 cohort 分析（CLI）→ `tw_margin_lookup.py`
-6. **分點+融資連動分析（每日排程推送）** → `tw_broker_monitor.py` / `tw_broker_lookup.py`
-7. **概念動能監控 + Rerating 偵測（每日排程推送 PNG + 網頁儀表板）** → `concept_momentum/`
-8. **台股 ↔ 美股 peer 相關性查詢（CLI）** → `tw_us_correlation.py`
-9. **Turnaround 篩選器（毛利率改善 + 量能放大 + 借券回補）** → `tw_turnaround_screener.py`
-10. **ABCD 接力型訊號分析（CLI / 也可吃 Layer 1 candidates 做 Layer 2 過濾）** → `tw_limitup_signal.py`
-11. **每日兩層篩選工作流「轉機接力」（盤前 07:30 cron）** → `tw_daily_screen.py`
-12. **沉睡巨人篩選器（曾 5 倍 / 跌 ≥30% / 沉睡 ≥5y / 量縮整理）** → `tw_dormant_giants.py`
-13. **強勢股第二波篩選器（盤前 07:40 cron / 強勢漲 → 急殺 → 反彈啟動）** → `tw_second_wave.py`
+6. **主力雷達** — 分點+融資連動分析（盤後 18:00 排程） → `tw_broker_monitor.py` / `tw_broker_lookup.py`
+7. **族群熱力** — 概念動能監控 + Rerating + 業務轉型（盤後 17:00 排程 PNG + 網頁儀表板）→ `concept_momentum/`
+8. **美台聯動** — 台股 ↔ 美股 peer β 調整相關性（CLI）→ `tw_us_correlation.py`
+9. Turnaround 篩選器（毛利率改善 + 量能放大 + 借券回補，轉機接力 Layer 1）→ `tw_turnaround_screener.py`
+10. ABCD 接力型訊號分析（轉機接力 Layer 2 / 或 standalone CLI）→ `tw_limitup_signal.py`
+11. **轉機接力** — 每日兩層篩選工作流（盤前 07:30 cron）→ `tw_daily_screen.py`
+12. **沉睡巨人** — 曾 5 倍、跌 ≥30%、沉睡 ≥5y、量縮整理（CLI）→ `tw_dormant_giants.py`
+13. **強勢股第二波** — 強勢漲 → 急殺 → 反彈啟動（盤前 07:40 cron）→ `tw_second_wave.py`
 
 所有工具放在 `~/project/tw_stock_tools/`，cron 設定每天排程推送到 Telegram 群組。
 概念動能子模組詳見 `concept_momentum/README.md`。
 
 ---
 
-## 1. `tw_lending_monitor.py` — 借券異常監控
+## 1. `tw_lending_monitor.py` — 借券雷達 (SBL Radar) + 空頭撤退 (Short Retreat)
+
+策略名：
+- **借券雷達** = `--mode lending` (16:00 cron) — 議借量突增 + 利率異常
+- **空頭撤退** = `--mode sbl` (21:30 cron) — 借券賣出餘額大幅減少 = 空方回補
 
 ### 用途
 每日自動掃描全市場，找出兩類異常：
-- **議借量突增**：議借量 > 5 日均量 × 2，且利率 <1% 或 >7%
-- **借券賣出大幅減少**：借券賣出餘額比前日減少 >10%
+- **借券雷達 (議借量突增)**：議借量 > 5 日均量 × 2，且利率 <1% 或 >7%
+- **空頭撤退 (借券賣出大幅減少)**：借券賣出餘額比前日減少 >10%
 
 ### 資料來源
 - TWSE SBL API（`t13sa710`）：議借交易明細，上市+上櫃皆包含
@@ -304,7 +323,9 @@ FINMIND_TOKEN=xxx python3 ~/project/tw_stock_tools/tw_margin_lookup.py 3035 --da
 
 ---
 
-## 5. `tw_broker_monitor.py` / `tw_broker_lookup.py` — 分點+融資連動分析
+## 5. `tw_broker_monitor.py` / `tw_broker_lookup.py` — 主力雷達 (Smart-Money Radar)
+
+策略名：**主力雷達** (盤後 18:00 cron) — 分點買賣超 + 融資連動 = 主力建倉雙確認
 
 ### 用途
 找出疑似「用融資做短線」的券商分點：在過去 N 天連續買超某檔，且這幾天該股的融資餘額也同步增加，且分點當日淨買 vs 當日融資淨增量呈正相關。
@@ -401,7 +422,9 @@ python3 ~/project/tw_stock_tools/tw_broker_history_lookup.py 2330 --days 30 --to
 
 ---
 
-## 7. `tw_us_correlation.py` — 台股 ↔ 美股 peer 相關性查詢
+## 7. `tw_us_correlation.py` — 美台聯動 (US-TW Beta)
+
+策略名：**美台聯動** (CLI) — β 調整後 TW 個股 vs US peer 相關性，扣除大盤 β 後仍同步的真聯動
 
 ### 用途
 找出台股哪些標的真的跟著指定美股 peer 動。可指定一個概念內掃描，或直接對全市場（34 個概念去重共 ~190 檔）跑相關性。
@@ -661,6 +684,21 @@ python3 ~/project/tw_stock_tools/tw_limitup_signal.py --codes ... \
 - 2417 圓剛 (借券賣餘 -19.0%, 前日已連兩漲停)
 
 **3/4（8 檔，含 4576 大銀微系統）**：A+B+C 但量能未爆 / 或 A+C+D 但借券未明顯回補
+
+---
+
+## 11. `concept_momentum/` — 族群熱力 (Theme Heatmap)
+
+策略名：**族群熱力** (盤後 17:00 cron) — 各概念族群動能評分 + 領漲/領跌 + Rerating + 業務轉型偵測
+
+詳細文件見子模組：[`concept_momentum/README.md`](concept_momentum/README.md)
+
+簡要：
+- **動能評分**：每概念依 20d 漲幅 / 廣度 / 量比 / RS / 持續天數綜合打分 (0-100)
+- **強弱分組**：≥70 強勢 (顯示 🟢 多 leaders + 🔴 空 laggards 配對提示)，<30 弱勢
+- **Rerating**：β 調整後與其他概念相關性 ≥ 自己概念 +0.10 → 可能改題材
+- **業務轉型**：新聞主題與原概念差 ≥1.5x，且 ≥2 個不同關鍵字 (避誤判)
+- 推送 Snapshot PNG + Trend PNG + 4 則文字摘要到 Telegram
 
 ---
 
