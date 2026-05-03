@@ -1,6 +1,6 @@
 # 台股借券 / 融資 / 籌碼 / 概念動能分析工具組
 
-十一大功能：
+十二大功能：
 
 1. 借券議借異常監控（每日排程推送）→ `tw_lending_monitor.py`
 2. 借券賣出餘額大幅減少監控（每日排程推送）→ `tw_lending_monitor.py`
@@ -13,6 +13,7 @@
 9. **Turnaround 篩選器（毛利率改善 + 量能放大 + 借券回補）** → `tw_turnaround_screener.py`
 10. **ABCD 接力型訊號分析（CLI / 也可吃 Layer 1 candidates 做 Layer 2 過濾）** → `tw_limitup_signal.py`
 11. **每日兩層篩選工作流（19:00 cron）** → `tw_daily_screen.py`
+12. **沉睡巨人篩選器（曾 10 倍 / 跌 ≥50% / 沉睡 ≥5y / 量縮整理）** → `tw_dormant_giants.py`
 
 所有工具放在 `~/project/tw_stock_tools/`，cron 設定每天排程推送到 Telegram 群組。
 概念動能子模組詳見 `concept_momentum/README.md`。
@@ -734,6 +735,82 @@ Layer 2 → 4576 大銀微系統 3/4 ⭐⭐⭐ (今天剛好漲停 ✅ 印證)
 
 ---
 
+## 12. `tw_dormant_giants.py` — 沉睡巨人篩選器
+
+### 用途
+找出「曾經 10 倍股、跌幅 ≥50%、沉睡 ≥5 年、近期長時間量縮震狹幅整理」的標的。
+這類股票的特徵：
+- 過去有故事、有資金推升過 → 證明商品/題材有想像空間
+- 但現在已被市場徹底遺忘，籌碼洗淨、套牢盤消化
+- 波動率被壓到底、量也縮到底 → 沒人關心
+- 若有新催化事件 (產業景氣回暖、新題材、業務轉型)，向上爆發力大且阻力小
+
+### 五項過濾 (各須滿足)
+| 條件 | 預設 | 意義 |
+|------|------|------|
+| **A 曾 10 倍股** | peak/peak前低點 ≥ 10x | 還原收盤峰值除以峰前低點，且峰前需有 ≥3 年資料才算數 (避開 Yahoo 起點即峰值的假訊號) |
+| **B 跌 ≥ 50%** | current ≤ 50% × peak | 從峰值大幅修正 |
+| **C 峰值 ≥ 5 年前** | peak_date ≤ today − 5y | 退潮已久 |
+| **D 近 5 年無炒作** | 5y max/min < 3x，任 120td 滑窗 max/min < 1.5x | 確認沒被再炒過 |
+| **E 量縮震盪** | 60d 振幅 < 10%，60d 量 ≤ 75% × 3y 平均量 | 真正的窄幅整理 |
+
+### 資料源
+| 資料 | 來源 |
+|------|------|
+| 還原股價 | Yahoo Finance `adjclose` (含 split + dividend；多數 case 也涵蓋減資)。FinMind `TaiwanStockPriceAdj` 需付費，本工具用 Yahoo 替代 |
+| Universe | FinMind `TaiwanStockInfo` (與 turnaround_screener 共享 universe_all 快取，4 位數普通股) |
+
+注意：Yahoo TW 資料起點 ~2007，2007 前已達峰的個股 (e.g. 6244 茂迪 2006 高點 >900) 可能漏抓。
+透過 `--min-pre-peak-years` (預設 3) 強制要求峰前 3 年資料，自動排除這類「資料截斷」假訊號。
+
+### 使用方式
+```bash
+# 預設掃全市場
+python3 ~/project/tw_stock_tools/tw_dormant_giants.py
+
+# 推送 Telegram
+TG_BOT_TOKEN=xxx FINMIND_TOKEN=yyy \
+  python3 ~/project/tw_stock_tools/tw_dormant_giants.py --telegram
+
+# 放寬倍數 (預設 10x 太嚴可改 5x)
+python3 ~/project/tw_stock_tools/tw_dormant_giants.py --min-peak 5
+
+# 放寬量縮條件
+python3 ~/project/tw_stock_tools/tw_dormant_giants.py \
+  --max-60d-range 0.15 --vol-decline-ratio 1.0
+```
+
+### 性能
+全市場 ~3000 檔，cold cache (Yahoo 抓 18 年) ~5-10 分鐘 (6 workers 平行)；
+warm cache 後續查詢 < 1 分鐘 (cache 7 天)。
+
+### 排序邏輯
+按 `沉睡年數 × (0.20 − 60d 振幅) × (0.40 − 量比) × 倍數/10` 由大到小排序，
+即「越久沉睡 + 越窄整理 + 越大歷史倍數」越優先。
+
+### 實例（2026-05-03 全市場掃描）
+篩選漏斗：2,141 → A:905 → AB:281 → ABC:105 → ABCD:4 → **ABCDE:2 檔**
+
+**2496 卓越** [上市] — 經典案例
+- 曾 10 倍：2011-10 10.9 → 2017-05 161.7 = **14.9x**
+- 跌幅：今價 64.6 = 峰值 40% (跌 60%)
+- 沉睡：9 年
+- 5y max/min 2.5x，6m 滑窗最大 1.45x
+- 60d 振幅 **5.5%**，60d 量 **58%** × 3y 均量
+
+**6195 詩肯** [上櫃] — 31.9x 歷史倍數最高
+- 曾 10 倍：2008-09 1.5 → 2013-11 49.2 = **31.9x**
+- 跌幅：今價 23.7 = 峰值 48% (跌 52%)
+- 沉睡：12.4 年 — 全名單最久
+- 60d 振幅 8.5%，60d 量 73% × 3y 均量
+
+### 限制
+- Yahoo 資料對減資 (capital reduction) 的還原可能不完美 — 邊角案例需手動驗證
+- 「沉睡」≠「會漲」— 工具只是過濾「有可能 turnaround 的池子」，不是買入訊號
+- ABCDE 五關全過的標的數量稀少 (台股全市場每天大約 0-5 檔)，建議搭配基本面研究
+
+---
+
 ## 環境變數
 
 | 變數 | 用途 | 來源 |
@@ -760,6 +837,8 @@ Layer 2 → 4576 大銀微系統 3/4 ⭐⭐⭐ (今天剛好漲停 ✅ 印證)
 ├── tw_turnaround_screener.py  # Turnaround 篩選（毛利率↑+量能↑+借券↓，CLI）
 ├── tw_limitup_signal.py       # ABCD 接力型訊號分析（standalone 漲停掃描 / Layer 2 用）
 ├── tw_daily_screen.py         # 每日兩層篩選工作流（Layer 1 + Layer 2，19:00 cron）
+├── tw_dormant_giants.py       # 沉睡巨人篩選器（曾 10x / 跌 ≥50% / 沉睡 ≥5y / 量縮整理）
+├── dormant_cache/             # Yahoo 18y 還原股價快取（git ignore，cache 7 天）
 ├── screener_cache/            # FinMind 季報 + 借券餘額快取（git ignore）
 ├── limitup_cache/             # 漲停訊號工具快取（市場/個股/SBL/HiStock，git ignore）
 ├── concept_momentum/          # 概念動能子模組（詳見內部 README.md）
