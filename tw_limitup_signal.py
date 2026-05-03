@@ -770,7 +770,24 @@ def main():
     scored.sort(key=lambda x: (-x[1]["score"], -x[0]["change_pct"]))
 
     source_label = "Layer 1 候選" if (args.codes or args.codes_file) else "今日漲停"
-    report = format_report(target, scored, header=args.header,
+
+    # Infer actual data date from price history (skip non-trading days like weekends/holidays)
+    actual_data_date = target
+    for info, s in scored:
+        # Try to use the latest px row's date as the actual data date
+        try:
+            px = fetch_price_history(info["code"], target, args.token)
+            if px:
+                actual_data_date = px[-1]["date"]
+                break
+        except Exception:
+            continue
+
+    report_date = actual_data_date
+    if actual_data_date != target:
+        report_date = f"{actual_data_date} (cron 跑於 {target}，自動回溯前一交易日)"
+
+    report = format_report(report_date, scored, header=args.header,
                            min_score=args.min_score, source_label=source_label)
     print(report)
 
