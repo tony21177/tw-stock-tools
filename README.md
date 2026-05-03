@@ -14,7 +14,7 @@
 10. **ABCD 接力型訊號分析（CLI / 也可吃 Layer 1 candidates 做 Layer 2 過濾）** → `tw_limitup_signal.py`
 11. **每日兩層篩選工作流「轉機接力」（盤前 07:30 cron）** → `tw_daily_screen.py`
 12. **沉睡巨人篩選器（曾 5 倍 / 跌 ≥30% / 沉睡 ≥5y / 量縮整理）** → `tw_dormant_giants.py`
-13. **強勢股第二波篩選器（強勢漲 → 急殺 15-25% → 反彈啟動）** → `tw_second_wave.py`
+13. **強勢股第二波篩選器（盤前 07:40 cron / 強勢漲 → 急殺 → 反彈啟動）** → `tw_second_wave.py`
 
 所有工具放在 `~/project/tw_stock_tools/`，cron 設定每天排程推送到 Telegram 群組。
 概念動能子模組詳見 `concept_momentum/README.md`。
@@ -866,6 +866,15 @@ python3 ~/project/tw_stock_tools/tw_second_wave.py --rally-min-gain 0.20
 python3 ~/project/tw_stock_tools/tw_second_wave.py \
   --drop-min 0.20 --recovery-vol-ratio 1.0
 ```
+
+### 排程（crontab）
+```cron
+# 每天盤前 07:40 (Mon-Fri) 強勢股第二波掃描
+40 7 * * 1-5 TG_BOT_TOKEN=... FINMIND_TOKEN=... /usr/bin/python3 \
+  /home/kun/project/tw_stock_tools/tw_second_wave.py --quiet --telegram \
+  >> /home/kun/project/tw_stock_tools/second_wave.log 2>&1
+```
+與「轉機接力」(07:30) 錯開 10 分鐘 — 開盤前 1.5 hr 同時看到兩套策略結果。
 
 ### 排序邏輯
 按 `rally_gain × drop_pct × bounce_pct × min(vol_ratio, 3) × (today/peak − 0.7)`
