@@ -4,9 +4,9 @@
 
 找出符合以下條件的「曾經輝煌，沉寂多年，正在打底」的標的：
 
-  A 曾經 10 倍股: 還原收盤峰值 / 峰值前低點 ≥ 10x
-                  (避免捕捉到 Yahoo 資料起點即巔峰，要求峰前至少 3 年資料)
-  B 從峰值修正 ≥ 50%: 現在收盤 ≤ 50% × 峰值
+  A 曾經 5 倍股: 還原收盤峰值 / 峰值前低點 ≥ 5x (預設；可調為 10x 看更嚴格)
+                 (避免捕捉到 Yahoo 資料起點即巔峰，要求峰前至少 3 年資料)
+  B 從峰值修正 ≥ 30%: 現在收盤 ≤ 70% × 峰值 (預設；可改 0.5 = 跌 50%)
   C 峰值距今 ≥ 5 年: 已經夠久沒被炒
   D 近 5 年無顯著炒作:
       - 近 5 年最高 / 最低 < 3x
@@ -451,12 +451,12 @@ def send_telegram(message: str, bot_token: str, chat_id: str) -> bool:
 
 def main():
     p = argparse.ArgumentParser(description="沉睡巨人篩選器")
-    p.add_argument("--min-peak", type=float, default=10.0,
-                   help="曾經漲幅倍數門檻 (預設 10x)")
+    p.add_argument("--min-peak", type=float, default=5.0,
+                   help="曾經漲幅倍數門檻 (預設 5x，10x 太嚴實證候選極少)")
     p.add_argument("--min-pre-peak-years", type=int, default=3,
                    help="峰前需有 N 年資料 (預設 3，避免 Yahoo 起點即峰值的假訊號)")
-    p.add_argument("--max-current-pct", type=float, default=0.5,
-                   help="現價 / 峰值 ≤ N (預設 0.5 = 跌至少 50%)")
+    p.add_argument("--max-current-pct", type=float, default=0.7,
+                   help="現價 / 峰值 ≤ N (預設 0.7 = 跌至少 30%)")
     p.add_argument("--min-years-since-peak", type=int, default=5,
                    help="峰值距今至少 N 年 (預設 5)")
     p.add_argument("--max-5y-ratio", type=float, default=3.0,
