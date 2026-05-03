@@ -1,6 +1,6 @@
 # 台股借券 / 融資 / 籌碼 / 概念動能分析工具組
 
-十二大功能：
+十三大功能：
 
 1. 借券議借異常監控（每日排程推送）→ `tw_lending_monitor.py`
 2. 借券賣出餘額大幅減少監控（每日排程推送）→ `tw_lending_monitor.py`
@@ -12,8 +12,9 @@
 8. **台股 ↔ 美股 peer 相關性查詢（CLI）** → `tw_us_correlation.py`
 9. **Turnaround 篩選器（毛利率改善 + 量能放大 + 借券回補）** → `tw_turnaround_screener.py`
 10. **ABCD 接力型訊號分析（CLI / 也可吃 Layer 1 candidates 做 Layer 2 過濾）** → `tw_limitup_signal.py`
-11. **每日兩層篩選工作流（盤前 07:30 cron）** → `tw_daily_screen.py`
-12. **沉睡巨人篩選器（曾 10 倍 / 跌 ≥50% / 沉睡 ≥5y / 量縮整理）** → `tw_dormant_giants.py`
+11. **每日兩層篩選工作流「轉機接力」（盤前 07:30 cron）** → `tw_daily_screen.py`
+12. **沉睡巨人篩選器（曾 5 倍 / 跌 ≥30% / 沉睡 ≥5y / 量縮整理）** → `tw_dormant_giants.py`
+13. **強勢股第二波篩選器（強勢漲 → 急殺 15-25% → 反彈啟動）** → `tw_second_wave.py`
 
 所有工具放在 `~/project/tw_stock_tools/`，cron 設定每天排程推送到 Telegram 群組。
 概念動能子模組詳見 `concept_momentum/README.md`。
@@ -820,6 +821,86 @@ warm cache 後續查詢 < 1 分鐘 (cache 7 天)。
 
 ---
 
+## 13. `tw_second_wave.py` — 強勢股第二波篩選器
+
+### 用途
+抓「強勢上漲數月 → 1-2 週無法突破 → 急殺 15-25% → 開始反彈」的標的，
+搶**第二波發動**的入場點。主力洗籌碼後再拉一波的高勝率 setup。
+
+### Pattern 四階段
+1. **Phase 1 強勢底盤**：峰前 6 個月已大漲 (預設 ≥30%)
+2. **Phase 2 高點停滯**：峰值前後 1-2 週無法再突破新高
+3. **Phase 3 急跌洗盤**：1-2 週內急跌 15-25% (恐慌爆量、短線散戶被洗出)
+4. **Phase 4 第二波啟動**：低點後 1-10 td 反彈，量能轉強但還沒破前高
+
+### 七項過濾 (各須滿足)
+| 條件 | 預設 | 說明 |
+|------|------|------|
+| F1 強勢底盤 | rally ≥ 30% | 峰前 6m 累積漲幅 |
+| F2 高點在近 | peak ≤ 60 td 內 | 峰值落在最近 3 個月 |
+| F3 急跌幅度 | 15% ≤ drop ≤ 25% | peak → trough 跌幅 |
+| F4 急跌時長 | 5-15 td | peak → trough 持續天數 |
+| F5 反彈進行中 | trough 1-10 td 前 / bounce ≥ +5% | 已反彈但不老 |
+| F6 量能甦醒 | 近 3d 均量 / 急跌期均量 ≥ 0.7 | 急跌期常爆恐慌量，反彈期不需爆量但不能萎縮 |
+| F7 還沒新高 | 今 < 0.98 × peak | 避免太晚進場已破前高才追 |
+
+### 資料源
+Yahoo Finance 9 個月日線 (.TW / .TWO)，cache 1 天 (pattern 是快速移動的，不適合長 cache)。
+
+### 使用方式
+```bash
+# 全市場 (預設)
+python3 ~/project/tw_stock_tools/tw_second_wave.py
+
+# Telegram 推送
+TG_BOT_TOKEN=xxx FINMIND_TOKEN=yyy \
+  python3 ~/project/tw_stock_tools/tw_second_wave.py --telegram
+
+# 個股驗證 pattern
+python3 ~/project/tw_stock_tools/tw_second_wave.py --universe 2313
+
+# 放寬底盤門檻 (前漲 ≥20% 也算)
+python3 ~/project/tw_stock_tools/tw_second_wave.py --rally-min-gain 0.20
+
+# 嚴格版：跌 20-25%、反彈量比 ≥ 1.0
+python3 ~/project/tw_stock_tools/tw_second_wave.py \
+  --drop-min 0.20 --recovery-vol-ratio 1.0
+```
+
+### 排序邏輯
+按 `rally_gain × drop_pct × bounce_pct × min(vol_ratio, 3) × (today/peak − 0.7)`
+即「前漲越大 + 跌越深 + 反彈越強 + 量能越好 + 距前高越近」越優先。
+
+### 性能
+全市場 ~3000 檔，cold cache (Yahoo 9m) ~1-2 分鐘 (6 workers 平行)；
+warm cache 後續查詢秒級。
+
+### 實例（2026-04-30 全市場掃描，9 檔候選）
+
+| 代號 | 名稱 | 前漲 | 跌幅 | 反彈 | 今/峰 | 量比 |
+|------|------|------|------|------|------|------|
+| 4991 | 環宇-KY | **457%** | 21.3% | +18.6% | 93% | **5.16x** |
+| 3163 | 波若威 | **551%** | 19.7% | +10.1% | 88% | 1.52x |
+| 6588 | 東典光電 | 474% | 21.6% | +15.6% | 91% | 0.75x |
+| 2313 | 華通 | 299% | **25.0%** | +14.0% | 85% | 0.95x |
+| 3234 | 光環 | 300% | 18.5% | +11.8% | 91% | 0.75x |
+| 3437 | 榮創 | 129% | 23.1% | +15.4% | 89% | 1.06x |
+| 1528 | 恩德 | 118% | 18.0% | +15.7% | 95% | 0.83x |
+| 5243 | 乙盛-KY | 85% | 21.4% | +5.7% | 83% | 2.56x |
+| 4760 | 勤凱 | 74% | 17.4% | +8.1% | 89% | 0.84x |
+
+亮點：
+- **4991 環宇-KY** 反彈量比 5.16x 最強，前漲 457%、目前 93% 接近前高
+- **3163 波若威** 前漲 551% 倍數最高
+- **2313 華通** 用戶最初提的參考案例，工具確認過 pattern
+
+### 限制聲明
+- 純技術面 pattern，未做基本面驗證 — 使用者需自行確認「基本面沒轉壞」
+- 急跌可能是利空 (基本面轉壞)、政策 (產業限制)、或主力洗盤 — 三者需區分
+- 候選 ≠ 買入訊號，是「pattern 已成形的池子」，需搭配當日量價、消息面決策
+
+---
+
 ## 環境變數
 
 | 變數 | 用途 | 來源 |
@@ -846,8 +927,10 @@ warm cache 後續查詢 < 1 分鐘 (cache 7 天)。
 ├── tw_turnaround_screener.py  # Turnaround 篩選（毛利率↑+量能↑+借券↓，CLI）
 ├── tw_limitup_signal.py       # ABCD 接力型訊號分析（standalone 漲停掃描 / Layer 2 用）
 ├── tw_daily_screen.py         # 每日兩層篩選工作流（Layer 1 + Layer 2，19:00 cron）
-├── tw_dormant_giants.py       # 沉睡巨人篩選器（曾 10x / 跌 ≥50% / 沉睡 ≥5y / 量縮整理）
+├── tw_dormant_giants.py       # 沉睡巨人篩選器（曾 5x / 跌 ≥30% / 沉睡 ≥5y / 量縮整理）
 ├── dormant_cache/             # Yahoo 18y 還原股價快取（git ignore，cache 7 天）
+├── tw_second_wave.py          # 強勢股第二波篩選器（強勢漲 → 急殺 → 反彈啟動）
+├── second_wave_cache/         # Yahoo 9m 日線快取（git ignore，cache 1 天）
 ├── screener_cache/            # FinMind 季報 + 借券餘額快取（git ignore）
 ├── limitup_cache/             # 漲停訊號工具快取（市場/個股/SBL/HiStock，git ignore）
 ├── concept_momentum/          # 概念動能子模組（詳見內部 README.md）
