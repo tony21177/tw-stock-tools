@@ -33,7 +33,7 @@ from theme_keywords import (
 
 def detect_drift(concepts: dict, stocks_data: dict | None = None,
                  min_news: int = 5, drift_ratio: float = 1.5,
-                 min_top_count: int = 3, min_kw_distinct: int = 2) -> list[dict]:
+                 min_top_count: int = 4, min_kw_distinct: int = 2) -> list[dict]:
     """For each stock in concepts, fetch news, classify themes, find drift.
 
     Args:
