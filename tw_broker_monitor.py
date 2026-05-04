@@ -148,8 +148,12 @@ def scan_and_save(stock_codes: list[str], delay: float = 0.6) -> dict:
 
 
 def analyze_all(stock_codes: list[str], days: int, finmind_token: str,
-                min_corr: float = 0.5, min_days: int = 3) -> list[dict]:
-    """Run analyze() for each stock. Skip if insufficient history."""
+                min_corr: float = 0.5, min_days: int = 3,
+                require_margin_increase: bool = True) -> list[dict]:
+    """Run analyze() for each stock. Skip if insufficient history.
+
+    require_margin_increase=True (預設): 只保留期間融資餘額為正成長的標的，
+    符合「主力建倉 = 融資同步累積」原意。設 False 可看全部 (含融資退場)。"""
     all_results = []
     for i, code in enumerate(stock_codes):
         try:
@@ -157,11 +161,14 @@ def analyze_all(stock_codes: list[str], days: int, finmind_token: str,
                         min_active_days=min_days, min_correlation=min_corr,
                         top_n=5)
             if "error" not in r and r.get("candidates"):
+                margin_inc = r["margin_total_increase"]
+                if require_margin_increase and margin_inc <= 0:
+                    continue  # 融資沒成長 = 不符合主力建倉訊號
                 all_results.append({
                     "code": code,
                     "name": _zh_name(code),
                     "current_balance": r["current_balance"],
-                    "margin_increase": r["margin_total_increase"],
+                    "margin_increase": margin_inc,
                     "candidates": r["candidates"],
                 })
         except Exception as e:
@@ -171,7 +178,7 @@ def analyze_all(stock_codes: list[str], days: int, finmind_token: str,
 
 
 def format_summary(results: list[dict], target_date: str, days_history: int) -> str:
-    lines = [f"分點+融資連動掃描 {target_date}（{days_history} 日視窗）\n"]
+    lines = [f"🎯 主力雷達 — 分點+融資連動 {target_date}（{days_history} 日視窗）\n"]
     if not results:
         lines.append("無符合條件的標的（連續買超分點 + 融資同步增加 + 相關係數 ≥0.5）")
         return "\n".join(lines)
@@ -209,6 +216,8 @@ def main():
     parser.add_argument("--finmind-token")
     parser.add_argument("--analyze-only", action="store_true",
                         help="跳過 BSR 抓取，直接用快取做分析")
+    parser.add_argument("--allow-margin-decrease", action="store_true",
+                        help="允許區間融資餘額為負成長的標的入榜 (預設只保留正成長 = 主力建倉訊號)")
     args = parser.parse_args()
 
     bot_token = args.bot_token or os.environ.get("TG_BOT_TOKEN", "")
@@ -242,7 +251,8 @@ def main():
 
     print(f"【步驟 3/3】跑連動分析（{args.days} 日歷史）...", file=sys.stderr)
     results = analyze_all(codes, args.days, finmind_token,
-                          min_corr=args.min_corr, min_days=args.min_days)
+                          min_corr=args.min_corr, min_days=args.min_days,
+                          require_margin_increase=not args.allow_margin_decrease)
     print(f"  命中 {len(results)} 檔", file=sys.stderr)
 
     summary = format_summary(results, target_date, args.days)
