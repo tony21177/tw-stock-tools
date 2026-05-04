@@ -69,7 +69,9 @@ def send_telegram(message: str, bot_token: str, chat_id: str) -> bool:
 
 
 def get_top_margin_increase_stocks(top_n: int = 100) -> list[tuple[str, int, int]]:
-    """Returns [(stock_code, balance_today, increase)] sorted by increase desc."""
+    """Returns [(stock_code, balance_today, increase)] sorted by increase desc.
+    Only 4-digit numeric codes (excludes ETF / 槓桿反向 ETF / 權證 / REITs)."""
+    import re
     twse = fetch_twse_today_margin()
     time.sleep(0.5)
     tpex = fetch_tpex_today_margin()
@@ -78,13 +80,10 @@ def get_top_margin_increase_stocks(top_n: int = 100) -> list[tuple[str, int, int
         if c not in today_data:
             today_data[c] = info
 
-    # Need yesterday balance from same source... openapi gives only today.
-    # Fallback: use today's balance only as proxy, sort by largest balance.
-    # OR: read FinMind cache for prev day to compute delta.
-    # For now: sort by today's balance descending (high-volume targets).
+    # Filter to 4-digit numeric codes only (普通股)
     items = [(code, info["balance"], 0)
              for code, info in today_data.items()
-             if info["balance"] > 1000]
+             if info["balance"] > 1000 and re.fullmatch(r"\d{4}", code)]
     items.sort(key=lambda x: -x[1])
     return items[:top_n]
 
