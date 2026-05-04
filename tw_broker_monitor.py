@@ -68,9 +68,10 @@ def send_telegram(message: str, bot_token: str, chat_id: str) -> bool:
     return ok
 
 
-def get_top_margin_increase_stocks(top_n: int = 100) -> list[tuple[str, int, int]]:
-    """Returns [(stock_code, balance_today, increase)] sorted by increase desc.
-    Only 4-digit numeric codes (excludes ETF / 槓桿反向 ETF / 權證 / REITs)."""
+def get_top_margin_increase_stocks(top_n: int = 0) -> list[tuple[str, int, int]]:
+    """Returns [(stock_code, balance_today, increase)] sorted by balance desc.
+    Only 4-digit numeric codes (excludes ETF / 槓桿反向 ETF / 權證 / REITs).
+    top_n=0 (預設) = 全部融資標的 (~1500 檔)，> 0 = 取前 N 檔。"""
     import re
     twse = fetch_twse_today_margin()
     time.sleep(0.5)
@@ -85,7 +86,7 @@ def get_top_margin_increase_stocks(top_n: int = 100) -> list[tuple[str, int, int
              for code, info in today_data.items()
              if re.fullmatch(r"\d{4}", code)]
     items.sort(key=lambda x: -x[1])
-    return items[:top_n]
+    return items if top_n <= 0 else items[:top_n]
 
 
 def get_strong_concept_stocks(min_score: float = 70.0) -> list[str]:
@@ -148,31 +149,48 @@ def scan_and_save(stock_codes: list[str], delay: float = 0.6) -> dict:
 
 def analyze_all(stock_codes: list[str], days: int, finmind_token: str,
                 min_corr: float = 0.5, min_days: int = 3,
-                require_margin_increase: bool = True) -> list[dict]:
-    """Run analyze() for each stock. Skip if insufficient history.
+                require_margin_increase: bool = True,
+                workers: int = 6,
+                skip_fetch_if_missing: bool = False) -> list[dict]:
+    """Run analyze() for each stock in parallel. Skip if insufficient history.
 
     require_margin_increase=True (預設): 只保留期間融資餘額為正成長的標的，
     符合「主力建倉 = 融資同步累積」原意。設 False 可看全部 (含融資退場)。"""
-    all_results = []
-    for i, code in enumerate(stock_codes):
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _process(code: str):
         try:
             r = analyze(code, days, finmind_token,
                         min_active_days=min_days, min_correlation=min_corr,
-                        top_n=5)
+                        top_n=5,
+                        skip_fetch_if_missing=skip_fetch_if_missing)
             if "error" not in r and r.get("candidates"):
                 margin_inc = r["margin_total_increase"]
                 if require_margin_increase and margin_inc <= 0:
-                    continue  # 融資沒成長 = 不符合主力建倉訊號
-                all_results.append({
+                    return None
+                return {
                     "code": code,
                     "name": _zh_name(code),
                     "current_balance": r["current_balance"],
                     "margin_increase": margin_inc,
                     "candidates": r["candidates"],
-                })
+                }
         except Exception as e:
             print(f"[WARN] analyze {code}: {e}", file=sys.stderr)
-        time.sleep(0.1)
+        return None
+
+    all_results = []
+    done = 0
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = {ex.submit(_process, code): code for code in stock_codes}
+        for fut in as_completed(futs):
+            done += 1
+            if done % 200 == 0:
+                print(f"  [{done}/{len(stock_codes)}] 已命中 {len(all_results)}",
+                      file=sys.stderr)
+            res = fut.result()
+            if res:
+                all_results.append(res)
     return all_results
 
 
@@ -199,7 +217,8 @@ def format_summary(results: list[dict], target_date: str, days_history: int) -> 
 
 def main():
     parser = argparse.ArgumentParser(description="分點+融資連動每日掃描")
-    parser.add_argument("--top-n", type=int, default=100, help="掃描前 N 檔（依今日融資餘額排序）")
+    parser.add_argument("--top-n", type=int, default=0,
+                        help="掃描前 N 檔（依今日融資餘額排序）；0 = 全部 (預設，~1500 檔)")
     parser.add_argument("--include-concept-strong", action="store_true", default=True,
                         help="同步加入概念動能評分 ≥70 的成分股（預設開啟）")
     parser.add_argument("--no-concept-strong", dest="include_concept_strong",
@@ -251,7 +270,8 @@ def main():
     print(f"【步驟 3/3】跑連動分析（{args.days} 日歷史）...", file=sys.stderr)
     results = analyze_all(codes, args.days, finmind_token,
                           min_corr=args.min_corr, min_days=args.min_days,
-                          require_margin_increase=not args.allow_margin_decrease)
+                          require_margin_increase=not args.allow_margin_decrease,
+                          skip_fetch_if_missing=args.analyze_only)
     print(f"  命中 {len(results)} 檔", file=sys.stderr)
 
     summary = format_summary(results, target_date, args.days)

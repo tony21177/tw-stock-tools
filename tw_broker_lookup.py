@@ -47,12 +47,18 @@ def correlation(xs: list[float], ys: list[float]) -> float:
 
 def analyze(stock_code: str, days: int, finmind_token: str,
             min_active_days: int = 3, min_pct_of_volume: float = 0.05,
-            min_correlation: float = 0.5, top_n: int = 10) -> dict:
-    """Cross-analyze BSR + margin for one stock."""
-    # 1. Load BSR history (cached). If no today, fetch.
+            min_correlation: float = 0.5, top_n: int = 10,
+            skip_fetch_if_missing: bool = False) -> dict:
+    """Cross-analyze BSR + margin for one stock.
+
+    skip_fetch_if_missing=True: 若今日 BSR cache 不存在直接 skip，不嘗試 Playwright fetch。
+    用於批量 analyze-only 模式避免 ~1500 個失敗 fetch 各拖 3 秒。"""
+    # 1. Load BSR history (cached). If no today, fetch (除非 skip_fetch_if_missing).
     bsr_today_file = os.path.join(HERE, "bsr_cache",
                                    f"{stock_code}_{datetime.now().strftime('%Y%m%d')}.json")
     if not os.path.exists(bsr_today_file):
+        if skip_fetch_if_missing:
+            return {"error": "今日 BSR cache 不存在 (skip_fetch_if_missing=True)"}
         # Try to fetch today
         fetch_bsr_today(stock_code)
 
