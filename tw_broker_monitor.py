@@ -83,7 +83,7 @@ def get_top_margin_increase_stocks(top_n: int = 100) -> list[tuple[str, int, int
     # Filter to 4-digit numeric codes only (普通股)
     items = [(code, info["balance"], 0)
              for code, info in today_data.items()
-             if info["balance"] > 1000 and re.fullmatch(r"\d{4}", code)]
+             if re.fullmatch(r"\d{4}", code)]
     items.sort(key=lambda x: -x[1])
     return items[:top_n]
 
