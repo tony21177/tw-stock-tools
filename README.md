@@ -697,6 +697,8 @@ python3 ~/project/tw_stock_tools/tw_limitup_signal.py --codes ... \
 - **動能評分**：每概念依 20d 漲幅 / 廣度 / 量比 / RS / 持續天數綜合打分 (0-100)
 - **強弱分組**：≥70 強勢 (顯示 🟢 多 leaders + 🔴 空 laggards 配對提示)，<30 弱勢
 - **Rerating**：β 調整後與其他概念相關性 ≥ 自己概念 +0.10 → 可能改題材
+  - **穩定性過濾** (預設開啟): 須在過去 3 日內連續 ≥2 次指向同一目標概念才推送，避免單日雜訊（如小概念 CXO 只 5 檔成份易被單一股波動主導，造成像「2354 鴻準 → CXO 生技代工」這種一日閃爍訊號）。穩定後的訊號會顯示「[連續 N 日]」標籤
+  - 快取於 `concept_momentum/cache/rerating_history/{date}.json`
 - **業務轉型**：新聞主題與原概念差 ≥1.5x，且 ≥2 個不同關鍵字 (避誤判)
 - 推送 Snapshot PNG + Trend PNG + 4 則文字摘要到 Telegram
 

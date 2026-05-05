@@ -196,8 +196,54 @@ def compute_rerating(concepts: dict, results: list[dict], stocks_data: dict,
     return results_list
 
 
-def format_rerating_report(rerating: list[dict], concepts: dict, top_n: int = 30) -> str:
-    """Format top N rerating candidates as text."""
+def _load_rerating_history(history_dir: str, days: int) -> list[dict]:
+    """Load past N days of cached rerating results (excluding today).
+    Returns list of {date, candidates: [{code, top_other_concept, rerating_score}, ...]}."""
+    import os, glob, json
+    from datetime import datetime
+    if not os.path.isdir(history_dir):
+        return []
+    files = sorted(glob.glob(os.path.join(history_dir, "*.json")))
+    today_str = datetime.now().strftime("%Y%m%d")
+    files = [f for f in files if today_str not in os.path.basename(f)]
+    out = []
+    for f in files[-days:]:
+        try:
+            with open(f) as fh:
+                out.append({
+                    "date": os.path.basename(f).replace(".json", ""),
+                    "candidates": json.load(fh),
+                })
+        except Exception:
+            continue
+    return out
+
+
+def _save_rerating_today(history_dir: str, candidates: list[dict]) -> None:
+    """Save today's rerating top candidates for stability tracking."""
+    import os, json
+    from datetime import datetime
+    os.makedirs(history_dir, exist_ok=True)
+    today_str = datetime.now().strftime("%Y%m%d")
+    path = os.path.join(history_dir, f"{today_str}.json")
+    data = [{"code": r["code"],
+             "top_other_concept": r["top_other_concept"],
+             "rerating_score": r["rerating_score"]}
+            for r in candidates]
+    with open(path, "w") as f:
+        json.dump(data, f, ensure_ascii=False)
+
+
+def format_rerating_report(rerating: list[dict], concepts: dict, top_n: int = 30,
+                            min_consecutive: int = 2, lookback_days: int = 3) -> str:
+    """Format top N rerating candidates as text.
+
+    min_consecutive=2 (預設): 候選須在 lookback_days 內至少 N 次指向同一概念才推送，
+    避免單日雜訊 (如 60d β-adj 視窗下 CXO 等小概念的偽訊號)。設 0 關閉穩定性過濾。"""
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    history_dir = os.path.join(here, "cache", "rerating_history")
+
     lines = ["【可能 Rerating 標的】"]
     lines.append("（與其他概念相關性 > 與原所屬概念相關性 0.1 以上）")
     lines.append("")
@@ -205,12 +251,43 @@ def format_rerating_report(rerating: list[dict], concepts: dict, top_n: int = 30
     theme_names = {k: v["name_zh"] for k, v in concepts["themes"].items()}
 
     # Higher threshold (0.15) since excess returns have lower magnitudes than raw
-    candidates = [r for r in rerating if r["rerating_score"] >= 0.15
-                   and r["assigned_concepts"]][:top_n]
+    raw_candidates = [r for r in rerating if r["rerating_score"] >= 0.15
+                       and r["assigned_concepts"]][:top_n * 2]
 
-    if not candidates:
-        lines.append("（過濾大盤 β 後無顯著 rerating 訊號）")
-        return "\n".join(lines)
+    # Save today's raw candidates for tomorrow's stability check
+    _save_rerating_today(history_dir, raw_candidates)
+
+    # Stability filter: require (code, top_other_concept) appears in ≥ min_consecutive
+    # of last lookback_days runs (excluding today). Today counts as +1.
+    if min_consecutive > 1:
+        history = _load_rerating_history(history_dir, lookback_days)
+        # Build (code, target) → [dates seen]
+        from collections import defaultdict
+        history_seen = defaultdict(set)
+        for h in history:
+            for c in h["candidates"]:
+                key = (c["code"], c["top_other_concept"])
+                history_seen[key].add(h["date"])
+        candidates = []
+        for r in raw_candidates:
+            key = (r["code"], r["top_other_concept"])
+            seen_dates = history_seen.get(key, set())
+            # Today counts as +1
+            count = len(seen_dates) + 1
+            if count >= min_consecutive:
+                r = dict(r)
+                r["_consecutive"] = count
+                candidates.append(r)
+        candidates = candidates[:top_n]
+        if not candidates:
+            lines.append(f"（過濾後無連續 {min_consecutive}+ 日指向同一目標的標的；")
+            lines.append(f" 今日掃出 {len(raw_candidates)} 檔但都是單日雜訊）")
+            return "\n".join(lines)
+    else:
+        candidates = raw_candidates[:top_n]
+        if not candidates:
+            lines.append("（過濾大盤 β 後無顯著 rerating 訊號）")
+            return "\n".join(lines)
 
     lines.append("（已扣除大盤 β、近 60 個交易日視窗，過濾 TAIEX 相關 >0.85 的萬有引力股）")
     lines.append("")
@@ -218,8 +295,10 @@ def format_rerating_report(rerating: list[dict], concepts: dict, top_n: int = 30
     for r in candidates:
         own_names = " / ".join(theme_names.get(k, k) for k in r["assigned_concepts"][:3])
         new_name = theme_names.get(r["top_other_concept"], r["top_other_concept"])
+        consec = r.get("_consecutive", 1)
+        consec_tag = f" [連續 {consec} 日]" if consec > 1 else ""
         lines.append(
-            f"{r['code']} {r['name']} [{r['market']}]\n"
+            f"{r['code']} {r['name']} [{r['market']}]{consec_tag}\n"
             f"  原屬：{own_names} (excess corr {r['own_max_corr']:+.2f})\n"
             f"  →更接近：{new_name} (excess corr {r['top_other_corr']:+.2f})\n"
             f"  Rerating 分數：+{r['rerating_score']:.2f}  (TAIEX β corr {r['taiex_corr']:.2f})"

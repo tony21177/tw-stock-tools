@@ -19,6 +19,7 @@ __pycache__/
 concept_momentum/cache/prices/
 concept_momentum/cache/taiex.json
 concept_momentum/cache/results/
+concept_momentum/cache/rerating_history/
 concept_momentum/cache/stock_names.json
 concept_momentum/cache/news/
 concept_momentum/static/*.png
