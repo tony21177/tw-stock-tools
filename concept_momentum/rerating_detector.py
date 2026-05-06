@@ -235,11 +235,21 @@ def _save_rerating_today(history_dir: str, candidates: list[dict]) -> None:
 
 
 def format_rerating_report(rerating: list[dict], concepts: dict, top_n: int = 30,
-                            min_consecutive: int = 2, lookback_days: int = 3) -> str:
+                            min_consecutive: int = 2, lookback_days: int = 3,
+                            theme_results: list[dict] | None = None,
+                            min_target_score: float = 30.0,
+                            strong_target_score: float = 50.0,
+                            require_own_decouple: bool = True) -> str:
     """Format top N rerating candidates as text.
 
-    min_consecutive=2 (預設): 候選須在 lookback_days 內至少 N 次指向同一概念才推送，
-    避免單日雜訊 (如 60d β-adj 視窗下 CXO 等小概念的偽訊號)。設 0 關閉穩定性過濾。"""
+    Stability filter: 候選須在 lookback_days 內至少 min_consecutive 次指向同一概念才推送，
+    避免單日雜訊 (如 60d β-adj 視窗下 CXO 等小概念的偽訊號)。設 0 關閉。
+
+    "兩條沉船" 過濾 (需傳入 theme_results)：
+      A. 目標族群評分 ≥ min_target_score (預設 30) — 排除弱勢族群目標
+      B. 目標族群為強勢 (score ≥ strong_target_score 或 rs_20d > 0) — 確認資金真的流入
+      C. require_own_decouple=True (預設): 原屬族群 excess corr 須 < 0，確認真的脫鉤
+    避免 "鴻準 → CXO/生技代工" 這種 "兩個都被市場放棄、下跌節奏類似" 的偽 rerating。"""
     import os
     here = os.path.dirname(os.path.abspath(__file__))
     history_dir = os.path.join(here, "cache", "rerating_history")
@@ -250,11 +260,22 @@ def format_rerating_report(rerating: list[dict], concepts: dict, top_n: int = 30
 
     theme_names = {k: v["name_zh"] for k, v in concepts["themes"].items()}
 
+    # Build theme score/RS lookup from analysis results (used for filters A/B)
+    theme_score = {}
+    theme_rs = {}
+    if theme_results:
+        for tr in theme_results:
+            tk = tr.get("theme_key")
+            if tk:
+                theme_score[tk] = tr.get("sustainability_score", 0.0)
+                theme_rs[tk] = tr.get("rs_20d", 0.0)
+
     # Higher threshold (0.15) since excess returns have lower magnitudes than raw
     raw_candidates = [r for r in rerating if r["rerating_score"] >= 0.15
                        and r["assigned_concepts"]][:top_n * 2]
 
     # Save today's raw candidates for tomorrow's stability check
+    # (save BEFORE A/B/C filters so cache density stays high regardless of target strength)
     _save_rerating_today(history_dir, raw_candidates)
 
     # Stability filter: require (code, top_other_concept) appears in ≥ min_consecutive
@@ -268,7 +289,7 @@ def format_rerating_report(rerating: list[dict], concepts: dict, top_n: int = 30
             for c in h["candidates"]:
                 key = (c["code"], c["top_other_concept"])
                 history_seen[key].add(h["date"])
-        candidates = []
+        stable = []
         for r in raw_candidates:
             key = (r["code"], r["top_other_concept"])
             seen_dates = history_seen.get(key, set())
@@ -277,30 +298,72 @@ def format_rerating_report(rerating: list[dict], concepts: dict, top_n: int = 30
             if count >= min_consecutive:
                 r = dict(r)
                 r["_consecutive"] = count
-                candidates.append(r)
-        candidates = candidates[:top_n]
-        if not candidates:
+                stable.append(r)
+    else:
+        stable = [dict(r) for r in raw_candidates]
+
+    # 雙沉船 filter (A/B/C) — only applied when theme_results provided.
+    # A: target score >= min_target_score (filter weak targets like CXO @8)
+    # B: target score >= strong_target_score OR target rs_20d > 0 (must be net-strong)
+    # C: own_max_corr < 0 (must be truly decoupled from original concept)
+    rejected_weak_target = 0
+    rejected_not_strong = 0
+    rejected_not_decoupled = 0
+    candidates = []
+    for r in stable:
+        if theme_results:
+            tgt = r["top_other_concept"]
+            tgt_score = theme_score.get(tgt, 0.0)
+            tgt_rs = theme_rs.get(tgt, 0.0)
+            # A
+            if tgt_score < min_target_score:
+                rejected_weak_target += 1
+                continue
+            # B
+            if tgt_score < strong_target_score and tgt_rs <= 0:
+                rejected_not_strong += 1
+                continue
+        # C
+        if require_own_decouple and r["own_max_corr"] >= 0:
+            rejected_not_decoupled += 1
+            continue
+        candidates.append(r)
+    candidates = candidates[:top_n]
+
+    if not candidates:
+        if min_consecutive > 1 and not stable:
             lines.append(f"（過濾後無連續 {min_consecutive}+ 日指向同一目標的標的；")
             lines.append(f" 今日掃出 {len(raw_candidates)} 檔但都是單日雜訊）")
-            return "\n".join(lines)
-    else:
-        candidates = raw_candidates[:top_n]
-        if not candidates:
-            lines.append("（過濾大盤 β 後無顯著 rerating 訊號）")
-            return "\n".join(lines)
+        else:
+            lines.append("（穩定訊號通過 A/B/C 過濾後無候選）")
+            if rejected_weak_target or rejected_not_strong or rejected_not_decoupled:
+                lines.append(
+                    f" 排除：目標弱勢 {rejected_weak_target} / "
+                    f"目標未轉強 {rejected_not_strong} / 原屬未脫鉤 {rejected_not_decoupled}"
+                )
+        return "\n".join(lines)
 
     lines.append("（已扣除大盤 β、近 60 個交易日視窗，過濾 TAIEX 相關 >0.85 的萬有引力股）")
+    lines.append(
+        f"（A 目標族群評分 ≥{min_target_score:.0f} / "
+        f"B 目標強勢 (score ≥{strong_target_score:.0f} 或 RS>0) / "
+        f"C 原屬已脫鉤 excess corr <0）"
+    )
     lines.append("")
 
     for r in candidates:
         own_names = " / ".join(theme_names.get(k, k) for k in r["assigned_concepts"][:3])
-        new_name = theme_names.get(r["top_other_concept"], r["top_other_concept"])
+        new_key = r["top_other_concept"]
+        new_name = theme_names.get(new_key, new_key)
         consec = r.get("_consecutive", 1)
         consec_tag = f" [連續 {consec} 日]" if consec > 1 else ""
+        target_meta = ""
+        if theme_results and new_key in theme_score:
+            target_meta = (f" (目標 {theme_score[new_key]:.0f}分 RS{theme_rs[new_key]:+.1f}%)")
         lines.append(
             f"{r['code']} {r['name']} [{r['market']}]{consec_tag}\n"
             f"  原屬：{own_names} (excess corr {r['own_max_corr']:+.2f})\n"
-            f"  →更接近：{new_name} (excess corr {r['top_other_corr']:+.2f})\n"
+            f"  →更接近：{new_name}{target_meta} (excess corr {r['top_other_corr']:+.2f})\n"
             f"  Rerating 分數：+{r['rerating_score']:.2f}  (TAIEX β corr {r['taiex_corr']:.2f})"
         )
         lines.append("")
@@ -323,4 +386,4 @@ if __name__ == "__main__":
     results = analyze_all(concepts, stocks, taiex)
     rerating = compute_rerating(concepts, results, stocks, taiex_rows=taiex)
 
-    print(format_rerating_report(rerating, concepts, top_n=30))
+    print(format_rerating_report(rerating, concepts, top_n=30, theme_results=results))

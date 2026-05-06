@@ -203,7 +203,8 @@ def main():
     # Rerating analysis (β-adjusted, recent window, filter mega-caps)
     print("\n計算 rerating 訊號（β 調整）...", file=sys.stderr)
     rerating = compute_rerating(concepts, results, stocks, taiex_rows=taiex)
-    rerating_summary = format_rerating_report(rerating, concepts, top_n=15)
+    rerating_summary = format_rerating_report(rerating, concepts, top_n=15,
+                                              theme_results=results)
     print()
     print(rerating_summary)
 
