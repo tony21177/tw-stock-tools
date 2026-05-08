@@ -369,20 +369,20 @@ FINMIND_TOKEN=xxx python3 ~/project/tw_stock_tools/tw_margin_lookup.py 3035 --da
 FINMIND_TOKEN=xxx python3 ~/project/tw_stock_tools/tw_broker_lookup.py 2313
 
 # 全市場掃描 + 推送 Telegram
-TG_BOT_TOKEN=xxx FINMIND_TOKEN=xxx python3 ~/project/tw_stock_tools/tw_broker_monitor.py --top-n 100 --telegram
+TG_BOT_TOKEN=xxx FINMIND_TOKEN=xxx python3 ~/project/tw_stock_tools/tw_broker_monitor.py --top-n 200 --telegram
 ```
 
 ### 掃描標的選擇
 
 預設每天掃兩組標的的聯集：
-1. **Top N 大融資餘額**（預設 100）：用 TWSE/TPEx OpenAPI 取得當日融資餘額排序前 N 檔
+1. **Top N 大融資餘額**（預設 200）：用 TWSE/TPEx OpenAPI 取得當日融資餘額排序前 N 檔
 2. **概念動能強勢族群成分股**（評分 ≥ 70）：讀 `concept_momentum/cache/results/analysis_{today}.json`，把當天評分達門檻的所有族群成分股加入掃描範圍
 
-效果：避免某檔不在融資 Top 100 但在強勢概念中的個股漏抓 BSR 快取。可用 `--no-concept-strong` 關閉、`--concept-min-score 80` 調整門檻。
+效果：避免某檔不在融資 Top 200 但在強勢概念中的個股漏抓 BSR 快取。可用 `--no-concept-strong` 關閉、`--concept-min-score 80` 調整門檻。
 
 ### 排程
 ```
-0 18 * * 1-5 ... tw_broker_monitor.py --top-n 100 --telegram
+0 18 * * 1-5 ... tw_broker_monitor.py --top-n 200 --telegram
 ```
 週一到五傍晚 6:00（BSR 約 17:30 公布）累積資料並執行分析。第 5 個交易日起分析開始有效。
 注意：concept_momentum cron 設在 17:00 跑，會把 `analysis_{today}.json` 存好讓 18:00 broker_monitor 讀取。
