@@ -92,5 +92,46 @@ class TestLoader(unittest.TestCase):
         self.assertEqual(rows, [])
 
 
+class TestBrokerRadarRenderer(unittest.TestCase):
+    def test_render_basic_row(self):
+        from concept_momentum.broker_radar_renderer import render_table
+        rows = [{
+            "code": "2330", "name": "台積電",
+            "consecutive_days": 5, "latest_date": "20260508",
+            "top_broker_id": "9268", "top_broker_name": "凱基台北",
+            "top_broker_net_zhang": 3000, "margin_increase_zhang": 500,
+            "score": 75.9,
+        }]
+        html = render_table(rows)
+        self.assertIn("2330", html)
+        self.assertIn("台積電", html)
+        self.assertIn("5", html)  # consecutive
+        self.assertIn("2026/05/08", html)
+        self.assertIn("9268 凱基台北", html)
+        self.assertIn("3,000", html)  # net with comma
+        self.assertIn("75.9", html)
+        self.assertIn("<table", html)
+
+    def test_render_empty_shows_message(self):
+        from concept_momentum.broker_radar_renderer import render_table
+        html = render_table([])
+        self.assertIn("今日無主力雷達訊號", html)
+        self.assertNotIn("<table", html)
+
+    def test_render_top_30_only(self):
+        from concept_momentum.broker_radar_renderer import render_table
+        rows = [{
+            "code": f"{1000+i:04d}", "name": f"S{i}",
+            "consecutive_days": 1, "latest_date": "20260508",
+            "top_broker_id": "9268", "top_broker_name": "凱基",
+            "top_broker_net_zhang": 100, "margin_increase_zhang": 100,
+            "score": float(50 - i),  # descending so #1 has score 50, #50 has 0
+        } for i in range(50)]
+        html = render_table(rows)
+        # row #1 (S0) present, row #31 (S30) NOT present
+        self.assertIn("S0", html)
+        self.assertNotIn("<td>S30<", html)
+
+
 if __name__ == "__main__":
     unittest.main()
