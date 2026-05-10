@@ -24,6 +24,11 @@ concept_momentum/cache/stock_names.json
 concept_momentum/cache/news/
 concept_momentum/cache/market_universe/
 concept_momentum/cache/market_breadth/
+concept_momentum/cache/broker_radar_history/
+concept_momentum/cache/turnaround_relay_history/
+concept_momentum/cache/second_wave_history/
+concept_momentum/cache/lending_radar_history/
+concept_momentum/cache/short_retreat_history/
 concept_momentum/static/*.png
 concept_momentum/templates/dashboard.html
 concept_momentum/daily.log
