@@ -114,3 +114,61 @@ class TestUniverseCache(unittest.TestCase):
         # 1000 has both days; 1001 only has day 2
         self.assertEqual(history["1000"], [10.0, 11.0])
         self.assertEqual(history["1001"], [5.0])
+
+
+class TestRenderTable(unittest.TestCase):
+    def test_render_basic_row(self):
+        from concept_momentum.market_breadth_renderer import render_table
+        rows = [{
+            "date": "20260508",
+            "twii_close": 31840.5,
+            "twii_change_pct": 1.23,
+            "pct_above_20ma": 67.5, "pct_above_50ma": 54.2, "pct_above_200ma": 71.0,
+            "new_high_200d": 32,
+            "foreign_yi": 45.20, "trust_yi": -3.50, "dealer_yi": 8.10, "total_yi": 49.80,
+            "margin_balance_yi": 2894, "margin_delta_yi": 12.30,
+        }]
+        html = render_table(rows)
+        # Date format: 2026/05/08
+        self.assertIn("2026/05/08", html)
+        # Index with comma
+        self.assertIn("31,840", html)
+        # Pos color on +1.23%
+        self.assertIn('class="pos">+1.23%', html)
+        # Neg color on -3.50
+        self.assertIn('class="neg">-3.50', html)
+
+    def test_render_missing_cells_show_dash(self):
+        from concept_momentum.market_breadth_renderer import render_table
+        rows = [{
+            "date": "20260508",
+            "twii_close": None, "twii_change_pct": None,
+            "pct_above_20ma": None, "pct_above_50ma": None, "pct_above_200ma": None,
+            "new_high_200d": None,
+            "foreign_yi": None, "trust_yi": None, "dealer_yi": None, "total_yi": None,
+            "margin_balance_yi": None, "margin_delta_yi": None,
+        }]
+        html = render_table(rows)
+        self.assertIn("—", html)  # em-dash
+
+    def test_render_empty_shows_message(self):
+        from concept_momentum.market_breadth_renderer import render_table
+        html = render_table([])
+        self.assertIn("目前尚無數據", html)
+        self.assertNotIn("<table", html)  # no broken table
+
+    def test_render_descending_order(self):
+        from concept_momentum.market_breadth_renderer import render_table
+        rows = [
+            {"date": "20260506", "twii_close": 100, "twii_change_pct": 0,
+             "pct_above_20ma": 0, "pct_above_50ma": 0, "pct_above_200ma": 0,
+             "new_high_200d": 0, "foreign_yi": 0, "trust_yi": 0, "dealer_yi": 0,
+             "total_yi": 0, "margin_balance_yi": 0, "margin_delta_yi": 0},
+            {"date": "20260508", "twii_close": 200, "twii_change_pct": 0,
+             "pct_above_20ma": 0, "pct_above_50ma": 0, "pct_above_200ma": 0,
+             "new_high_200d": 0, "foreign_yi": 0, "trust_yi": 0, "dealer_yi": 0,
+             "total_yi": 0, "margin_balance_yi": 0, "margin_delta_yi": 0},
+        ]
+        html = render_table(rows)
+        # 5/8 should appear before 5/6 in HTML (descending)
+        self.assertLess(html.index("2026/05/08"), html.index("2026/05/06"))
