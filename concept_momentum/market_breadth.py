@@ -130,3 +130,77 @@ def save_universe_day(cache_dir: str, date_yyyymmdd: str, stocks: list[dict]) ->
     with open(path, "w") as f:
         json.dump({"date": date_yyyymmdd, "stocks": stocks}, f, ensure_ascii=False)
     return path
+
+
+from datetime import datetime, timedelta
+
+
+def _twii_trading_dates(end_date: str, days: int) -> list[str]:
+    """Return up to `days` trading dates ending at end_date by reading
+    cache/taiex.json. Falls back to weekday-only generation if cache missing."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    taiex_path = os.path.join(here, "cache", "taiex.json")
+    if os.path.exists(taiex_path):
+        with open(taiex_path) as f:
+            taiex = json.load(f)
+        dates = [r["date"] for r in taiex.get("rows", []) if r["date"] <= end_date]
+        return dates[-days:]
+    # Fallback: just weekdays
+    out = []
+    end = datetime.strptime(end_date, "%Y%m%d")
+    cur = end
+    while len(out) < days:
+        if cur.weekday() < 5:  # Mon-Fri
+            out.append(cur.strftime("%Y%m%d"))
+        cur -= timedelta(days=1)
+    return list(reversed(out))
+
+
+def backfill_universe(cache_dir: str, finmind_token: str,
+                      end_date: str, days: int = 200,
+                      delay_seconds: float = 0.5,
+                      verbose: bool = True) -> int:
+    """Fetch missing daily snapshots for the last `days` trading dates ending
+    at end_date. Returns number of new files written.
+
+    Uses cache/taiex.json's date list as the trading-day source of truth.
+    Sleeps `delay_seconds` between FinMind calls to respect free-tier limits.
+    On HTTP 429, sleeps 60s and retries once; on second failure, logs and skips.
+    """
+    dates = _twii_trading_dates(end_date, days)
+    written = 0
+    for d in dates:
+        path = os.path.join(cache_dir, f"{d}.json")
+        if os.path.exists(path):
+            continue
+        api_date = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+        try:
+            stocks = fetch_universe_one_day(api_date, finmind_token)
+        except Exception as e:
+            msg = str(e)
+            if "429" in msg or "rate" in msg.lower():
+                if verbose:
+                    print(f"[backfill] rate-limited at {d}, sleeping 60s", flush=True)
+                time.sleep(60)
+                try:
+                    stocks = fetch_universe_one_day(api_date, finmind_token)
+                except Exception as e2:
+                    if verbose:
+                        print(f"[backfill] still failing at {d}: {e2}", flush=True)
+                    continue
+            else:
+                if verbose:
+                    print(f"[backfill] error at {d}: {e}", flush=True)
+                continue
+        if not stocks:
+            if verbose:
+                print(f"[backfill] no data for {d} (holiday?)", flush=True)
+            continue
+        save_universe_day(cache_dir, d, stocks)
+        written += 1
+        if verbose and written % 10 == 0:
+            print(f"[backfill] wrote {written} days so far", flush=True)
+        time.sleep(delay_seconds)
+    if verbose:
+        print(f"[backfill] complete: {written} new files", flush=True)
+    return written
