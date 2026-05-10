@@ -207,54 +207,53 @@ def backfill_universe(cache_dir: str, finmind_token: str,
 
 
 def fetch_institutional_one_day(date: str, finmind_token: str) -> dict:
-    """Fetch 三大法人 buy-sell aggregate for one day.
+    """Fetch 三大法人 buy-sell aggregate for one day via FinMind sponsor tier.
 
     Returns {foreign_yi, trust_yi, dealer_yi, total_yi}  (yi = 億 NTD; +買超/-賣超)
-    Uses TWSE BFI82U endpoint which provides NTD amounts directly.
-    `finmind_token` is accepted for API compatibility but unused (TWSE is public).
+    Uses FinMind TaiwanStockTotalInstitutionalInvestors dataset (no TWSE rate-limit).
+    `date` in YYYY-MM-DD format.
     Raises RuntimeError on API error or missing data.
     """
-    # date format: YYYY-MM-DD → YYYYMMDD for TWSE
-    date_twse = date.replace("-", "")
-    url = (
-        f"https://www.twse.com.tw/rwd/zh/fund/BFI82U"
-        f"?response=json&dayDate={date_twse}&type=day"
-    )
+    params = {
+        "dataset": "TaiwanStockTotalInstitutionalInvestors",
+        "start_date": date,
+        "end_date": date,
+        "token": finmind_token,
+    }
+    url = f"{FINMIND_BASE}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             payload = json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         body = e.read().decode()
-        raise RuntimeError(f"TWSE 法人 HTTP {e.code} for {date}: {body[:200]}")
-    if payload.get("stat") != "OK":
-        raise RuntimeError(f"TWSE 法人 non-OK for {date}: {payload.get('stat', '')}")
+        raise RuntimeError(f"FinMind 法人 HTTP {e.code} for {date}: {body[:200]}")
+    if payload.get("status") != 200:
+        raise RuntimeError(f"FinMind 法人 error for {date}: {payload.get('msg', '')}")
 
     rows = payload.get("data", [])
     if not rows:
-        raise RuntimeError(f"TWSE 法人 empty data for {date} (holiday?)")
+        raise RuntimeError(f"FinMind 法人 empty data for {date} (holiday?)")
 
-    # Rows: ['單位名稱', '買進金額', '賣出金額', '買賣差額']
-    # Unit names: 自營商(自行買賣), 自營商(避險), 投信, 外資及陸資(不含外資自營商), 外資自營商, 合計
+    # name values: Foreign_Investor, Investment_Trust, Dealer_self, Dealer_Hedging,
+    #              Foreign_Dealer_Self, total
+    # buy/sell fields are in NTD (元)
     foreign = trust = dealer = total = 0.0
+    yi = 1e8
     for row in rows:
-        name = row[0]
-        # col 3 = 買賣差額 (NTD元)
-        try:
-            net = float(str(row[3]).replace(",", ""))
-        except (ValueError, IndexError):
-            continue
-        if "合計" in name:
+        name = row.get("name", "")
+        buy = float(row.get("buy", 0) or 0)
+        sell = float(row.get("sell", 0) or 0)
+        net = buy - sell
+        if name == "total":
             total = net
-        elif name.startswith("外資") and "自營商" not in name.split("(")[0]:
-            # Matches '外資及陸資(不含外資自營商)' but not '外資自營商'
-            foreign += net
-        elif "投信" in name:
-            trust += net
-        elif "自營商" in name:
+        elif name == "Foreign_Investor":
+            foreign = net
+        elif name == "Investment_Trust":
+            trust = net
+        elif name in ("Dealer_self", "Dealer_Hedging"):
             dealer += net
 
-    yi = 1e8
     return {
         "foreign_yi": round(foreign / yi, 2),
         "trust_yi": round(trust / yi, 2),
@@ -264,42 +263,38 @@ def fetch_institutional_one_day(date: str, finmind_token: str) -> dict:
 
 
 def fetch_margin_aggregate_one_day(date: str, finmind_token: str) -> dict:
-    """Fetch market-wide margin balance aggregate for one day.
+    """Fetch market-wide margin balance aggregate for one day via FinMind sponsor tier.
 
     Returns {margin_balance_yi}  (億 NTD — total outstanding margin loan amount)
-    Uses TWSE MI_MARGN endpoint which provides amounts in 千元.
-    `finmind_token` is accepted for API compatibility but unused (TWSE is public).
+    Uses FinMind TaiwanStockTotalMarginPurchaseShortSale dataset (no TWSE rate-limit).
+    `date` in YYYY-MM-DD format.
     """
-    # date format: YYYY-MM-DD → YYYYMMDD for TWSE
-    date_twse = date.replace("-", "")
-    url = (
-        f"https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN"
-        f"?response=json&date={date_twse}&selectType=MS"
-    )
+    params = {
+        "dataset": "TaiwanStockTotalMarginPurchaseShortSale",
+        "start_date": date,
+        "end_date": date,
+        "token": finmind_token,
+    }
+    url = f"{FINMIND_BASE}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             payload = json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         body = e.read().decode()
-        raise RuntimeError(f"TWSE 融資 HTTP {e.code} for {date}: {body[:200]}")
-    if payload.get("stat") != "OK":
-        raise RuntimeError(f"TWSE 融資 non-OK for {date}: {payload.get('stat', '')}")
+        raise RuntimeError(f"FinMind 融資 HTTP {e.code} for {date}: {body[:200]}")
+    if payload.get("status") != 200:
+        raise RuntimeError(f"FinMind 融資 error for {date}: {payload.get('msg', '')}")
 
-    # Response has 'tables' list; first table has rows including '融資金額(仟元)'
-    tables = payload.get("tables", [])
-    for table in tables:
-        if not isinstance(table, dict):
-            continue
-        for row in table.get("data", []):
-            if row and "融資金額" in str(row[0]):
-                # row: ['融資金額(仟元)', '買進', '賣出', '現金償還', '前日餘額', '今日餘額']
-                try:
-                    balance_qian = float(str(row[5]).replace(",", ""))  # 今日餘額 in 千元
-                    # 千元 → 億元: / 1e5
-                    return {"margin_balance_yi": round(balance_qian / 1e5, 2)}
-                except (ValueError, IndexError):
-                    pass
+    rows = payload.get("data", [])
+    # name values: MarginPurchase (shares), ShortSale (shares), MarginPurchaseMoney (NTD)
+    # MarginPurchaseMoney.TodayBalance is outstanding margin loan amount in NTD (元)
+    for row in rows:
+        if row.get("name") == "MarginPurchaseMoney":
+            today_bal = row.get("TodayBalance")
+            if today_bal is not None:
+                # NTD 元 → 億元: / 1e8
+                return {"margin_balance_yi": round(float(today_bal) / 1e8, 2)}
     return {"margin_balance_yi": None}
 
 
