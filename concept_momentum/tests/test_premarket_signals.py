@@ -71,5 +71,39 @@ class TestSecondWave(unittest.TestCase):
         self.assertEqual(rows[0]["consecutive_days"], 1)
 
 
+class TestPremarketRenderer(unittest.TestCase):
+    def test_render_with_data(self):
+        from concept_momentum.premarket_signals_renderer import render_table
+        tr_rows = [{"code": "2313", "name": "華通", "latest_date": "20260508",
+                    "layer1_passed": True, "abcd_score": 4, "consecutive_days": 3}]
+        sw_rows = [{"code": "2313", "name": "華通", "latest_date": "20260508",
+                    "second_wave_score": 8.5, "drop_pct": -22.0,
+                    "volume_ratio": 5.16, "consecutive_days": 2}]
+        html = render_table(tr_rows, sw_rows)
+        # both stocks shown
+        self.assertIn("轉機接力", html)
+        self.assertIn("強勢股第二波", html)
+        self.assertIn("2313", html)
+        self.assertIn("4", html)
+        self.assertIn("8.5", html)
+        self.assertIn("-22.0", html)
+        self.assertIn("5.16", html)
+
+    def test_render_both_empty(self):
+        from concept_momentum.premarket_signals_renderer import render_table
+        html = render_table([], [])
+        self.assertIn("近 10 個交易日無候選", html)
+
+    def test_render_one_section_empty(self):
+        from concept_momentum.premarket_signals_renderer import render_table
+        tr_rows = [{"code": "2313", "name": "華通", "latest_date": "20260508",
+                    "layer1_passed": True, "abcd_score": 4, "consecutive_days": 3}]
+        html = render_table(tr_rows, [])
+        # TR section has data; 2W section shows empty msg
+        self.assertIn("2313", html)
+        # Empty msg appears for 2W only
+        self.assertEqual(html.count("近 10 個交易日無候選"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
