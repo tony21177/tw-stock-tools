@@ -66,3 +66,51 @@ class TestComputeBreadth(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+import os
+import json
+import tempfile
+
+
+class TestUniverseCache(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def test_load_universe_history_aggregates(self):
+        """Reads multiple {date}.json files, returns {code: [close_oldest_first]}."""
+        from concept_momentum.market_breadth import load_universe_history
+
+        # Day 1: 2 stocks
+        with open(os.path.join(self.tmpdir, "20260101.json"), "w") as f:
+            json.dump({"date": "20260101",
+                       "stocks": [{"code": "1000", "close": 10.0},
+                                  {"code": "1001", "close": 20.0}]}, f)
+        # Day 2: same 2 stocks
+        with open(os.path.join(self.tmpdir, "20260102.json"), "w") as f:
+            json.dump({"date": "20260102",
+                       "stocks": [{"code": "1000", "close": 11.0},
+                                  {"code": "1001", "close": 19.0}]}, f)
+
+        history = load_universe_history(self.tmpdir, end_date="20260102", days=2)
+
+        self.assertEqual(history["1000"], [10.0, 11.0])
+        self.assertEqual(history["1001"], [20.0, 19.0])
+
+    def test_load_universe_history_skips_missing_codes(self):
+        """A stock missing on day N is skipped for that day."""
+        from concept_momentum.market_breadth import load_universe_history
+
+        with open(os.path.join(self.tmpdir, "20260101.json"), "w") as f:
+            json.dump({"date": "20260101",
+                       "stocks": [{"code": "1000", "close": 10.0}]}, f)
+        with open(os.path.join(self.tmpdir, "20260102.json"), "w") as f:
+            json.dump({"date": "20260102",
+                       "stocks": [{"code": "1000", "close": 11.0},
+                                  {"code": "1001", "close": 5.0}]}, f)
+
+        history = load_universe_history(self.tmpdir, end_date="20260102", days=2)
+
+        # 1000 has both days; 1001 only has day 2
+        self.assertEqual(history["1000"], [10.0, 11.0])
+        self.assertEqual(history["1001"], [5.0])

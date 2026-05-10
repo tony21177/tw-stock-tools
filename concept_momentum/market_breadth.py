@@ -41,3 +41,30 @@ def compute_breadth_for_day(history: dict[str, list[float]]) -> dict:
         if closes[-1] > prior_max:
             new_high += 1
     return {**pcts, "new_high_200d": new_high}
+
+
+import json
+import os
+
+
+def load_universe_history(cache_dir: str, end_date: str, days: int) -> dict[str, list[float]]:
+    """Load up to `days` days of {YYYYMMDD}.json files ending at end_date.
+
+    Returns {code: [close_oldest, ..., close_at_end_date]}. A stock missing on
+    a particular day simply has no entry for that day in the list (not None).
+
+    end_date inclusive. Files newer than end_date are ignored.
+    """
+    if not os.path.isdir(cache_dir):
+        return {}
+    files = sorted(f for f in os.listdir(cache_dir)
+                   if f.endswith(".json") and f[:8] <= end_date)
+    files = files[-days:]
+
+    history: dict[str, list[float]] = {}
+    for fname in files:
+        with open(os.path.join(cache_dir, fname)) as f:
+            data = json.load(f)
+        for s in data.get("stocks", []):
+            history.setdefault(s["code"], []).append(s["close"])
+    return history
