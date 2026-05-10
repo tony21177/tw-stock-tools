@@ -186,7 +186,10 @@ def generate_trend_png(results: list[dict], target_date: str, top_n: int = 8) ->
 
 
 def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
-                  breadth_table_html: str = "") -> str:
+                  breadth_table_html: str = "",
+                  broker_radar_html: str = "",
+                  premarket_signals_html: str = "",
+                  lending_history_html: str = "") -> str:
     """Interactive HTML dashboard with snapshot + trend + leaders."""
     os.makedirs(TEMPLATES_DIR, exist_ok=True)
 
@@ -385,6 +388,9 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
 
 <div class="tabs">
   <div class="tab active" onclick="showTab('breadth')">📊 大盤寬度</div>
+  <div class="tab" onclick="showTab('broker')">🎯 主力雷達</div>
+  <div class="tab" onclick="showTab('premarket')">🌅 盤前訊號</div>
+  <div class="tab" onclick="showTab('lending')">🌙 借券動向</div>
   <div class="tab" onclick="showTab('snap')">🔥 今日快照</div>
   <div class="tab" onclick="showTab('trend')">📈 3 個月趨勢</div>
   <div class="tab" onclick="showTab('leaders')">強勢族群領漲股</div>
@@ -395,6 +401,21 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
   <h2>📊 大盤寬度（最近 60 個交易日）</h2>
   <p class="meta">寬度池 = 上市+上櫃 普通股 4 位代號 (~2,300 檔) | 紅 = 漲/買超 / 綠 = 跌/賣超 / 缺值 = —</p>
   {breadth_table_html}
+</div>
+<div id="tab-broker" class="tab-content chart-wrap">
+  <h2>🎯 主力雷達歷史榜（10 日視窗）</h2>
+  <p class="meta">綜合分數 = 連續天數 × (log(Top 分點累計淨買 + 1) + sqrt(融資增量)) / 2 | Top 30</p>
+  {broker_radar_html}
+</div>
+<div id="tab-premarket" class="tab-content chart-wrap">
+  <h2>🌅 盤前訊號（10 日視窗）</h2>
+  <p class="meta">盤前 07:30 / 07:40 cron 跑出的兩層篩選結果</p>
+  {premarket_signals_html}
+</div>
+<div id="tab-lending" class="tab-content chart-wrap">
+  <h2>🌙 借券動向（5 日視窗）</h2>
+  <p class="meta">盤後 16:00 / 21:30 cron 跑出的議借爆量 + 借券賣餘大減</p>
+  {lending_history_html}
 </div>
 <div id="tab-snap" class="tab-content chart-wrap">{snapshot_html}</div>
 <div id="tab-trend" class="tab-content chart-wrap">{trend_html}{index_html}</div>
