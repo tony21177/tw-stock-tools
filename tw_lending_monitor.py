@@ -495,7 +495,8 @@ def main():
                             "code": a.get("code", ""),
                             "name": a.get("name", a.get("code", "")),
                             "lending_zhang": a.get("today_vol", 0),
-                            "ratio_5d": round(a.get("spike_pct", 0.0), 2),
+                            "ratio_5d": (None if a.get("spike_pct", 0) >= 999
+                                         else round(a.get("spike_pct", 0) / 100 + 1, 2)),
                             "rate_pct": round(a.get("fee_rate", 0.0), 2),
                         } for a in results
                     ],
