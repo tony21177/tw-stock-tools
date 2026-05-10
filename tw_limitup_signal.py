@@ -683,6 +683,7 @@ def main():
     p.add_argument("--chat-id", default=DEFAULT_CHAT_ID, help="Telegram Chat ID")
     p.add_argument("--quiet", action="store_true", help="不顯示掃描進度")
     p.add_argument("--limit", type=int, default=0, help="只掃前 N 檔 (0 = 全部，測試用)")
+    p.add_argument("--json-out", help="將 Layer 2 ABCD 結果寫到 JSON 路徑（dashboard 用）")
     args = p.parse_args()
 
     target = args.date or datetime.now().strftime("%Y-%m-%d")
@@ -790,6 +791,24 @@ def main():
     report = format_report(report_date, scored, header=args.header,
                            min_score=args.min_score, source_label=source_label)
     print(report)
+
+    if getattr(args, "json_out", None):
+        import os as _os
+        _os.makedirs(_os.path.dirname(_os.path.abspath(args.json_out)) or ".", exist_ok=True)
+        date_str = actual_data_date.replace("-", "")
+        candidates = [
+            {
+                "code": s["code"],
+                "name": s["name"],
+                "layer1_passed": True,
+                "abcd_score": int(s["score"]),
+            }
+            for _, s in scored
+        ]
+        with open(args.json_out, "w", encoding="utf-8") as _f:
+            json.dump({"date": date_str, "candidates": candidates}, _f,
+                      ensure_ascii=False, indent=2)
+        print(f"[limitup_signal] wrote {args.json_out}", file=sys.stderr)
 
     if args.telegram:
         if not args.bot_token:

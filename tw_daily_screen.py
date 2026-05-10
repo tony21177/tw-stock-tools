@@ -46,6 +46,7 @@ def main():
                    help="FinMind token")
     p.add_argument("--universe", default="all",
                    help="screener universe (all / concepts / 逗號代號)")
+    p.add_argument("--json-out", help="將 Layer 2 結果寫到 JSON 路徑（dashboard 用）")
     args = p.parse_args()
 
     use_tg = not args.no_tg
@@ -83,6 +84,8 @@ def main():
         if use_tg:
             _push_text(f"📅 {today} Layer 1 無候選 — 不執行 Layer 2",
                        args.bot_token, args.chat_id)
+        if args.json_out:
+            _write_empty_json(args.json_out, today)
         return
 
     if not layer1:
@@ -91,6 +94,8 @@ def main():
             _push_text(f"📅 {today} Layer 1 無候選 — 不執行 Layer 2",
                        args.bot_token, args.chat_id)
         os.unlink(json_path)
+        if args.json_out:
+            _write_empty_json(args.json_out, today)
         return
 
     print(f"\n✅ Layer 1: {len(layer1)} 檔候選\n", file=sys.stderr)
@@ -108,6 +113,8 @@ def main():
     if use_tg:
         cmd2.extend(["--telegram", "--bot-token", args.bot_token,
                      "--chat-id", args.chat_id])
+    if args.json_out:
+        cmd2.extend(["--json-out", args.json_out])
     r2 = subprocess.run(cmd2, capture_output=False)
     if r2.returncode != 0:
         print(f"[ERROR] Layer 2 失敗 (exit {r2.returncode})", file=sys.stderr)
@@ -119,6 +126,15 @@ def main():
         pass
 
     print("\n✅ 完成", file=sys.stderr)
+
+
+def _write_empty_json(path: str, today_str: str) -> None:
+    """Write empty candidates JSON so the dashboard can read it even on non-trading days."""
+    date_str = datetime.now().strftime("%Y%m%d")
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"date": date_str, "candidates": []}, f)
+    print(f"[daily_screen] wrote empty {path}", file=sys.stderr)
 
 
 def _push_text(text: str, bot_token: str, chat_id: str) -> None:
