@@ -68,3 +68,65 @@ def load_universe_history(cache_dir: str, end_date: str, days: int) -> dict[str,
         for s in data.get("stocks", []):
             history.setdefault(s["code"], []).append(s["close"])
     return history
+
+
+import urllib.request
+import urllib.parse
+import time
+
+FINMIND_BASE = "https://api.finmindtrade.com/api/v4/data"
+
+
+def fetch_universe_one_day(date: str, finmind_token: str) -> list[dict]:
+    """Fetch all stocks' close prices for a single trading day from FinMind.
+
+    `date` in YYYY-MM-DD format. Returns list of
+        [{code, close, volume}]
+    Filtered to 4-digit numeric codes (excludes ETF/REITs/warrants/sector indices).
+
+    Raises RuntimeError on API error (4xx/5xx or status != 200 in payload).
+
+    Note: FinMind's TaiwanStockPrice requires start_date+end_date (not just `date`).
+    Sponsor-tier account required for the all-stocks variant.
+    """
+    import re
+    params = {
+        "dataset": "TaiwanStockPrice",
+        "start_date": date,
+        "end_date": date,
+        "token": finmind_token,
+    }
+    url = f"{FINMIND_BASE}?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        raise RuntimeError(f"FinMind HTTP {e.code} for {date}: {body[:200]}")
+    if payload.get("status") != 200:
+        raise RuntimeError(f"FinMind error for {date}: {payload.get('msg', '')}")
+
+    out = []
+    for row in payload.get("data", []):
+        code = str(row.get("stock_id", ""))
+        if not re.fullmatch(r"\d{4}", code):
+            continue
+        close = row.get("close")
+        if close is None or close <= 0:
+            continue
+        out.append({
+            "code": code,
+            "close": float(close),
+            "volume": int(row.get("Trading_Volume", 0)),
+        })
+    return out
+
+
+def save_universe_day(cache_dir: str, date_yyyymmdd: str, stocks: list[dict]) -> str:
+    """Write {date}.json. Returns path."""
+    os.makedirs(cache_dir, exist_ok=True)
+    path = os.path.join(cache_dir, f"{date_yyyymmdd}.json")
+    with open(path, "w") as f:
+        json.dump({"date": date_yyyymmdd, "stocks": stocks}, f, ensure_ascii=False)
+    return path
