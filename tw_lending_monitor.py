@@ -446,6 +446,10 @@ def main():
     parser.add_argument("--telegram", action="store_true", help="推送到 Telegram")
     parser.add_argument("--bot-token", help="Telegram Bot Token（或設 TG_BOT_TOKEN 環境變數）")
     parser.add_argument("--chat-id", default=DEFAULT_CHAT_ID, help="Telegram Chat ID")
+    parser.add_argument("--json-out-lending",
+                        help="議借異常結果寫到 JSON 路徑（dashboard 用）")
+    parser.add_argument("--json-out-sbl",
+                        help="借券賣出減少結果寫到 JSON 路徑（dashboard 用）")
     args = parser.parse_args()
 
     import os
@@ -480,6 +484,24 @@ def main():
         lending_output = format_lending_output(results, target_date)
         print("\n" + lending_output)
 
+        if args.json_out_lending:
+            import os as _os
+            _os.makedirs(_os.path.dirname(_os.path.abspath(args.json_out_lending)) or ".", exist_ok=True)
+            with open(args.json_out_lending, "w") as f:
+                json.dump({
+                    "date": target_date,
+                    "stocks": [
+                        {
+                            "code": a.get("code", ""),
+                            "name": a.get("name", a.get("code", "")),
+                            "lending_zhang": a.get("today_vol", 0),
+                            "ratio_5d": round(a.get("spike_pct", 0.0), 2),
+                            "rate_pct": round(a.get("fee_rate", 0.0), 2),
+                        } for a in results
+                    ],
+                }, f, ensure_ascii=False, indent=2)
+            print(f"[lending_monitor] wrote {args.json_out_lending}", file=sys.stderr)
+
     # 2. 借券賣出大幅減少
     if args.mode in ("sbl", "both"):
         if args.mode == "both":
@@ -506,6 +528,23 @@ def main():
 
         sbl_output = format_sbl_output(sbl_results, target_date)
         print("\n" + sbl_output)
+
+        if args.json_out_sbl:
+            import os as _os
+            _os.makedirs(_os.path.dirname(_os.path.abspath(args.json_out_sbl)) or ".", exist_ok=True)
+            with open(args.json_out_sbl, "w") as f:
+                json.dump({
+                    "date": target_date,
+                    "stocks": [
+                        {
+                            "code": s.get("code", ""),
+                            "name": s.get("name", s.get("code", "")),
+                            "balance_change_pct": round(s.get("change_pct", 0.0), 2),
+                            "today_change_pct": round(s.get("change_pct_price", 0.0), 2),
+                        } for s in sbl_results
+                    ],
+                }, f, ensure_ascii=False, indent=2)
+            print(f"[lending_monitor] wrote {args.json_out_sbl}", file=sys.stderr)
 
     if args.telegram:
         if not bot_token:
