@@ -19,6 +19,8 @@ from concept_momentum import analyze_all, add_score_history
 from concept_charts import generate_png, generate_trend_png, generate_html
 from rerating_detector import compute_rerating, format_rerating_report
 from business_drift_detector import detect_drift, format_drift_report
+from market_breadth import run_today as run_market_breadth, BREADTH_DIR
+from market_breadth_renderer import render_table
 
 DEFAULT_CHAT_ID = "-5229750819"
 TG_API_URL = "https://api.telegram.org/bot{token}"
@@ -188,7 +190,26 @@ def main():
     target_date = datetime.now().strftime("%Y-%m-%d")
     png_path = generate_png(results, target_date)
     trend_png = generate_trend_png(results, target_date)
-    html_path = generate_html(results, taiex, target_date)
+    # Market breadth — fetch + compute + render
+    target_yyyymmdd = datetime.now().strftime("%Y%m%d")
+    finmind_token = os.environ.get("FINMIND_TOKEN", "")
+    breadth_html = ""
+    if finmind_token:
+        print("計算大盤寬度...", file=sys.stderr)
+        try:
+            run_market_breadth(target_yyyymmdd, finmind_token, verbose=True)
+        except Exception as e:
+            print(f"[WARN] market_breadth: {e}", file=sys.stderr)
+        # Load last 60 breadth rows for table
+        if os.path.isdir(BREADTH_DIR):
+            files = sorted(f for f in os.listdir(BREADTH_DIR) if f.endswith(".json"))[-60:]
+            rows = []
+            for fname in files:
+                with open(os.path.join(BREADTH_DIR, fname)) as f:
+                    rows.append(json.load(f))
+            breadth_html = render_table(rows)
+
+    html_path = generate_html(results, taiex, target_date, breadth_table_html=breadth_html)
     print(f"Snapshot PNG: {png_path}")
     print(f"Trend PNG: {trend_png}")
     print(f"HTML: {html_path}")
