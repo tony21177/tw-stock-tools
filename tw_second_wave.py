@@ -410,6 +410,7 @@ def main():
     p.add_argument("--universe", default="all", help="all / concepts / 逗號代號")
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--telegram", action="store_true")
+    p.add_argument("--json-out", help="將今日候選寫到 JSON 路徑（dashboard 用）")
     p.add_argument("--bot-token", default=os.environ.get("TG_BOT_TOKEN", ""))
     p.add_argument("--chat-id", default=DEFAULT_CHAT_ID)
     p.add_argument("--workers", type=int, default=6)
@@ -445,6 +446,32 @@ def main():
 
     report = format_report(survivors, len(universe))
     print(report)
+
+    if args.json_out:
+        import os as _os
+        _os.makedirs(_os.path.dirname(_os.path.abspath(args.json_out)) or ".", exist_ok=True)
+        from datetime import datetime as _dt
+        with open(args.json_out, "w") as _f:
+            json.dump({
+                "date": _dt.now().strftime("%Y%m%d"),
+                "candidates": [
+                    {
+                        "code": c.get("code", ""),
+                        "name": c.get("name", c.get("code", "")),
+                        "second_wave_score": round(
+                            c.get("rally_gain", 0.0) *
+                            c.get("drop_pct", 0.0) *
+                            c.get("bounce_pct", 0.0) *
+                            min(c.get("vol_ratio", 0.0), 3) *
+                            (c.get("today_vs_peak", 0.7) - 0.7),
+                            4,
+                        ),
+                        "drop_pct": round(c.get("drop_pct", 0.0), 4),
+                        "volume_ratio": round(c.get("vol_ratio", 0.0), 2),
+                    } for c in survivors
+                ],
+            }, _f, ensure_ascii=False, indent=2)
+        print(f"[second_wave] wrote {args.json_out}", file=sys.stderr)
 
     if args.telegram:
         if not args.bot_token:
