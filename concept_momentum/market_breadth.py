@@ -238,9 +238,14 @@ def fetch_institutional_one_day(date: str, finmind_token: str) -> dict:
     # name values: Foreign_Investor, Investment_Trust, Dealer_self, Dealer_Hedging,
     #              Foreign_Dealer_Self, total
     # buy/sell fields are in NTD (元)
+    # IMPORTANT: FinMind returns next-day rows too when querying start_date=end_date=X
+    # if X+1 is also a trading day. Filter to the requested date so we don't
+    # overwrite the queried day's data with the next day's (off-by-one bug).
     foreign = trust = dealer = total = 0.0
     yi = 1e8
     for row in rows:
+        if row.get("date") != date:
+            continue
         name = row.get("name", "")
         buy = float(row.get("buy", 0) or 0)
         sell = float(row.get("sell", 0) or 0)
@@ -289,7 +294,10 @@ def fetch_margin_aggregate_one_day(date: str, finmind_token: str) -> dict:
     rows = payload.get("data", [])
     # name values: MarginPurchase (shares), ShortSale (shares), MarginPurchaseMoney (NTD)
     # MarginPurchaseMoney.TodayBalance is outstanding margin loan amount in NTD (元)
+    # IMPORTANT: same off-by-one quirk as institutional fetcher — filter to requested date.
     for row in rows:
+        if row.get("date") != date:
+            continue
         if row.get("name") == "MarginPurchaseMoney":
             today_bal = row.get("TodayBalance")
             if today_bal is not None:
