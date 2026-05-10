@@ -301,3 +301,100 @@ def fetch_margin_aggregate_one_day(date: str, finmind_token: str) -> dict:
                 except (ValueError, IndexError):
                     pass
     return {"margin_balance_yi": None}
+
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+UNIVERSE_DIR = os.path.join(HERE, "cache", "market_universe")
+BREADTH_DIR = os.path.join(HERE, "cache", "market_breadth")
+
+
+def _load_taiex() -> list[dict]:
+    """Load cached ^TWII rows. Returns [] if missing."""
+    path = os.path.join(HERE, "cache", "taiex.json")
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        return json.load(f).get("rows", [])
+
+
+def _index_change_pct(taiex_rows: list[dict], date: str) -> tuple[float | None, float | None]:
+    """Return (close_today, pct_change_vs_prev_trading_day)."""
+    rows = sorted(taiex_rows, key=lambda r: r["date"])
+    today_idx = next((i for i, r in enumerate(rows) if r["date"] == date), None)
+    if today_idx is None or today_idx == 0:
+        return None, None
+    today = rows[today_idx]["close"]
+    prev = rows[today_idx - 1]["close"]
+    if prev <= 0:
+        return today, None
+    return today, round((today - prev) / prev * 100, 2)
+
+
+def run_today(today_yyyymmdd: str, finmind_token: str,
+              backfill_days: int = 200, history_days: int = 60,
+              verbose: bool = True) -> dict:
+    """Top-level: ensure backfill, compute today's breadth row, save.
+
+    Returns the breadth row dict for today.
+    """
+    os.makedirs(UNIVERSE_DIR, exist_ok=True)
+    os.makedirs(BREADTH_DIR, exist_ok=True)
+
+    # 1. Ensure universe backfill
+    if verbose:
+        print(f"[market_breadth] checking universe cache up to {today_yyyymmdd}", flush=True)
+    backfill_universe(UNIVERSE_DIR, finmind_token, today_yyyymmdd,
+                      days=backfill_days, verbose=verbose)
+
+    # 2. Compute today's breadth
+    history = load_universe_history(UNIVERSE_DIR, today_yyyymmdd, days=210)
+    breadth = compute_breadth_for_day(history)
+
+    # 3. Index level + change
+    taiex_rows = _load_taiex()
+    close, change_pct = _index_change_pct(taiex_rows, today_yyyymmdd)
+
+    # 4. Institutional + margin (today only — no per-day backfill needed for these
+    #    because rendering only shows the last 60 days from the per-day cache)
+    api_date = f"{today_yyyymmdd[:4]}-{today_yyyymmdd[4:6]}-{today_yyyymmdd[6:8]}"
+    try:
+        inst = fetch_institutional_one_day(api_date, finmind_token)
+    except Exception as e:
+        if verbose: print(f"[market_breadth] inst error: {e}", flush=True)
+        inst = {"foreign_yi": None, "trust_yi": None, "dealer_yi": None, "total_yi": None}
+    try:
+        margin = fetch_margin_aggregate_one_day(api_date, finmind_token)
+    except Exception as e:
+        if verbose: print(f"[market_breadth] margin error: {e}", flush=True)
+        margin = {"margin_balance_yi": None}
+
+    # 5. Compute margin delta vs yesterday
+    margin_delta = None
+    if margin["margin_balance_yi"] is not None:
+        prev_files = sorted(f for f in os.listdir(BREADTH_DIR)
+                            if f.endswith(".json") and f[:8] < today_yyyymmdd)
+        if prev_files:
+            with open(os.path.join(BREADTH_DIR, prev_files[-1])) as f:
+                prev = json.load(f)
+            prev_balance = prev.get("margin_balance_yi")
+            if prev_balance is not None:
+                margin_delta = round(margin["margin_balance_yi"] - prev_balance, 2)
+
+    row = {
+        "date": today_yyyymmdd,
+        "twii_close": close,
+        "twii_change_pct": change_pct,
+        **breadth,
+        **inst,
+        **margin,
+        "margin_delta_yi": margin_delta,
+    }
+
+    # 6. Save
+    out_path = os.path.join(BREADTH_DIR, f"{today_yyyymmdd}.json")
+    with open(out_path, "w") as f:
+        json.dump(row, f, ensure_ascii=False)
+    if verbose:
+        print(f"[market_breadth] wrote {out_path}", flush=True)
+
+    return row
