@@ -185,7 +185,8 @@ def generate_trend_png(results: list[dict], target_date: str, top_n: int = 8) ->
     return out_path
 
 
-def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str) -> str:
+def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
+                  breadth_table_html: str = "") -> str:
     """Interactive HTML dashboard with snapshot + trend + leaders."""
     os.makedirs(TEMPLATES_DIR, exist_ok=True)
 
@@ -383,13 +384,19 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str)
 <div class="meta">報告日期: {target_date} | 評分: 40% 廣度 + 20% 量能 + 20% RS + 20% 持續天數</div>
 
 <div class="tabs">
-  <div class="tab active" onclick="showTab('snap')">今日快照</div>
-  <div class="tab" onclick="showTab('trend')">3 個月趨勢</div>
+  <div class="tab active" onclick="showTab('breadth')">📊 大盤寬度</div>
+  <div class="tab" onclick="showTab('snap')">🔥 今日快照</div>
+  <div class="tab" onclick="showTab('trend')">📈 3 個月趨勢</div>
   <div class="tab" onclick="showTab('leaders')">強勢族群領漲股</div>
   <div class="tab" onclick="showTab('full')">完整排行</div>
 </div>
 
-<div id="tab-snap" class="tab-content active chart-wrap">{snapshot_html}</div>
+<div id="tab-breadth" class="tab-content active chart-wrap">
+  <h2>📊 大盤寬度（最近 60 個交易日）</h2>
+  <p class="meta">寬度池 = 上市+上櫃 普通股 4 位代號 (~2,300 檔) | 紅 = 漲/買超 / 綠 = 跌/賣超 / 缺值 = —</p>
+  {breadth_table_html}
+</div>
+<div id="tab-snap" class="tab-content chart-wrap">{snapshot_html}</div>
 <div id="tab-trend" class="tab-content chart-wrap">{trend_html}{index_html}</div>
 <div id="tab-leaders" class="tab-content chart-wrap">
   <h2>族群領漲股 + 弱勢成員（評分 ≥50，可配對交易）</h2>
