@@ -236,6 +236,7 @@ def main():
                         help="跳過 BSR 抓取，直接用快取做分析")
     parser.add_argument("--allow-margin-decrease", action="store_true",
                         help="允許區間融資餘額為負成長的標的入榜 (預設只保留正成長 = 主力建倉訊號)")
+    parser.add_argument("--json-out", help="將今日結果寫到指定 JSON 檔案路徑（dashboard 歷史榜用）")
     args = parser.parse_args()
 
     bot_token = args.bot_token or os.environ.get("TG_BOT_TOKEN", "")
@@ -273,6 +274,31 @@ def main():
                           require_margin_increase=not args.allow_margin_decrease,
                           skip_fetch_if_missing=args.analyze_only)
     print(f"  命中 {len(results)} 檔", file=sys.stderr)
+
+    if args.json_out:
+        os.makedirs(os.path.dirname(os.path.abspath(args.json_out)) or ".", exist_ok=True)
+        with open(args.json_out, "w") as f:
+            json.dump({
+                "date": datetime.now().strftime("%Y%m%d"),
+                "stocks": [
+                    {
+                        "code": r["code"],
+                        "name": r["name"],
+                        "current_balance": r["current_balance"],
+                        "margin_increase_zhang": r["margin_increase"],
+                        "candidates": [
+                            {
+                                "broker_id": c["broker_id"],
+                                "broker_name": c["broker_name"],
+                                "active_days": c["active_days"],
+                                "total_net_zhang": c["total_net"] // 1000,
+                                "correlation": round(c["correlation"], 3),
+                            } for c in r["candidates"][:5]
+                        ],
+                    } for r in results
+                ],
+            }, f, ensure_ascii=False, indent=2)
+        print(f"[broker_monitor] wrote {args.json_out}", file=sys.stderr)
 
     summary = format_summary(results, target_date, args.days)
     print(summary)
