@@ -707,7 +707,38 @@ python3 ~/project/tw_stock_tools/tw_limitup_signal.py --codes ... \
 - **業務轉型**：新聞主題與原概念差 ≥1.5x，且 ≥2 個不同關鍵字 (避誤判)
 - 推送 Snapshot PNG + Trend PNG + 4 則文字摘要到 Telegram
 - **大盤寬度 (Market Breadth)**：dashboard.html 最上方分頁，13 欄 × 60 個交易日。寬度池 = 上市+上櫃 普通股 4 位代號 (~2,300 檔)。包含加權指數 / 漲跌幅 / 股價>20-50-200MA% / 200日新高 / 三大法人 (拆 4 欄) / 融資餘額 + 增減
+  - **資料源**：FinMind sponsor tier (`TaiwanStockPrice` 全市場 + `TaiwanStockTotalInstitutionalInvestors` + `TaiwanStockTotalMarginPurchaseShortSale`)
+  - **已知 quirk**：FinMind 法人/融資 dataset 在查 `start_date=end_date=X` 時會回傳 X 與 X+1 兩天的資料；fetcher 已加 `if row['date'] != date: continue` 過濾，避免 off-by-one（commit a4b45f1）
+  - **歷史 backfill**：首次部署需 200 天 universe 快取，`market_breadth.backfill_universe()` 自動執行 (~3-5 分鐘)；之後每天 cron 1 個 FinMind 呼叫即增量更新
 - **快取**：`concept_momentum/cache/market_universe/{date}.json` (全市場日 OHLC) + `concept_momentum/cache/market_breadth/{date}.json` (計算結果)，皆 gitignored
+
+### 本機看儀表板
+
+```bash
+# 手動啟動 Flask（開發用，預設 port 5000）
+python3 ~/project/tw_stock_tools/concept_momentum/app.py
+# → 開啟 http://localhost:5000/
+```
+
+### systemd 自動化（生產用，WSL 開機自啟）
+
+兩個 user systemd unit 已在 `~/.config/systemd/user/`：
+- `concept-dashboard.service` — Flask 永久跑在 :5000
+- `ngrok-tunnel.service` — ngrok 對外公開 :5000
+
+啟用 lingering 一次（之後重開 WSL/Windows 都會自動跑）：
+```bash
+sudo loginctl enable-linger $USER
+systemctl --user enable concept-dashboard.service ngrok-tunnel.service
+systemctl --user start concept-dashboard.service ngrok-tunnel.service
+```
+
+查當前 ngrok 公網網址：
+```bash
+curl -s http://localhost:4040/api/tunnels | python3 -c 'import sys,json;[print(t["public_url"]) for t in json.load(sys.stdin)["tunnels"]]'
+```
+
+Free-tier ngrok 每次重啟會發隨機網址；如要固定網址需升級 ngrok Pro 並設 reserved domain。
 
 ---
 
