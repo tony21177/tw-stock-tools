@@ -706,6 +706,8 @@ python3 ~/project/tw_stock_tools/tw_limitup_signal.py --codes ... \
   - 快取於 `concept_momentum/cache/rerating_history/{date}.json`（A/B/C 在過濾**之前**已存檔，保留歷史訊號密度）
 - **業務轉型**：新聞主題與原概念差 ≥1.5x，且 ≥2 個不同關鍵字 (避誤判)
 - 推送 Snapshot PNG + Trend PNG + 4 則文字摘要到 Telegram
+- **大盤寬度 (Market Breadth)**：dashboard.html 最上方分頁，13 欄 × 60 個交易日。寬度池 = 上市+上櫃 普通股 4 位代號 (~2,300 檔)。包含加權指數 / 漲跌幅 / 股價>20-50-200MA% / 200日新高 / 三大法人 (拆 4 欄) / 融資餘額 + 增減
+- **快取**：`concept_momentum/cache/market_universe/{date}.json` (全市場日 OHLC) + `concept_momentum/cache/market_breadth/{date}.json` (計算結果)，皆 gitignored
 
 ---
 

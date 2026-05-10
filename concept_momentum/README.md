@@ -306,6 +306,31 @@ top_count = news_top_theme 的提及次數
 
 ---
 
+## 大盤寬度看板 (Market Breadth)
+
+每日 17:00 cron 完成概念分析後，自動跑 `market_breadth.run_today()`，產生 13 欄資料：
+
+| 欄位 | 說明 | 來源 |
+|------|------|------|
+| 日期 | 交易日 | TWSE/TPEx |
+| 加權指數 | ^TWII 收盤 | Yahoo (cached taiex.json) |
+| 漲跌幅% | 大盤日漲跌 | 計算 |
+| 股價>20MA% | 收盤站上月線比例 | FinMind 全市場 (sponsor tier) |
+| 股價>50MA% | 站上季線 | 同上 |
+| 股價>200MA% | 站上年線 | 同上 |
+| 200日新高數 | 創 200 日新高個股數 | 同上 |
+| 外資 / 投信 / 自營 (億) | 三大法人各別淨買賣超 | FinMind TaiwanStockTotalInstitutionalInvestors |
+| 法人合計 (億) | 三者加總 | 計算 |
+| 融資 (億) | 大盤融資使用金額 | FinMind TaiwanStockTotalMarginPurchaseShortSale |
+| 融資增減 (億) | 日比變化 | 計算 |
+
+**寬度池**: 上市+上櫃 4 位數代號 (~2,300 檔)，排除 ETF/REITs/權證。
+**首次部署需 backfill 200 天**: `backfill_universe()` 透過 FinMind sponsor tier 一次性執行 (~3-5 分鐘)。
+**FinMind sponsor 等級**：必要 — 「全市場一天」查詢需 sponsor 權限。
+**沒有 TWSE 直接呼叫**：原始實作曾走 TWSE，但有 rate-limit 風險；現已全部統一用 FinMind sponsor。
+
+---
+
 ## 已知限制
 
 1. **名單會過期**：熱門概念每季變動，需手動維護 `concepts.json`
