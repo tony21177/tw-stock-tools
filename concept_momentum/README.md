@@ -348,3 +348,29 @@ top_count = news_top_theme 的提及次數
 **高 20d 報酬 + 低持續天數**：單日爆衝型，可能是事件利多，延續性低，不建議追高。
 **低廣度 + 高漲幅**：只有領漲股在漲，族群效應不明顯。
 **RS 正、但量比 <1**：表示強於大盤但量能退縮，可能是短暫補漲。
+
+---
+
+## 策略歷史榜三分頁 (Strategy History Tabs)
+
+dashboard 自第二分頁起，依 cron 執行時間順序：
+
+### 主力雷達歷史榜 (broker_radar_history)
+- 資料源：`tw_broker_monitor.py` 18:00 cron + `--json-out`
+- 視窗：10 個交易日
+- 排序：綜合分數降冪
+- 公式：`score = 連續天數 × (log(Top 分點累計淨買 張 + 1) + sqrt(融資增量 張)) / 2`
+
+### 盤前訊號 (premarket_signals)
+- 資料源：`tw_daily_screen.py` (TR Layer 2) 07:30 + `tw_second_wave.py` 07:40 + `--json-out`
+- 視窗：10 個交易日
+- 排版：上下兩段（轉機接力 / 第二波）
+- 排序：最新入榜日期降冪 → 連續天數降冪 → 分數降冪
+
+### 借券動向 (lending_history)
+- 資料源：`tw_lending_monitor.py` 16:00 (lending) + 21:30 (sbl) + `--json-out-*`
+- 視窗：5 個交易日
+- 排版：上下兩段（議借爆量 / 空頭撤退）
+- 排序議借：日期降冪；排序撤退：餘額變化%升冪 (最負先排)
+
+**首次部署無歷史**：cron 動態運算，第一次部署當天起累積，連續天數要等幾天後才有意義。

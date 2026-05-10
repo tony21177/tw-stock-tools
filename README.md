@@ -711,6 +711,10 @@ python3 ~/project/tw_stock_tools/tw_limitup_signal.py --codes ... \
   - **已知 quirk**：FinMind 法人/融資 dataset 在查 `start_date=end_date=X` 時會回傳 X 與 X+1 兩天的資料；fetcher 已加 `if row['date'] != date: continue` 過濾，避免 off-by-one（commit a4b45f1）
   - **歷史 backfill**：首次部署需 200 天 universe 快取，`market_breadth.backfill_universe()` 自動執行 (~3-5 分鐘)；之後每天 cron 1 個 FinMind 呼叫即增量更新
 - **快取**：`concept_momentum/cache/market_universe/{date}.json` (全市場日 OHLC) + `concept_momentum/cache/market_breadth/{date}.json` (計算結果)，皆 gitignored
+- **🎯 主力雷達歷史榜**：dashboard 第二分頁，10 日視窗。每日 18:00 cron 跑出的主力分點+融資連動結果累積，依「綜合分數 = 連續天數 × (log(Top 分點淨買+1) + sqrt(融資增量)) / 2」排序，Top 30
+- **🌅 盤前訊號**：dashboard 第三分頁，10 日視窗。上下兩段顯示轉機接力 (TR ABCD) 與強勢股第二波，含連續入榜天數
+- **🌙 借券動向**：dashboard 第四分頁，5 日視窗。上下兩段顯示借券雷達 (議借爆量) 與空頭撤退 (借券賣餘大減)，依時間/變化幅度排序
+- **歷史榜快取**：5 個新 dir — `concept_momentum/cache/{broker_radar_history,turnaround_relay_history,second_wave_history,lending_radar_history,short_retreat_history}/{date}.json`，皆 gitignored；歷史由 cron 累積，無 backfill
 
 ### 本機看儀表板
 
