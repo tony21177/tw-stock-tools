@@ -14,6 +14,12 @@ from datetime import datetime
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+BROKER_HISTORY_DIR = os.path.join(HERE, "cache", "broker_radar_history")
+TR_HISTORY_DIR = os.path.join(HERE, "cache", "turnaround_relay_history")
+SW_HISTORY_DIR = os.path.join(HERE, "cache", "second_wave_history")
+LENDING_HISTORY_DIR = os.path.join(HERE, "cache", "lending_radar_history")
+RETREAT_HISTORY_DIR = os.path.join(HERE, "cache", "short_retreat_history")
+
 from data_fetcher import fetch_all_concepts, fetch_taiex
 from concept_momentum import analyze_all, add_score_history
 from concept_charts import generate_png, generate_trend_png, generate_html
@@ -21,6 +27,12 @@ from rerating_detector import compute_rerating, format_rerating_report
 from business_drift_detector import detect_drift, format_drift_report
 from market_breadth import run_today as run_market_breadth, BREADTH_DIR
 from market_breadth_renderer import render_table
+from broker_radar_history import load_broker_radar_rows
+from broker_radar_renderer import render_table as render_broker_table
+from premarket_signals import load_turnaround_relay_rows, load_second_wave_rows
+from premarket_signals_renderer import render_table as render_premarket_table
+from lending_history import load_lending_radar_rows, load_short_retreat_rows
+from lending_history_renderer import render_table as render_lending_table
 
 DEFAULT_CHAT_ID = "-5229750819"
 TG_API_URL = "https://api.telegram.org/bot{token}"
@@ -209,7 +221,26 @@ def main():
                     rows.append(json.load(f))
             breadth_html = render_table(rows)
 
-    html_path = generate_html(results, taiex, target_date, breadth_table_html=breadth_html)
+    # Strategy history tabs
+    print("載入策略歷史榜...", file=sys.stderr)
+    broker_rows = load_broker_radar_rows(BROKER_HISTORY_DIR, target_yyyymmdd, lookback_days=10)
+    broker_html = render_broker_table(broker_rows)
+
+    tr_rows = load_turnaround_relay_rows(TR_HISTORY_DIR, target_yyyymmdd, lookback_days=10)
+    sw_rows = load_second_wave_rows(SW_HISTORY_DIR, target_yyyymmdd, lookback_days=10)
+    premarket_html = render_premarket_table(tr_rows, sw_rows)
+
+    lending_rows = load_lending_radar_rows(LENDING_HISTORY_DIR, target_yyyymmdd, lookback_days=5)
+    retreat_rows = load_short_retreat_rows(RETREAT_HISTORY_DIR, target_yyyymmdd, lookback_days=5)
+    lending_html = render_lending_table(lending_rows, retreat_rows)
+
+    html_path = generate_html(
+        results, taiex, target_date,
+        breadth_table_html=breadth_html,
+        broker_radar_html=broker_html,
+        premarket_signals_html=premarket_html,
+        lending_history_html=lending_html,
+    )
     print(f"Snapshot PNG: {png_path}")
     print(f"Trend PNG: {trend_png}")
     print(f"HTML: {html_path}")
