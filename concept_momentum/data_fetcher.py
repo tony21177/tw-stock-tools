@@ -190,13 +190,26 @@ def fetch_and_cache(code: str, force: bool = False) -> dict:
 
 
 def fetch_taiex(force: bool = False) -> list[dict]:
-    """Fetch TAIEX (weighted index) for benchmark comparison."""
+    """Fetch TAIEX (weighted index) for benchmark comparison.
+
+    Cache invalidation rule: only treat cache as fresh-for-today if the
+    cached rows actually contain today's date (or today is a weekend/holiday
+    where no new row should exist). This prevents the bug where an earlier
+    intraday fetch returns stale rows but stamps cache with today, locking
+    subsequent fetches from getting the real close.
+    """
     today = datetime.now().strftime("%Y%m%d")
+    is_weekend = datetime.now().weekday() >= 5  # Sat/Sun
     if os.path.exists(TAIEX_CACHE) and not force:
         with open(TAIEX_CACHE) as f:
             cached = json.load(f)
-        if cached.get("updated_at") == today:
-            return cached.get("rows", [])
+        cached_rows = cached.get("rows", [])
+        last_date = cached_rows[-1].get("date") if cached_rows else ""
+        # Trust cache only when: stamped today AND either
+        #   (a) cached rows include today's date, OR
+        #   (b) today is a non-trading day (weekend)
+        if cached.get("updated_at") == today and (last_date == today or is_weekend):
+            return cached_rows
 
     rows = fetch_yahoo("^TWII", "3mo")
     if rows:

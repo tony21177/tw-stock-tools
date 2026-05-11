@@ -343,6 +343,18 @@ def run_today(today_yyyymmdd: str, finmind_token: str,
     os.makedirs(UNIVERSE_DIR, exist_ok=True)
     os.makedirs(BREADTH_DIR, exist_ok=True)
 
+    # 0. Trading-day guard: skip non-trading days (weekend / holiday)
+    # If TAIEX cache has no row for today, this is a non-trading day — don't
+    # write a garbage breadth row (would have null close/法人/融資 and break
+    # tomorrow's margin_delta computation).
+    taiex_rows_for_guard = _load_taiex()
+    taiex_dates = {r.get("date") for r in taiex_rows_for_guard}
+    if today_yyyymmdd not in taiex_dates:
+        if verbose:
+            print(f"[market_breadth] {today_yyyymmdd} not a trading day "
+                  f"(no TAIEX row) — skipping breadth write", flush=True)
+        return {"date": today_yyyymmdd, "skipped": "non-trading-day"}
+
     # 1. Ensure universe backfill
     if verbose:
         print(f"[market_breadth] checking universe cache up to {today_yyyymmdd}", flush=True)
