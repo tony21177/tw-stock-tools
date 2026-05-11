@@ -370,7 +370,27 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
   .chart-wrap {{ background: white; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }}
   table {{ width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }}
   th {{ background: #1d1d1f; color: white; padding: 10px; text-align: left; }}
-  th[title] {{ cursor: help; border-bottom: 1px dotted rgba(255,255,255,0.4); }}
+  th[title] {{ cursor: help; position: relative; outline: none; border-bottom: 1px dotted rgba(255,255,255,0.4); }}
+  th[title]:hover::after, th[title]:focus::after {{
+    content: attr(title);
+    position: absolute;
+    top: 100%;
+    left: 0;
+    background: #1a1a1a;
+    color: #fff;
+    padding: 10px 14px;
+    white-space: pre-wrap;
+    width: max-content;
+    max-width: min(320px, 80vw);
+    z-index: 100;
+    font-size: 13px;
+    font-weight: normal;
+    text-align: left;
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    line-height: 1.5;
+    pointer-events: none;
+  }}
   td {{ padding: 8px 10px; border-bottom: 1px solid #eee; }}
   tr:hover {{ background: #f5f5f7; }}
   .pos {{ color: #d62728; font-weight: 600; }}
@@ -462,6 +482,24 @@ function showTab(name) {{
   document.getElementById('tab-' + name).classList.add('active');
   window.dispatchEvent(new Event('resize'));
 }}
+
+// Mobile-friendly tooltips: make th[title] tap-focusable so CSS :focus::after fires.
+// Desktop: hover still works. Mobile: tap to show, tap elsewhere to hide.
+document.addEventListener('DOMContentLoaded', function() {{
+  document.querySelectorAll('th[title]').forEach(function(th) {{
+    th.setAttribute('tabindex', '0');
+    // Toggle focus: tap again to dismiss
+    th.addEventListener('click', function(e) {{
+      if (document.activeElement === th) {{ th.blur(); }} else {{ th.focus(); }}
+    }});
+  }});
+  // Tap anywhere else clears any tooltip
+  document.addEventListener('click', function(e) {{
+    if (!e.target.matches('th[title]') && document.activeElement && document.activeElement.matches('th[title]')) {{
+      document.activeElement.blur();
+    }}
+  }});
+}});
 </script>
 </body>
 </html>
