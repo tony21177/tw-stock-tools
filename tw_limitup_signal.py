@@ -308,41 +308,35 @@ def find_limitup(rows: list[dict], min_pct: float = 9.5) -> list[dict]:
 # ============================================================
 
 def fetch_price_history(code: str, target_date: str, token: str = "") -> list[dict]:
-    """Fetch ~50 trading days ending target_date via Yahoo. Cached by date.
-    Tries .TW first then .TWO. Returns list of dicts with keys date/open/close/volume."""
+    """Fetch ~50 trading days ending target_date via FinMind. Cached by date.
+    Returns list of dicts with keys date/open/high/low/close/volume.
+    (Migrated from Yahoo to FinMind 2026-05-11)"""
     cache_path = os.path.join(CACHE_DIR, f"px_{code}_{target_date}.json")
     if os.path.exists(cache_path):
         with open(cache_path) as f:
             return json.load(f)
 
     rows = []
-    for suffix in (".TW", ".TWO"):
-        url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{suffix}"
-               f"?range=3mo&interval=1d")
-        d = http_json(url)
+    import finmind_client as _fc
+    finmind_token = token or os.environ.get("FINMIND_TOKEN", "")
+    if finmind_token:
+        _end = target_date
+        _start = (datetime.strptime(target_date, "%Y-%m-%d") - timedelta(days=90)).strftime("%Y-%m-%d")
         try:
-            r = d["chart"]["result"][0]
-            ts = r["timestamp"]
-            q = r["indicators"]["quote"][0]
-        except (KeyError, IndexError, TypeError):
-            continue
-        if not ts:
-            continue
-        for i, t in enumerate(ts):
-            try:
-                rows.append({
-                    "date": datetime.fromtimestamp(t).strftime("%Y-%m-%d"),
-                    "open": q["open"][i],
-                    "high": q["high"][i],
-                    "low": q["low"][i],
-                    "close": q["close"][i],
-                    "volume": q["volume"][i],
-                })
-            except (KeyError, IndexError, TypeError):
-                continue
-        if rows:
-            break
-    # Trim to <= target_date
+            _rows_raw = _fc.fetch_stock_price(code, _start, _end, finmind_token)
+        except Exception as _ex:
+            import sys as _sys
+            print(f"[WARN] FinMind price history {code}: {_ex}", file=_sys.stderr)
+            _rows_raw = []
+        rows = [{
+            "date": r["date"],
+            "open": float(r.get("open", 0) or 0),
+            "high": float(r.get("max", 0) or 0),
+            "low": float(r.get("min", 0) or 0),
+            "close": float(r.get("close", 0) or 0),
+            "volume": int(r.get("Trading_Volume", 0) or 0),
+        } for r in _rows_raw if r.get("close")]
+    # Trim to <= target_date (FinMind already filters, but keep for safety)
     rows = [r for r in rows if r["date"] <= target_date and r["close"]]
     with open(cache_path, "w") as f:
         json.dump(rows, f)
