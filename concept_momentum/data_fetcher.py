@@ -13,10 +13,13 @@ import urllib.request
 from datetime import datetime, timedelta
 
 HERE_FETCHER = os.path.dirname(os.path.abspath(__file__))
+TOP_DIR = os.path.dirname(HERE_FETCHER)  # tw_stock_tools root (for finmind_client)
 CACHE_DIR = os.path.join(HERE_FETCHER, "cache", "prices")
 TAIEX_CACHE = os.path.join(HERE_FETCHER, "cache", "taiex.json")
 
 sys.path.insert(0, HERE_FETCHER)
+if TOP_DIR not in sys.path:
+    sys.path.insert(0, TOP_DIR)
 try:
     from stock_names import get_name as _get_zh_name
 except ImportError:
@@ -74,61 +77,100 @@ def fetch_yahoo(symbol: str, range_str: str = "3mo") -> list[dict]:
         return []
 
 
-def fetch_stock(code: str) -> dict:
-    """Fetch stock with .TW first, fallback .TWO. Returns {name, market, rows}."""
-    for suffix in [".TW", ".TWO"]:
-        symbol = code + suffix
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=3mo"
-        req = urllib.request.Request(url, headers={"User-Agent": UA})
+def _infer_market(code: str) -> str:
+    """Infer market (上市/上櫃) from the stock_names ISIN cache.
+
+    The ISIN cache is built by stock_names.py from TWSE public data:
+    mode=2 → 上市, mode=4 → 上櫃. We peek at the raw JSON cache file
+    to avoid a live HTTP call just for market classification.
+
+    Falls back to "" if cache is unavailable or code not found.
+    """
+    isin_cache = os.path.join(HERE_FETCHER, "cache", "stock_names_market.json")
+    if os.path.exists(isin_cache):
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read().decode())
-        except urllib.error.HTTPError as e:
-            if e.code == 429:
-                time.sleep(10)
-                return fetch_stock(code)
-            continue
+            with open(isin_cache) as f:
+                mkt_map = json.load(f)
+            return mkt_map.get(code, "")
         except Exception:
-            continue
+            pass
 
-        try:
-            result = data["chart"]["result"][0]
-            meta = result["meta"]
-            timestamps = result.get("timestamp", [])
-            quotes = result.get("indicators", {}).get("quote", [{}])[0]
-            opens = quotes.get("open", [])
-            highs = quotes.get("high", [])
-            lows = quotes.get("low", [])
-            closes = quotes.get("close", [])
-            volumes = quotes.get("volume", [])
+    # Build + cache a code→market map from the TWSE ISIN pages (once per week)
+    import urllib.request as _ur
+    import re
+    mkt_map: dict = {}
+    try:
+        for mode, label in [(2, "上市"), (4, "上櫃")]:
+            url = f"https://isin.twse.com.tw/isin/C_public.jsp?strMode={mode}"
+            req = _ur.Request(url, headers={"User-Agent": UA})
+            with _ur.urlopen(req, timeout=20) as resp:
+                raw = resp.read()
+            try:
+                text = raw.decode("cp950", errors="replace")
+            except Exception:
+                text = raw.decode("utf-8", errors="replace")
+            for m in re.finditer(r"<td[^>]*>([A-Z0-9]{3,8})[　\s]+([^\s<][^<]*?)</td>", text):
+                c = m.group(1).strip()
+                if 4 <= len(c) <= 6:
+                    mkt_map[c] = label
+        with open(isin_cache, "w") as f:
+            json.dump(mkt_map, f, ensure_ascii=False)
+    except Exception:
+        pass
+    return mkt_map.get(code, "")
 
-            rows = []
-            for i, ts in enumerate(timestamps):
-                c = closes[i] if i < len(closes) else None
-                if c is None:
-                    continue
-                rows.append({
-                    "date": datetime.fromtimestamp(ts).strftime("%Y%m%d"),
-                    "open": opens[i] if i < len(opens) else c,
-                    "high": highs[i] if i < len(highs) else c,
-                    "low": lows[i] if i < len(lows) else c,
-                    "close": c,
-                    "volume": volumes[i] if i < len(volumes) else 0,
-                })
-            if not rows:
-                continue
-            zh_name = _get_zh_name(code, meta.get("shortName", code))
-            return {
-                "code": code,
-                "name": zh_name,
-                "name_en": meta.get("shortName", code),
-                "market": "上櫃" if suffix == ".TWO" else "上市",
-                "current_price": meta.get("regularMarketPrice"),
-                "rows": rows,
-            }
-        except (KeyError, IndexError, TypeError):
+
+def fetch_stock(code: str) -> dict:
+    """Fetch 3-month daily OHLCV for one concept member via FinMind.
+
+    Migrated 2026-05-11 from Yahoo to FinMind (TaiwanStockPrice dataset).
+    Cache layout preserved so downstream analyze_all() works unchanged.
+
+    Returns {code, name, name_en, market, current_price, rows}.
+    Per-row shape: {date (YYYYMMDD), open, high, low, close, volume}.
+    """
+    import finmind_client  # available via TOP_DIR inserted into sys.path at module load
+
+    token = os.environ.get("FINMIND_TOKEN", "")
+    if not token:
+        return {}
+
+    end = datetime.now()
+    start = end - timedelta(days=100)  # covers 3+ trading months
+
+    try:
+        fm_rows = finmind_client.fetch_stock_price(
+            code, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"), token)
+    except Exception as ex:
+        print(f"[WARN] FinMind {code}: {ex}", file=sys.stderr)
+        return {}
+
+    rows = []
+    for r in fm_rows:
+        c = r.get("close")
+        if c is None or float(c) <= 0:
             continue
-    return {}
+        rows.append({
+            "date": r["date"].replace("-", ""),          # "2026-05-09" → "20260509"
+            "open": float(r.get("open", c)),
+            "high": float(r.get("max", c)),              # FinMind uses "max"/"min"
+            "low": float(r.get("min", c)),
+            "close": float(c),
+            "volume": int(r.get("Trading_Volume", 0)),
+        })
+
+    if not rows:
+        return {}
+
+    zh_name = _get_zh_name(code, code)
+    return {
+        "code": code,
+        "name": zh_name,
+        "name_en": "",                                   # FinMind has no English name
+        "market": _infer_market(code),                   # 上市/上櫃 from ISIN cache
+        "current_price": rows[-1]["close"],
+        "rows": rows,
+    }
 
 
 def fetch_and_cache(code: str, force: bool = False) -> dict:
