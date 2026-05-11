@@ -143,53 +143,120 @@ def load_universe(arg: str) -> list[tuple[str, str]]:
 
 
 # ============================================================
-# Yahoo adjusted-close fetcher (cache 7 days)
+# Market-type lookup (twse → 上市, tpex → 上櫃)
+# ============================================================
+
+_MARKET_MAP: dict[str, str] = {}
+_MARKET_MAP_LOADED = False
+
+
+def _load_market_map() -> None:
+    """Populate _MARKET_MAP from TaiwanStockInfo (cached 7 days)."""
+    global _MARKET_MAP, _MARKET_MAP_LOADED
+    if _MARKET_MAP_LOADED:
+        return
+    cache_path = os.path.join(HERE, "screener_cache", "market_map.json")
+    if os.path.exists(cache_path) and time.time() - os.path.getmtime(cache_path) < 7 * 86400:
+        with open(cache_path) as f:
+            _MARKET_MAP.update(json.load(f))
+        _MARKET_MAP_LOADED = True
+        return
+    token = os.environ.get("FINMIND_TOKEN", "")
+    url = "https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInfo"
+    if token:
+        url += f"&token={token}"
+    data = http_json(url)
+    if data and "data" in data:
+        for r in data["data"]:
+            code = str(r.get("stock_id", "")).strip()
+            mtype = r.get("type", "")
+            if mtype == "twse":
+                _MARKET_MAP[code] = "上市"
+            elif mtype == "tpex":
+                _MARKET_MAP[code] = "上櫃"
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        with open(cache_path, "w") as f:
+            json.dump(_MARKET_MAP, f, ensure_ascii=False)
+    _MARKET_MAP_LOADED = True
+
+
+# ============================================================
+# FinMind price fetcher — replaces Yahoo (cache 7 days)
 # ============================================================
 
 def fetch_yahoo_long(code: str, years: int = 18) -> dict:
-    """Fetch ~years of daily OHLCV from Yahoo (.TW or .TWO).
+    """Fetch N-year daily history for a stock.
+
+    Migrated 2026-05-11 from Yahoo Finance to FinMind TaiwanStockPrice.
+    Function name kept for backwards compatibility.
+
     Returns {market: '上市'/'上櫃', rows: [{ts, adj, close, volume}, ...]} or {}.
-    Cache for 7 days."""
+    Cache for 7 days.
+
+    Note: FinMind returns raw close (not split-adjusted). 沉睡巨人 uses
+    raw close anyway since we look for '曾經 X 倍' peaks, which are
+    historical absolute levels.
+    """
     cache_path = os.path.join(CACHE_DIR, f"yh_{code}.json")
     if os.path.exists(cache_path) and time.time() - os.path.getmtime(cache_path) < 7 * 86400:
         with open(cache_path) as f:
             return json.load(f)
 
-    end = int(time.time())
-    start = end - years * 366 * 86400
-    for sfx, market in (".TW", "上市"), (".TWO", "上櫃"):
-        url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{sfx}"
-               f"?period1={start}&period2={end}&interval=1d&events=history")
-        d = http_json(url)
-        if not d or not d.get("chart", {}).get("result"):
-            continue
-        res = d["chart"]["result"][0]
-        if not res.get("timestamp"):
-            continue
-        ts = res["timestamp"]
-        adj_arr = res["indicators"]["adjclose"][0]["adjclose"]
-        q = res["indicators"]["quote"][0]
-        rows = []
-        for i, t in enumerate(ts):
-            if adj_arr[i] is None or q["close"][i] is None:
-                continue
-            rows.append({
-                "ts": int(t),
-                "adj": float(adj_arr[i]),
-                "close": float(q["close"][i]),
-                "volume": int(q["volume"][i] or 0),
-            })
-        if not rows:
-            continue
-        out = {"market": market, "rows": rows}
+    token = os.environ.get("FINMIND_TOKEN", "")
+    if not token:
         with open(cache_path, "w") as f:
-            json.dump(out, f)
-        return out
+            json.dump({}, f)
+        return {}
 
-    # Cache empty result so we don't keep hitting Yahoo
+    end = datetime.now()
+    try:
+        start = end.replace(year=end.year - years)
+    except ValueError:
+        start = end.replace(month=2, day=28, year=end.year - years)
+
+    try:
+        import finmind_client
+        raw_rows = finmind_client.fetch_stock_price(
+            code, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"), token)
+    except Exception as ex:
+        print(f"[WARN] FinMind fetch {code}: {ex}", file=sys.stderr)
+        with open(cache_path, "w") as f:
+            json.dump({}, f)
+        return {}
+
+    if not raw_rows:
+        with open(cache_path, "w") as f:
+            json.dump({}, f)
+        return {}
+
+    rows = []
+    for r in raw_rows:
+        c = r.get("close")
+        if c is None or c <= 0:
+            continue
+        # Convert date string (YYYY-MM-DD) to unix timestamp
+        try:
+            ts = int(datetime.strptime(r["date"], "%Y-%m-%d").timestamp())
+        except Exception:
+            continue
+        rows.append({
+            "ts": ts,
+            "adj": float(c),      # raw close serves as the historical level
+            "close": float(c),
+            "volume": int(r.get("Trading_Volume", 0) or 0),
+        })
+
+    if not rows:
+        with open(cache_path, "w") as f:
+            json.dump({}, f)
+        return {}
+
+    _load_market_map()
+    market = _MARKET_MAP.get(code, "")
+    out = {"market": market, "rows": rows}
     with open(cache_path, "w") as f:
-        json.dump({}, f)
-    return {}
+        json.dump(out, f)
+    return out
 
 
 # ============================================================
