@@ -36,6 +36,20 @@
 
 ---
 
+## 資料源更新 (2026-05-11)
+
+升級 FinMind sponsor 後遷移多個工具的資料源，提升穩定性 + 統一資料源：
+
+- **借入交易** (lending_lookup + lending_monitor) → FinMind `TaiwanStockSecuritiesLending`，解決 TWSE rate-limit 問題
+- **借券賣出餘額** → FinMind `TaiwanDailyShortSaleBalances`（TWSE + TPEx 統一）
+- **日線價格** (second_wave + dormant_giants + concept_momentum + limitup_signal Yahoo 部分) → FinMind `TaiwanStockPrice`
+- **還券明細** (lending_lookup) — **仍用 TWSE t13sa870**（FinMind 無此 dataset）
+- **分點 BSR** (broker_monitor + broker_lookup) — **仍用 TWSE/TPEx + Playwright**（FinMind sponsor 無 per-broker dataset）
+
+新增共用模組 `finmind_client.py`（thin FinMind v4 wrapper），所有工具透過它存取 FinMind。
+
+---
+
 ## 1. `tw_lending_monitor.py` — 借券雷達 (SBL Radar) + 空頭撤退 (Short Retreat)
 
 策略名：
