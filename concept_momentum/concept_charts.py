@@ -322,7 +322,16 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
         leader_sections += f"""
         <h3>{r['name_zh']} <span class="badge">評分 {r['sustainability_score']:.0f}</span>{pair_hint}</h3>
         <table class="leader-table">
-            <thead><tr><th>方向</th><th>代號</th><th>名稱</th><th>市場</th><th>現價</th><th>5d%</th><th>20d%</th><th>量比</th></tr></thead>
+            <thead><tr>
+              <th title="🟢 多 = leader (族群領漲，做多候選); 🔴 空 = laggard (族群落後，可空)">方向</th>
+              <th title="股票代號">代號</th>
+              <th title="股票中文名稱">名稱</th>
+              <th title="上市 / 上櫃">市場</th>
+              <th title="當日收盤價">現價</th>
+              <th title="過去 5 個交易日報酬率 (含今日)">5d%</th>
+              <th title="過去 20 個交易日報酬率 (含今日)">20d%</th>
+              <th title="近 5d 均量 / 近 20d 均量；>1.5 = 量增">量比</th>
+            </tr></thead>
             <tbody>{rows_html}</tbody>
         </table>"""
 
@@ -361,6 +370,7 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
   .chart-wrap {{ background: white; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }}
   table {{ width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }}
   th {{ background: #1d1d1f; color: white; padding: 10px; text-align: left; }}
+  th[title] {{ cursor: help; border-bottom: 1px dotted rgba(255,255,255,0.4); }}
   td {{ padding: 8px 10px; border-bottom: 1px solid #eee; }}
   tr:hover {{ background: #f5f5f7; }}
   .pos {{ color: #d62728; font-weight: 600; }}
@@ -426,7 +436,19 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
 </div>
 <div id="tab-full" class="tab-content">
   <table>
-    <thead><tr><th>排名</th><th>概念</th><th>成分</th><th>5d%</th><th>20d%</th><th>廣度5d</th><th>廣度20d</th><th>持續</th><th>量比</th><th>RS20d</th><th>評分</th></tr></thead>
+    <thead><tr>
+      <th title="依永續性評分降冪排序的名次">排名</th>
+      <th title="概念族群中文名稱 (~34 個主題)">概念</th>
+      <th title="該概念的成分股檔數">成分</th>
+      <th title="族群指數近 5 日報酬率 (等權重組合)">5d%</th>
+      <th title="族群指數近 20 日報酬率 (等權重組合)">20d%</th>
+      <th title="族群成份中，近 5 日報酬 > 0 的個股比例 (%)">廣度5d</th>
+      <th title="族群成份中，近 20 日報酬 > 0 的個股比例 (%) — 越高代表越多成分股同步上漲">廣度20d</th>
+      <th title="族群連續維持高動能 (評分 ≥50) 的交易日數">持續</th>
+      <th title="族群近 5d 均量 / 近 20d 均量；>1.5 = 資金進場明顯">量比</th>
+      <th title="族群 vs 大盤 (^TWII) 過去 20 日的相對強度差 (族群報酬 − 大盤報酬)">RS20d</th>
+      <th title="永續性評分 (0-100)：40% 廣度 + 20% 量能 + 20% RS + 20% 持續天數；≥70 強勢，<30 弱勢">評分</th>
+    </tr></thead>
     <tbody>{table_rows}</tbody>
   </table>
 </div>

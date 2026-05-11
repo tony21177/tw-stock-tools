@@ -30,10 +30,15 @@ def render_table(rows: list[dict], top_n: int = 30) -> str:
     parts = ['<div class="table-scroll" style="overflow-x:auto;">']
     parts.append('<table class="market-breadth">')
     parts.append('<thead><tr>'
-                 '<th>排名</th><th>代號</th><th>名稱</th>'
-                 '<th>連續天數</th><th>最新入榜</th>'
-                 '<th>Top 分點</th><th>區間 Top 分點淨買 (張)</th>'
-                 '<th>融資增量 (張)</th><th>綜合分數</th>'
+                 '<th title="依綜合分數降冪排序的名次">排名</th>'
+                 '<th title="股票代號">代號</th>'
+                 '<th title="股票中文名稱">名稱</th>'
+                 '<th title="連續被主力雷達 (分點+融資雙連動) 掃中的交易日數，越高代表主力持續鎖籌越久">連續天數</th>'
+                 '<th title="該檔最近一次入主力雷達榜的日期">最新入榜</th>'
+                 '<th title="區間內累計買超最多的單一分點 (broker ID + 名稱)">Top 分點</th>'
+                 '<th title="該分點在 5 日視窗內的累計淨買超 (張) — 反映該分點規模">區間 Top 分點淨買 (張)</th>'
+                 '<th title="該標的在 5 日視窗內的融資餘額變化 (張) — 正值 = 散戶/主力同步加碼">融資增量 (張)</th>'
+                 '<th title="綜合分數公式：連續天數 × (log(Top分點淨買+1) + sqrt(融資增量)) / 2；負值 clip 為 0">綜合分數</th>'
                  '</tr></thead><tbody>')
 
     for i, r in enumerate(rows[:top_n], start=1):

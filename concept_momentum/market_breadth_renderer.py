@@ -55,11 +55,19 @@ def render_table(rows: list[dict]) -> str:
     parts = ['<div class="table-scroll" style="overflow-x:auto;">']
     parts.append('<table class="market-breadth">')
     parts.append('<thead><tr>'
-                 '<th>日期</th><th>加權指數</th><th>漲跌幅%</th>'
-                 '<th>&gt;20MA%</th><th>&gt;50MA%</th><th>&gt;200MA%</th>'
-                 '<th>200日新高</th>'
-                 '<th>外資(億)</th><th>投信(億)</th><th>自營(億)</th><th>法人合計(億)</th>'
-                 '<th>融資(億)</th><th>融資增減(億)</th>'
+                 '<th title="交易日 (YYYY/MM/DD)">日期</th>'
+                 '<th title="加權指數 (TAIEX) 當日收盤點位">加權指數</th>'
+                 '<th title="大盤 vs 前一交易日的漲跌百分比">漲跌幅%</th>'
+                 '<th title="收盤價站上 20 日均線 (月線) 的個股比例 (寬度池：上市+上櫃 4 位代號 ~2,300 檔)">&gt;20MA%</th>'
+                 '<th title="收盤價站上 50 日均線 (季線) 的個股比例">&gt;50MA%</th>'
+                 '<th title="收盤價站上 200 日均線 (年線) 的個股比例">&gt;200MA%</th>'
+                 '<th title="當日創 200 日新高的個股數 (收盤價 > 過去 200 日 max)">200日新高</th>'
+                 '<th title="外資+陸資 (含外資自營商) 當日淨買賣超金額 (億 NTD)">外資(億)</th>'
+                 '<th title="投信 (投資信託) 當日淨買賣超金額 (億 NTD)">投信(億)</th>'
+                 '<th title="自營商 (自行買賣+避險) 當日淨買賣超金額 (億 NTD)">自營(億)</th>'
+                 '<th title="三大法人 (外資+投信+自營) 加總淨買賣超金額 (億 NTD)">法人合計(億)</th>'
+                 '<th title="大盤每日融資使用金額 (上市+上櫃合計，億 NTD)">融資(億)</th>'
+                 '<th title="融資餘額 vs 前一交易日的變化 (億 NTD; 正 = 散戶加碼，負 = 散戶退場)">融資增減(億)</th>'
                  '</tr></thead>')
     parts.append('<tbody>')
 

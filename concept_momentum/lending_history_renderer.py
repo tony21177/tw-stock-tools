@@ -34,9 +34,15 @@ def _render_radar(rows: list[dict]) -> str:
         return _empty_msg()
     parts = ['<div class="table-scroll" style="overflow-x:auto;">',
              '<table class="market-breadth">',
-             '<thead><tr><th>代號</th><th>名稱</th><th>入榜日期</th>'
-             '<th>議借量 (張)</th><th>5日均量倍數</th><th>利率%</th>'
-             '<th>連續天數</th></tr></thead><tbody>']
+             '<thead><tr>'
+             '<th title="股票代號">代號</th>'
+             '<th title="股票中文名稱">名稱</th>'
+             '<th title="該檔最近一次入借券雷達榜的日期 (議借量爆增日)">入榜日期</th>'
+             '<th title="當日議借交易量 (張) — 借券平台議借總量">議借量 (張)</th>'
+             '<th title="當日量 / 過去 5 日均量；2x 以上 = 議借爆量；新上榜股可能無歷史，顯示 —">5日均量倍數</th>'
+             '<th title="議借利率%；>7% (紅) = 高成本做空 (空頭強烈意願)，<1% (綠) = 機構議借/套利券源 (非方向性)">利率%</th>'
+             '<th title="連續入榜天數 — 連續多日議借爆量 = 空方持續建倉">連續天數</th>'
+             '</tr></thead><tbody>']
     for r in rows:
         rate = r.get("rate_pct", 0.0)
         rate_cls = _rate_class(rate)
@@ -62,9 +68,14 @@ def _render_retreat(rows: list[dict]) -> str:
         return _empty_msg()
     parts = ['<div class="table-scroll" style="overflow-x:auto;">',
              '<table class="market-breadth">',
-             '<thead><tr><th>代號</th><th>名稱</th><th>入榜日期</th>'
-             '<th>餘額變化%</th><th>今日漲跌%</th>'
-             '<th>連續天數</th></tr></thead><tbody>']
+             '<thead><tr>'
+             '<th title="股票代號">代號</th>'
+             '<th title="股票中文名稱">名稱</th>'
+             '<th title="該檔最近一次入空頭撤退榜的日期 (借券賣出餘額大幅減少日)">入榜日期</th>'
+             '<th title="借券賣出餘額 vs 前日的變化%；大幅負 (-10%+) = 空方大規模回補 (利多訊號)">餘額變化%</th>'
+             '<th title="股票當日漲跌%；綠 = 跌, 紅 = 漲。空方撤退+股價漲 = 強烈轉多訊號">今日漲跌%</th>'
+             '<th title="連續入榜天數">連續天數</th>'
+             '</tr></thead><tbody>']
     for r in rows:
         bc = r.get("balance_change_pct", 0.0)
         tc = r.get("today_change_pct", 0.0)
