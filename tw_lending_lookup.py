@@ -30,36 +30,41 @@ def to_ad_date(roc_str: str) -> str:
 
 
 def fetch_lending_transactions(code: str, start_date: str, end_date: str) -> list[dict]:
-    """Fetch all lending transactions (all types) for a stock code."""
-    url = f"{TWSE_SBL_URL}?startDate={start_date}&endDate={end_date}&stockNo={code}&response=json"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
-    except Exception as e:
-        print(f"[ERROR] TWSE SBL API: {e}", file=sys.stderr)
+    """Fetch all lending transactions (all types) for a stock code.
+
+    Migrated 2026-05-11 from TWSE t13sa710 to FinMind TaiwanStockSecuritiesLending.
+    Returns list of dicts with shape {date (YYYYMMDD), name, type, volume, fee_rate}.
+    """
+    import os
+    import sys
+    HERE = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, HERE)
+    import finmind_client
+
+    # Convert YYYYMMDD → YYYY-MM-DD for FinMind
+    s = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:8]}"
+    e = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
+    token = os.environ.get("FINMIND_TOKEN", "")
+    if not token:
+        print("[ERROR] FINMIND_TOKEN env var not set", file=sys.stderr)
         return []
 
-    if data.get("stat") != "OK" or not data.get("data"):
+    try:
+        rows = finmind_client.fetch_securities_lending(code, s, e, token)
+    except Exception as ex:
+        print(f"[ERROR] FinMind SecuritiesLending: {ex}", file=sys.stderr)
         return []
 
     records = []
-    for row in data["data"]:
-        date_str = to_ad_date(row[0])
-        code_name = row[1].strip()
-        tx_type = row[2].strip()
-        try:
-            volume = int(str(row[3]).replace(",", ""))
-            fee_rate = float(str(row[4]).replace(",", ""))
-        except (ValueError, IndexError):
-            continue
-
+    for row in rows:
+        # Convert YYYY-MM-DD → YYYYMMDD to match prior shape
+        date_str = row["date"].replace("-", "")
         records.append({
             "date": date_str,
-            "name": code_name,
-            "type": tx_type,
-            "volume": volume,
-            "fee_rate": fee_rate,
+            "name": "",  # FinMind doesn't include 中文名 in this dataset
+            "type": row.get("transaction_type", ""),
+            "volume": int(row.get("volume", 0)),
+            "fee_rate": float(row.get("fee_rate", 0.0)),
         })
     return records
 
