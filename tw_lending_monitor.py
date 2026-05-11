@@ -40,105 +40,103 @@ def get_trading_dates(target_date: str, days: int = 6) -> tuple[str, str]:
 
 
 def fetch_twse_lending(start_date: str, end_date: str) -> list[dict]:
-    """Fetch negotiated lending data from TWSE SBL API."""
-    url = f"{TWSE_SBL_URL}?startDate={start_date}&endDate={end_date}&type=N&response=json"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
-    except Exception as e:
-        print(f"[ERROR] TWSE API 失敗: {e}", file=sys.stderr)
+    """Fetch 借入 events across all stocks for a date range.
+
+    Migrated 2026-05-11 from TWSE t13sa710 to FinMind TaiwanStockSecuritiesLending.
+
+    Returns list of {date (YYYYMMDD), code, name, volume, fee_rate, close_price}.
+    Only 議借 type records are included (same as original TWSE filter).
+    """
+    import os
+    HERE = os.path.dirname(os.path.abspath(__file__))
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import finmind_client
+
+    token = os.environ.get("FINMIND_TOKEN", "")
+    if not token:
+        print("[ERROR] FINMIND_TOKEN not set", file=sys.stderr)
         return []
 
-    if data.get("stat") != "OK" or not data.get("data"):
-        print(f"[WARN] TWSE API 回傳無資料: {data.get('stat')}", file=sys.stderr)
+    s = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:8]}"
+    e = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
+    try:
+        rows = finmind_client._call("TaiwanStockSecuritiesLending", {
+            "start_date": s, "end_date": e,
+        }, token)
+    except Exception as ex:
+        print(f"[ERROR] FinMind SecuritiesLending whole-market: {ex}", file=sys.stderr)
         return []
 
     records = []
-    for row in data["data"]:
-        date_str = to_ad_date(row[0])
-        code_name = row[1].strip()
-        tx_type = row[2].strip()
-
-        if tx_type != "議借":
+    for row in rows:
+        sid = row.get("stock_id", "")
+        # FinMind includes ETFs and non-4-digit codes; filter to plain stocks only
+        if not (sid.isdigit() and len(sid) == 4):
             continue
-
-        parts = code_name.split()
-        if len(parts) < 2:
+        # Only keep 議借 (negotiated borrow) — same filter as original TWSE source
+        if row.get("transaction_type") != "議借":
             continue
-        code = parts[0].strip()
-        name = " ".join(parts[1:]).strip()
-
-        try:
-            volume = int(str(row[3]).replace(",", ""))
-        except (ValueError, IndexError):
-            continue
-
-        try:
-            fee_rate = float(str(row[4]).replace(",", ""))
-        except (ValueError, IndexError):
-            fee_rate = 0.0
-
-        try:
-            close_price = float(str(row[5]).replace(",", ""))
-        except (ValueError, IndexError):
-            close_price = 0.0
-
         records.append({
-            "date": date_str,
-            "code": code,
-            "name": name,
-            "volume": volume,
-            "fee_rate": fee_rate,
-            "close_price": close_price,
+            "date": row["date"].replace("-", ""),  # YYYY-MM-DD → YYYYMMDD
+            "code": sid,
+            "name": "",  # FinMind does not provide stock name; stays blank
+            "volume": int(row.get("volume", 0)),
+            "fee_rate": float(row.get("fee_rate", 0.0)),
+            "close_price": float(row.get("close", 0.0)),
         })
-
     return records
 
 
 def fetch_sbl_short_selling(date_str: str) -> list[dict]:
-    """Fetch daily SBL short selling balance from TWSE TWT93U.
-    Returns stocks where 借券賣出餘額 decreased >10% from previous day."""
-    url = f"{TWSE_SBL_BALANCE_URL}?date={date_str}&response=json"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
-    except Exception as e:
-        print(f"[ERROR] TWSE TWT93U API 失敗: {e}", file=sys.stderr)
+    """Fetch whole-market SBL balance + day-over-day change.
+
+    Migrated 2026-05-11 from TWSE TWT93U + TPEx /sbl to FinMind
+    TaiwanDailyShortSaleBalances (whole-market call).
+
+    Returns stocks where 借券賣出餘額 decreased >10% from previous day,
+    with shape: {code, name, prev_balance (張), today_balance (張), change_pct}.
+    """
+    import os
+    HERE = os.path.dirname(os.path.abspath(__file__))
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import finmind_client
+
+    token = os.environ.get("FINMIND_TOKEN", "")
+    if not token:
+        print("[ERROR] FINMIND_TOKEN not set", file=sys.stderr)
         return []
 
-    if data.get("stat") != "OK" or not data.get("data"):
-        print(f"[WARN] TWSE TWT93U 無資料: {data.get('stat')}", file=sys.stderr)
+    d = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+    try:
+        rows = finmind_client.fetch_short_sale_balances_market(d, token)
+    except Exception as ex:
+        print(f"[ERROR] FinMind SBL whole-market: {ex}", file=sys.stderr)
         return []
 
     results = []
-    for row in data["data"]:
-        if len(row) < 14:
+    for r in rows:
+        sid = r.get("stock_id", "")
+        if not (sid.isdigit() and len(sid) == 4):
             continue
-        code = row[0].strip()
-        name = row[1].strip()
+        # Values are in shares (股); convert to lots (張)
+        prev = int(r.get("SBLShortSalesPreviousDayBalance", 0)) / 1000
+        today = int(r.get("SBLShortSalesCurrentDayBalance", 0)) / 1000
 
-        try:
-            # Values are in shares (股); convert to lots (張)
-            prev_balance = int(str(row[8]).replace(",", "")) / 1000
-            today_balance = int(str(row[12]).replace(",", "")) / 1000
-        except (ValueError, IndexError):
+        if prev <= 0:
             continue
 
-        if prev_balance <= 0:
-            continue
-
-        change_pct = ((today_balance - prev_balance) / prev_balance) * 100
+        change_pct = ((today - prev) / prev) * 100
 
         if change_pct > -10.0:
             continue
 
         results.append({
-            "code": code,
-            "name": name,
-            "prev_balance": prev_balance,
-            "today_balance": today_balance,
+            "code": sid,
+            "name": "",  # FinMind does not provide stock name; stays blank
+            "prev_balance": prev,
+            "today_balance": today,
             "change_pct": change_pct,
         })
 
