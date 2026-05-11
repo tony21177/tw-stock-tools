@@ -63,15 +63,18 @@ def _render_sw(rows: list[dict]) -> str:
              '<th title="連續入榜天數 — 從最近一次入榜日往前回看，連續幾日都被第二波 setup 掃中 (中間 gap 重置)。連續越多日代表底部盤整越穩。">連續天數</th>'
              '</tr></thead><tbody>']
     for r in rows:
-        drop = r.get('drop_pct', 0.0)
-        drop_cls = 'pos' if drop > 0 else 'neg' if drop < 0 else ''
+        # drop_pct is stored as decimal magnitude (0.25 = 25% drop from peak to trough);
+        # display as negative pct with green (drop direction).
+        drop_raw = r.get('drop_pct', 0.0)
+        drop_pct_display = -drop_raw * 100
+        drop_cls = 'neg' if drop_raw > 0 else ''
         parts.append(
             '<tr>'
             f'<td>{r["code"]}</td>'
             f'<td>{r.get("name", r["code"])}</td>'
             f'<td>{_fmt_date(r.get("latest_date", ""))}</td>'
-            f'<td>{r.get("second_wave_score", 0):.2f}</td>'
-            f'<td class="{drop_cls}">{drop:+.1f}%</td>'
+            f'<td>{r.get("second_wave_score", 0):.4f}</td>'
+            f'<td class="{drop_cls}">{drop_pct_display:+.1f}%</td>'
             f'<td>{r.get("volume_ratio", 0):.2f}x</td>'
             f'<td>{r.get("consecutive_days", 1)}</td>'
             '</tr>'

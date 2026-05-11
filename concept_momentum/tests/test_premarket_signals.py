@@ -76,8 +76,10 @@ class TestPremarketRenderer(unittest.TestCase):
         from concept_momentum.premarket_signals_renderer import render_table
         tr_rows = [{"code": "2313", "name": "華通", "latest_date": "20260508",
                     "layer1_passed": True, "abcd_score": 4, "consecutive_days": 3}]
+        # drop_pct stored as decimal magnitude (0.22 = 22% drop from peak to trough)
+        # second_wave_score is a small float (formula produces values < 1)
         sw_rows = [{"code": "2313", "name": "華通", "latest_date": "20260508",
-                    "second_wave_score": 8.5, "drop_pct": -22.0,
+                    "second_wave_score": 0.0291, "drop_pct": 0.22,
                     "volume_ratio": 5.16, "consecutive_days": 2}]
         html = render_table(tr_rows, sw_rows)
         # both stocks shown
@@ -85,8 +87,10 @@ class TestPremarketRenderer(unittest.TestCase):
         self.assertIn("強勢股第二波", html)
         self.assertIn("2313", html)
         self.assertIn("4", html)
-        self.assertIn("8.5", html)
-        self.assertIn("-22.0", html)
+        # score rendered with 4 decimals (so 0.0291 differentiates from 0.02xx neighbours)
+        self.assertIn("0.0291", html)
+        # drop_pct 0.22 → displayed as -22.0% (negative magnitude, drop direction)
+        self.assertIn("-22.0%", html)
         self.assertIn("5.16", html)
 
     def test_render_both_empty(self):
