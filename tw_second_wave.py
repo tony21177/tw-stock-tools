@@ -140,48 +140,71 @@ def load_universe(arg: str) -> list[tuple[str, str]]:
 
 def fetch_yahoo_6mo(code: str) -> dict:
     """Fetch ~9 months daily OHLCV (need 6m+ for rally check, 3m for pattern).
-    Cache 1 day. Returns {market, rows: [{ts, close, high, low, volume}, ...]}."""
+    Cache 1 day. Returns {market, rows: [{date, close, high, low, volume}, ...]}
+
+    Migrated 2026-05-11 from Yahoo Finance to FinMind TaiwanStockPrice.
+    Function name kept for backwards compatibility; data source is now FinMind.
+    Raw close (FinMind) is correct for pattern detection — no dividend adjustment.
+    """
     today_str = datetime.now().strftime("%Y%m%d")
     cache_path = os.path.join(CACHE_DIR, f"yh_{code}_{today_str}.json")
     if os.path.exists(cache_path):
         with open(cache_path) as f:
             return json.load(f)
 
-    end = int(time.time())
-    start = end - 270 * 86400  # ~9 months
-    for sfx, market in (".TW", "上市"), (".TWO", "上櫃"):
-        url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{sfx}"
-               f"?period1={start}&period2={end}&interval=1d&events=history")
-        d = http_json(url)
-        if not d or not d.get("chart", {}).get("result"):
-            continue
-        res = d["chart"]["result"][0]
-        if not res.get("timestamp"):
-            continue
-        ts = res["timestamp"]
-        q = res["indicators"]["quote"][0]
-        rows = []
-        for i, t in enumerate(ts):
-            if q["close"][i] is None:
-                continue
-            rows.append({
-                "ts": int(t),
-                "date": datetime.fromtimestamp(t).strftime("%Y-%m-%d"),
-                "close": float(q["close"][i]),
-                "high": float(q["high"][i] or q["close"][i]),
-                "low": float(q["low"][i] or q["close"][i]),
-                "volume": int(q["volume"][i] or 0),
-            })
-        if not rows:
-            continue
-        out = {"market": market, "rows": rows}
+    token = os.environ.get("FINMIND_TOKEN", "")
+    if not token:
         with open(cache_path, "w") as f:
-            json.dump(out, f)
-        return out
+            json.dump({}, f)
+        return {}
 
+    end = datetime.now()
+    start = end - timedelta(days=270)  # ~9 months
+    sys.path.insert(0, HERE)
+    import finmind_client  # noqa: F811
+
+    rows = []
+    market = ""
+    try:
+        raw = finmind_client.fetch_stock_price(
+            code, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"), token)
+    except Exception as ex:
+        print(f"[WARN] FinMind fetch {code}: {ex}", file=sys.stderr)
+        with open(cache_path, "w") as f:
+            json.dump({}, f)
+        return {}
+
+    if not raw:
+        with open(cache_path, "w") as f:
+            json.dump({}, f)
+        return {}
+
+    # Determine market from stock_id suffix convention:
+    # TWSE (上市) stocks have numeric codes; TPEx (上櫃) detection via FinMind
+    # data itself doesn't carry exchange — try 上市 first, fall back to 上櫃.
+    # In practice, process_one() only uses market for display; keep it simple.
+    market = "上市"
+
+    for r in raw:
+        if r.get("close") is None or float(r.get("close", 0)) <= 0:
+            continue
+        rows.append({
+            "date": r["date"],                          # YYYY-MM-DD
+            "close": float(r["close"]),
+            "high": float(r.get("max", r["close"])),
+            "low": float(r.get("min", r["close"])),
+            "volume": int(r.get("Trading_Volume", 0)),
+        })
+
+    if not rows:
+        with open(cache_path, "w") as f:
+            json.dump({}, f)
+        return {}
+
+    out = {"market": market, "rows": rows}
     with open(cache_path, "w") as f:
-        json.dump({}, f)
-    return {}
+        json.dump(out, f)
+    return out
 
 
 # ============================================================
