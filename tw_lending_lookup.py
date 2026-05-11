@@ -86,47 +86,43 @@ def _parse_sbl_row(row: list) -> dict:
 
 
 def fetch_twse_sbl_balance(code: str, date_str: str) -> dict:
-    """Fetch SBL balance for a TWSE (listed) stock on a specific date."""
-    url = f"{TWSE_SBL_BALANCE_URL}?date={date_str}&response=json"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    """Fetch SBL balance for a TWSE (listed) stock.
+
+    Migrated 2026-05-11 from TWSE TWT93U to FinMind TaiwanDailyShortSaleBalances.
+    """
+    import os, sys
+    HERE = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, HERE)
+    import finmind_client
+    s = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+    token = os.environ.get("FINMIND_TOKEN", "")
+    if not token:
+        return {}
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
-    except Exception as e:
-        print(f"[ERROR] TWT93U API ({date_str}): {e}", file=sys.stderr)
+        rows = finmind_client.fetch_short_sale_balances(code, s, s, token)
+    except Exception as ex:
+        print(f"[ERROR] FinMind ShortSaleBalances {code} {date_str}: {ex}", file=sys.stderr)
         return {}
-
-    if data.get("stat") != "OK" or not data.get("data"):
+    if not rows:
         return {}
-
-    for row in data["data"]:
-        if len(row) >= 14 and row[0].strip() == code:
-            return _parse_sbl_row(row)
-    return {}
+    r = rows[0]
+    return {
+        "name": "",  # not provided by FinMind
+        "prev_balance": int(r.get("SBLShortSalesPreviousDayBalance", 0)) / 1000,
+        "sell": int(r.get("SBLShortSalesShortSales", 0)) / 1000,
+        "return": int(r.get("SBLShortSalesReturns", 0)) / 1000,
+        "adjust": int(r.get("SBLShortSalesAdjustments", 0)) / 1000,
+        "today_balance": int(r.get("SBLShortSalesCurrentDayBalance", 0)) / 1000,
+    }
 
 
 def fetch_tpex_sbl_balance(code: str, date_str: str) -> dict:
-    """Fetch SBL balance for a TPEx (OTC) stock on a specific date.
-    date_str in YYYYMMDD, converted to YYYY/MM/DD for the API."""
-    d = f"{date_str[:4]}/{date_str[4:6]}/{date_str[6:8]}"
-    url = f"{TPEX_SBL_BALANCE_URL}?date={urllib.parse.quote(d, safe='')}&response=json"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
-    except Exception as e:
-        print(f"[ERROR] TPEx SBL API ({date_str}): {e}", file=sys.stderr)
-        return {}
+    """Fetch SBL balance for a TPEx (OTC) stock.
 
-    if data.get("stat", "").lower() != "ok":
-        return {}
-
-    tables = data.get("tables") or []
-    for tbl in tables:
-        for row in tbl.get("data", []):
-            if len(row) >= 14 and row[0].strip() == code:
-                return _parse_sbl_row(row)
-    return {}
+    Migrated 2026-05-11 — TPEx and TWSE both available via FinMind unified dataset.
+    """
+    # FinMind unifies both markets; same function works for both.
+    return fetch_twse_sbl_balance(code, date_str)
 
 
 def fetch_return_details(code: str, start_date: str, end_date: str) -> list[dict]:
