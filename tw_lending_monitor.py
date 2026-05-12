@@ -58,15 +58,24 @@ def fetch_twse_lending(start_date: str, end_date: str) -> list[dict]:
         print("[ERROR] FINMIND_TOKEN not set", file=sys.stderr)
         return []
 
-    s = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:8]}"
-    e = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
-    try:
-        rows = finmind_client._call("TaiwanStockSecuritiesLending", {
-            "start_date": s, "end_date": e,
-        }, token)
-    except Exception as ex:
-        print(f"[ERROR] FinMind SecuritiesLending whole-market: {ex}", file=sys.stderr)
-        return []
+    # FinMind whole-market 借券交易 has a per-call row cap (~1500-2000 rows).
+    # For multi-day windows the total exceeds it and returns 0 silently. Iterate
+    # one day at a time and concatenate — guaranteed to stay under cap.
+    from datetime import datetime, timedelta
+    start_dt = datetime.strptime(start_date, "%Y%m%d")
+    end_dt = datetime.strptime(end_date, "%Y%m%d")
+    rows: list[dict] = []
+    cur = start_dt
+    while cur <= end_dt:
+        d_str = cur.strftime("%Y-%m-%d")
+        try:
+            day_rows = finmind_client._call("TaiwanStockSecuritiesLending", {
+                "start_date": d_str, "end_date": d_str,
+            }, token)
+            rows.extend(day_rows)
+        except Exception as ex:
+            print(f"[WARN] FinMind SecuritiesLending {d_str}: {ex}", file=sys.stderr)
+        cur += timedelta(days=1)
 
     records = []
     for row in rows:
