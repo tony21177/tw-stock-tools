@@ -21,6 +21,20 @@ TWSE_SBL_BALANCE_URL = "https://www.twse.com.tw/rwd/zh/marginTrading/TWT93U"
 TG_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
 
+def _get_zh_name(code: str) -> str:
+    """Lookup Chinese stock name via concept_momentum/stock_names (cached ISIN data)."""
+    import os
+    HERE = os.path.dirname(os.path.abspath(__file__))
+    cm_dir = os.path.join(HERE, "concept_momentum")
+    if cm_dir not in sys.path:
+        sys.path.insert(0, cm_dir)
+    try:
+        from stock_names import get_name
+        return get_name(code, fallback="")
+    except Exception:
+        return ""
+
+
 def to_ad_date(roc_date_str: str) -> str:
     """Convert ROC date string like '115年04月17日' to 'YYYYMMDD'."""
     roc_date_str = roc_date_str.strip()
@@ -89,7 +103,7 @@ def fetch_twse_lending(start_date: str, end_date: str) -> list[dict]:
         records.append({
             "date": row["date"].replace("-", ""),  # YYYY-MM-DD → YYYYMMDD
             "code": sid,
-            "name": "",  # FinMind does not provide stock name; stays blank
+            "name": _get_zh_name(sid),  # lookup from stock_names ISIN cache
             "volume": int(row.get("volume", 0)),
             "fee_rate": float(row.get("fee_rate", 0.0)),
             "close_price": float(row.get("close", 0.0)),
@@ -143,7 +157,7 @@ def fetch_sbl_short_selling(date_str: str) -> list[dict]:
 
         results.append({
             "code": sid,
-            "name": "",  # FinMind does not provide stock name; stays blank
+            "name": _get_zh_name(sid),  # lookup from stock_names ISIN cache
             "prev_balance": prev,
             "today_balance": today,
             "change_pct": change_pct,
