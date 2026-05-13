@@ -148,5 +148,39 @@ class TestBrokerFingerprint(unittest.TestCase):
         self.assertEqual(a["price_range"], (100.0, 119.0))
 
 
+class TestTopCells(unittest.TestCase):
+    ROWS = [
+        # Big buy cells at low prices (early)
+        {"broker_id": "G", "broker_name": "高盛", "price": 100.0, "buy": 10000, "sell": 0},
+        {"broker_id": "G", "broker_name": "高盛", "price": 119.0, "buy": 2000, "sell": 0},
+        # Big sell cells at high prices (late)
+        {"broker_id": "K", "broker_name": "國泰", "price": 120.0, "buy": 0, "sell": 8000},
+        # Small noise
+        {"broker_id": "X", "broker_name": "X", "price": 110.0, "buy": 100, "sell": 50},
+    ]
+
+    def test_top_cells_sorted_by_abs_volume(self):
+        from tw_chip_price import top_cells
+        result = top_cells(self.ROWS, top_n=3)
+        # Largest cell is 高盛 @100 buy 10000
+        self.assertEqual(result[0]["broker_id"], "G")
+        self.assertEqual(result[0]["price"], 100.0)
+        self.assertEqual(result[0]["volume"], 10000)
+        self.assertEqual(result[0]["side"], "buy")
+
+    def test_direction_tag(self):
+        from tw_chip_price import top_cells
+        # 高盛 buy at $100 (low 25% of [100,120]) → 早盤搶低
+        result = top_cells(self.ROWS, top_n=4, low=100.0, high=120.0)
+        early_buy = [r for r in result
+                     if r["broker_id"] == "G" and r["price"] == 100.0][0]
+        self.assertEqual(early_buy["zone"], "early")
+        self.assertIn("早盤搶低", early_buy["tag"])
+        late_sell = [r for r in result
+                     if r["broker_id"] == "K" and r["price"] == 120.0][0]
+        self.assertEqual(late_sell["zone"], "late")
+        self.assertIn("高檔倒貨", late_sell["tag"])
+
+
 if __name__ == "__main__":
     unittest.main()

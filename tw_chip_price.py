@@ -190,6 +190,78 @@ def broker_fingerprint(rows: list[dict], top_n: int = 5) -> dict:
     }
 
 
+def _zone_and_tag(price: float, side: str, low: float, high: float) -> tuple[str, str]:
+    """Return (zone, tag) for a (price, side) cell.
+
+    Zones: early (≤ 25%), mid (25-75%), late (> 75%).
+    Tags:
+      buy@early → '⬇ 早盤搶低'
+      buy@mid   → '↗ 盤中追進'
+      buy@late  → '▽ 高檔追進'
+      sell@early → '△ 低檔賣壓'
+      sell@mid   → '↘ 盤中出脫'
+      sell@late  → '⬆ 高檔倒貨'
+    Flat day (rng ≤ 0): everything 'mid', tag without zone descriptor.
+    """
+    rng = high - low
+    if rng <= 0:
+        zone = "mid"
+    else:
+        f = (price - low) / rng
+        if f <= ZONE_LOW_FRACTION:
+            zone = "early"
+        elif f <= ZONE_HIGH_FRACTION:
+            zone = "mid"
+        else:
+            zone = "late"
+    tags = {
+        ("buy", "early"):  "⬇ 早盤搶低",
+        ("buy", "mid"):    "↗ 盤中追進",
+        ("buy", "late"):   "▽ 高檔追進",
+        ("sell", "early"): "△ 低檔賣壓",
+        ("sell", "mid"):   "↘ 盤中出脫",
+        ("sell", "late"):  "⬆ 高檔倒貨",
+    }
+    return zone, tags.get((side, zone), "")
+
+
+def top_cells(rows: list[dict], top_n: int = 10,
+               low: float = 0.0, high: float = 0.0) -> list[dict]:
+    """Top N (broker, price, side) cells by volume.
+
+    Each row contributes up to 2 cells (one buy, one sell, if both > 0).
+    Returns list sorted by volume descending:
+      [{broker_id, broker_name, price, side ('buy'|'sell'), volume,
+        zone, tag}, ...]
+    """
+    cells = []
+    for r in rows:
+        if r["buy"] > 0:
+            zone, tag = _zone_and_tag(r["price"], "buy", low, high)
+            cells.append({
+                "broker_id": r["broker_id"],
+                "broker_name": r["broker_name"],
+                "price": r["price"],
+                "side": "buy",
+                "volume": r["buy"],
+                "zone": zone,
+                "tag": tag,
+            })
+        if r["sell"] > 0:
+            zone, tag = _zone_and_tag(r["price"], "sell", low, high)
+            cells.append({
+                "broker_id": r["broker_id"],
+                "broker_name": r["broker_name"],
+                "price": r["price"],
+                "side": "sell",
+                "volume": r["sell"],
+                "zone": zone,
+                "tag": tag,
+            })
+    cells.sort(key=lambda c: -c["volume"])
+    return cells[:top_n]
+
+
 if __name__ == "__main__":
     # Placeholder main — full implementation in later task
     parser = argparse.ArgumentParser()
