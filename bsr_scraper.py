@@ -252,6 +252,90 @@ def fetch_bsr(stock_code: str, max_attempts: int = 10,
     return {}
 
 
+def fetch_bsr_with_prices(stock_code: str, max_attempts: int = 10,
+                          session=None) -> dict:
+    """Fetch and parse BSR data preserving per-(broker, price) rows.
+
+    Same overall flow as fetch_bsr() but uses _parse_bsr_csv_with_prices()
+    so callers get the price-level detail. Returns dict with:
+      {date, stock_code, rows: [...per-price rows...],
+       total_buy_shares, total_sell_shares}
+    Returns {} on failure after max_attempts.
+    """
+    import requests
+    if session is None:
+        session = requests.Session()
+    headers = {"User-Agent": UA}
+    ocr = _get_ocr()
+
+    for attempt in range(max_attempts):
+        try:
+            r = session.get(BSR_URL, headers=headers, timeout=30)
+            form = _parse_form(r.text)
+            if not form.get("__VIEWSTATE"):
+                time.sleep(1)
+                continue
+
+            img_r = session.get(form["_captcha_url"], headers=headers, timeout=15)
+            if img_r.status_code != 200 or not _is_valid_image(img_r.content):
+                time.sleep(0.5)
+                continue
+
+            try:
+                solved = ocr.classification(img_r.content)
+            except Exception:
+                time.sleep(0.5)
+                continue
+            if not solved or len(solved) != 5:
+                time.sleep(0.3)
+                continue
+
+            data = {
+                "__EVENTTARGET": "", "__EVENTARGUMENT": "", "__LASTFOCUS": "",
+                "__VIEWSTATE": form["__VIEWSTATE"],
+                "__VIEWSTATEGENERATOR": form["__VIEWSTATEGENERATOR"],
+                "__EVENTVALIDATION": form["__EVENTVALIDATION"],
+                "RadioButton_Normal": "RadioButton_Normal",
+                "TextBox_Stkno": stock_code,
+                "CaptchaControl1": solved,
+                "btnOK": "查詢",
+            }
+            r2 = session.post(BSR_URL, data=data, headers=headers, timeout=30,
+                              allow_redirects=True)
+            if "查無資料" in r2.text:
+                return {"date": datetime.now().strftime("%Y%m%d"),
+                        "stock_code": stock_code, "rows": [],
+                        "total_buy_shares": 0, "total_sell_shares": 0,
+                        "no_data": True, "captcha_attempts": attempt + 1}
+            if "HyperLink_DownloadCSV" not in r2.text:
+                time.sleep(0.3)
+                continue
+            link_match = re.search(r'href="(bsContent\.aspx\?StkNo=[^"]+)"', r2.text)
+            if not link_match:
+                continue
+            csv_url = BSR_BASE + link_match.group(1).replace("&amp;", "&")
+            csv_r = session.get(csv_url, headers=headers, timeout=30)
+            if csv_r.status_code != 200:
+                continue
+            text = csv_r.content.decode("cp950", errors="replace")
+            rows = _parse_bsr_csv_with_prices(text)
+            if not rows:
+                return {}
+            total_buy = sum(r["buy"] for r in rows)
+            total_sell = sum(r["sell"] for r in rows)
+            return {
+                "date": datetime.now().strftime("%Y%m%d"),
+                "stock_code": stock_code,
+                "rows": rows,
+                "total_buy_shares": total_buy,
+                "total_sell_shares": total_sell,
+                "captcha_attempts": attempt + 1,
+            }
+        except Exception:
+            time.sleep(1)
+    return {}
+
+
 def fetch_and_cache(stock_code: str, force: bool = False) -> dict:
     """Fetch BSR for stock, cache to disk. Returns parsed data.
     Auto-routes: TWSE BSR first, falls back to TPEx (Playwright) if no data."""
