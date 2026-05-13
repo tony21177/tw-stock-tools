@@ -1120,26 +1120,85 @@ python3 -m patchright install chromium
 
 ---
 
-## tw_chip_price.py — 單檔日內籌碼 × 價格分析 (CLI / Skill)
+## tw_chip_price.py — 單檔日內籌碼 × 價格 × 時間 三維分析 (CLI / Skill)
 
-跟 `/chip` 不同 — `/chip-price` 專看當日 TWSE BSR 的「分點 × 價格」二維分布，
-推斷誰在哪個價位買進/出脫。輸出包括：
-- Top 10 大單 cells (broker × price × side) 含 ⬇ 早盤搶低 / ⬆ 高檔倒貨 等 direction tag
-- 三階段 (早盤低 25% / 盤中 50% / 尾盤高 25%) 各方主力
-- Top 5 買賣超分點價格指紋 (avg cost + 價格範圍)
+跟 `/chip` 不同 — `/chip-price` 專看單日 (broker × price × time) 三維分布，
+偵測主力 footprint。Report 含 7 個 section：
+
+1. **Header** — 代號 + 名稱 + 日期 + OHLC + 漲跌% + 總量
+2. **🔥 Top 10 大單 cells** — 個別 (broker × price × side) 最大 10 筆，含 direction tag (⬇/⬆/↗/↘/△/▽)
+3. **⏰ 三階段分析** — 早盤/盤中/尾盤各方主力 + 主賣方。**有 FinMind tick data 時用實際時間切分** (09:00-10:08 / 10:08-12:22 / 12:22-13:30)；無 tick 時 fallback 到價格 quartile heuristic
+4. **🎯 Top 5 買超分點價格指紋** — 每分點 avg、範圍、**adaptive 主買集中區** (自動選最緊密 70%-30% threshold，cap 25% of day range)、Top 3 買價、**📈 主買區軌跡** (跨日 band 移動：推升中/下移/盤整)
+5. **🎯 Top 5 賣超分點價格指紋** — 同上但賣方
+6. **🌀 高賣低買 — 同分點兩面操作 (洗盤低接)** — 偵測同分點當日 sell_avg > buy_avg 模式 (wash_score)，**有 tick data 時加 buy_time/sell_time 時序分類**：✅ 真洗盤低接 (先賣後買) / ⚠ 追漲獲利出 (先買後賣) / ⏱ 時序模糊
+7. **📅 連續性** — 今日 Top 3 買賣方在近 N 日 Top 3 命中次數
+
+### 核心分析 pattern (2026-05-13 完整版)
+
+**A. 個別分點價帶集中度** (`broker_concentration_band`)
+- Sliding-window 找該分點 ≥70% volume 的最窄連續價格區間
+- Adaptive threshold：寬度 > 25% 全日 range 時降閾值，找出最緊密集中點
+- 高 % + 窄區間 = surgical 操作（演算法/有目的的進場）
+- 低 % + 寬區間 = 一般 averaging in（散戶 / 雜訊）
+
+**B. 跨日主買區軌跡** (`broker_band_progression`)
+- 讀 `chip_price_history/{code}_{date}.json` 取近 N 日該分點集中區
+- 比較 band low 趨勢：upward = 推升、downward = 下移、unchanged = 盤整
+- 推升中 = 主力連日加碼且接受更高成本
+- 下移 = 平均成本下降，常見於 averaging-down 或 chase 反向動能
+
+**C. 同分點兩面操作 / 高賣低買** (`broker_wash_candidates`)
+- 對兩邊都 ≥ 100 張的分點計算 `wash_score = (sell_avg - buy_avg) / day_range`
+- 正值 = 賣價高於買價 = 同分點内部 spread
+- **重點：淨賣超但 wash_score > 0 = 看似空、實際多** (洗盤低接)
+
+**D. 時序方向判定** (`build_price_to_time_map` + tick data)
+- 用 FinMind `TaiwanStockPriceTick` (sponsor) 抓毫秒級 ticks
+- 為每個價位算 volume-weighted avg time
+- 對 wash 分點: buy_time - sell_time ≥ 30min → ✅ 真洗盤低接 / sell_time - buy_time ≥ 30min → ⚠ 追漲獲利出 / 否則 ⏱ 時序模糊
+
+**E. 真實時間 三階段** (`time_stage_breakdown`)
+- 用 price→time map 把每個 (broker, price, side) row bucket 到時間 quartile
+- 前 25% / 中 50% / 後 25% session 時間 (09:00-10:08 / 10:08-12:22 / 12:22-13:30)
+- 比舊版「價格 quartile 當時間 proxy」可信，能偵測**同分點日內方向反轉**
+- e.g. 2313 5/13: 元大早盤 -5,251 → 尾盤 +439 (借勢洗盤)
+
+**F. 連續性 footer** (`_format_continuity`)
+- 今日 Top 3 買賣方在近 N 日歷史 Top 3 命中次數
+- 高命中 = 持續主導 (信號可信)
+- 0/N = broker 完全輪替（短線投機 / pattern reversal）
+
+### 滾動歷史 archive (chip_price_history)
+
+- 每次 `analyze()` 自動寫 `chip_price_history/{code}_{date}.json` (slim ~50-200 KB)
+- Rolling 10 個交易日，自動 prune
+- broker_monitor 18:00 cron 已加入 chip_price_history backfill — 每天 top 200+ 檔自動累積
 
 ### 使用
 ```bash
 FINMIND_TOKEN=... python3 tw_chip_price.py 2313
 FINMIND_TOKEN=... python3 tw_chip_price.py 2313 --telegram   # 推 TG
 FINMIND_TOKEN=... python3 tw_chip_price.py 2313 --json-out out.json
+FINMIND_TOKEN=... python3 tw_chip_price.py 2313 --date 20260512 --no-fetch  # cache only
 ```
 
 ### Skill 觸發
 - `/chip-price 2313`
-- "2313 籌碼價格" / "2313 分點價格" / "2313 籌碼價量"
+- "2313 籌碼價格" / "2313 分點價格" / "2313 籌碼量價"
 
-### 限制
-- 僅支援 TWSE (上市)。TPEx (上櫃) 暫不支援 per-price detail (fall back 到 `/chip`)
-- 價格是時間的 proxy，不是真正的時間戳
-- CAPTCHA 解析靠 ddddocr，成功率 ~80% (失敗自動重試)
+### 自動 cron (固定觀察名單)
+
+`tw_chip_price_daily.sh` — 每天 08:50 跑 3491/2313/6282 (sequential，因 3491 是 TPEx Playwright)
+
+### Telegram 推送紀律
+
+**完整 7 段缺一不可** — 禁止為節省篇幅省略任何 section。`_send_telegram` 自動 chunk >4000 字元訊息。
+參見 `~/.claude/skills/chip-price/SKILL.md` 顯式紀律。
+
+### 限制與 caveat
+- **TWSE (上市)** 100% 支援；**TPEx (上櫃)** 透過 Playwright + Turnstile (~30 sec/檔，3491 已驗)
+- **tick data 估算時序是 proxy**：每個價位給 ONE volume-weighted avg time，同價位多時段成交時時間是中間值；30 min 的 wash gap 閾值已涵蓋此噪音
+- **chip_price_history 需累積** — broker_monitor 18:00 cron 開始累積 (2026-05-13 上線)，**第 2 天起**有跨日軌跡，第 3+ 天起資料完整
+- CAPTCHA 解析靠 ddddocr，成功率 ~80% (失敗自動重試 10 次)
+- 主買區軌跡需 ≥ 1 日歷史；連續性 footer 需 ≥ 1 日歷史
+- FinMind tick data 需 sponsor 版 (有 token 即可)；失敗時自動 fallback 到 price-quartile 三階段 + net-based wash 判讀
