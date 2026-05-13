@@ -30,6 +30,7 @@
 11. **轉機接力** — 每日兩層篩選工作流（盤前 07:30 cron）→ `tw_daily_screen.py`
 12. **沉睡巨人** — 曾 5 倍、跌 ≥30%、沉睡 ≥5y、量縮整理（CLI）→ `tw_dormant_giants.py`
 13. **強勢股第二波** — 強勢漲 → 急殺 → 反彈啟動（盤前 07:40 cron）→ `tw_second_wave.py`
+14. **日內籌碼×價格** — 當日 BSR broker × price 二維分析（CLI / Skill）→ `tw_chip_price.py`
 
 所有工具放在 `~/project/tw_stock_tools/`，cron 設定每天排程推送到 Telegram 群組。
 概念動能子模組詳見 `concept_momentum/README.md`。
@@ -1114,3 +1115,29 @@ sudo apt install xvfb libnss3 libnspr4 libdbus-1-3 libatk1.0-0 \
 pip install requests beautifulsoup4 ddddocr patchright matplotlib plotly flask
 python3 -m patchright install chromium
 ```
+
+---
+
+## tw_chip_price.py — 單檔日內籌碼 × 價格分析 (CLI / Skill)
+
+跟 `/chip` 不同 — `/chip-price` 專看當日 TWSE BSR 的「分點 × 價格」二維分布，
+推斷誰在哪個價位買進/出脫。輸出包括：
+- Top 10 大單 cells (broker × price × side) 含 ⬇ 早盤搶低 / ⬆ 高檔倒貨 等 direction tag
+- 三階段 (早盤低 25% / 盤中 50% / 尾盤高 25%) 各方主力
+- Top 5 買賣超分點價格指紋 (avg cost + 價格範圍)
+
+### 使用
+```bash
+FINMIND_TOKEN=... python3 tw_chip_price.py 2313
+FINMIND_TOKEN=... python3 tw_chip_price.py 2313 --telegram   # 推 TG
+FINMIND_TOKEN=... python3 tw_chip_price.py 2313 --json-out out.json
+```
+
+### Skill 觸發
+- `/chip-price 2313`
+- "2313 籌碼價格" / "2313 分點價格" / "2313 籌碼價量"
+
+### 限制
+- 僅支援 TWSE (上市)。TPEx (上櫃) 暫不支援 per-price detail (fall back 到 `/chip`)
+- 價格是時間的 proxy，不是真正的時間戳
+- CAPTCHA 解析靠 ddddocr，成功率 ~80% (失敗自動重試)

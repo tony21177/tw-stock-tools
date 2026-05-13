@@ -397,8 +397,12 @@ def analyze(stock_code: str, date: str | None = None,
             bsr = json.load(f)
     else:
         bsr = bsr_scraper.fetch_bsr_with_prices(stock_code)
-        if not bsr or not bsr.get("rows"):
-            print(f"[ERROR] BSR fetch returned empty for {stock_code}", file=sys.stderr)
+        # TPEx (上櫃) detection — fetch_bsr_with_prices is currently TWSE-only.
+        # If we got 0 rows or a no_data flag, the stock may be 上櫃; tell user.
+        if not bsr or not bsr.get("rows") or bsr.get("no_data"):
+            print(f"[WARN] No TWSE BSR for {stock_code}. If 上櫃 (TPEx) stock, "
+                  f"per-price detail is not yet supported. Use /chip (aggregate) "
+                  f"instead.", file=sys.stderr)
             return {}
         os.makedirs(os.path.dirname(cache_path), exist_ok=True)
         with open(cache_path, "w") as f:
