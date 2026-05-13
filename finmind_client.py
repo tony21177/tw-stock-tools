@@ -91,3 +91,19 @@ def fetch_short_sale_balances_market(date: str, token: str) -> list[dict]:
         "start_date": date,
         "end_date": date,
     }, token)
+
+
+def fetch_stock_price_tick(stock_id: str, date: str,
+                           token: str) -> list[dict]:
+    """Fetch tick-by-tick 成交資料 for one stock on one date.
+
+    Returns rows with shape:
+      {date, stock_id, deal_price (float), volume (股),
+       Time ('HH:MM:SS.ffffff'), TickType (int)}
+    Single-day only; FinMind sponsor tier required.
+    """
+    return _call("TaiwanStockPriceTick", {
+        "data_id": stock_id,
+        "start_date": date,
+        "end_date": date,
+    }, token)

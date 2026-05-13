@@ -389,9 +389,101 @@ def broker_top_cells(cells: list[dict], side: str = "buy",
     return filtered[:n]
 
 
+def build_price_to_time_map(stock_code: str, date: str) -> dict:
+    """For each price level, return the volume-weighted avg time-of-day
+    (in minutes from 9:00 open) it was traded. Backed by FinMind tick data.
+
+    Returns {price (float): minutes_from_open (float)} or {} on failure.
+
+    This is the bridge between BSR's per-(broker, price) cells (no time) and
+    intraday time-of-day. With this map we can estimate when each broker
+    cell was likely traded: cell @ \$240 → mapped to ~minute 75 (10:15) etc.
+
+    Stocks/days with high volatility at a single price level (e.g., closing
+    auction at the day-low) will produce a clean late-time estimate for that
+    price. Pricier levels traded only briefly (e.g., opening tick) will pin
+    to early time.
+    """
+    import finmind_client
+    token = _get_token()
+    if not token:
+        return {}
+    date_dash = f"{date[:4]}-{date[4:6]}-{date[6:8]}" if len(date) == 8 else date
+    try:
+        ticks = finmind_client.fetch_stock_price_tick(stock_code, date_dash, token)
+    except Exception:
+        return {}
+    if not ticks:
+        return {}
+    by_price = {}
+    for t in ticks:
+        try:
+            p = float(t["deal_price"])
+            v = int(t["volume"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        if v <= 0:
+            continue
+        # Parse "HH:MM:SS.ffffff" → minutes from 09:00
+        t_str = t.get("Time", "")
+        parts = t_str.split(":")
+        if len(parts) != 3:
+            continue
+        try:
+            h = int(parts[0])
+            m = int(parts[1])
+            s = float(parts[2])
+        except ValueError:
+            continue
+        minutes_from_open = (h - 9) * 60 + m + s / 60.0
+        if p not in by_price:
+            by_price[p] = [0.0, 0]  # [weighted_sum, total_volume]
+        by_price[p][0] += minutes_from_open * v
+        by_price[p][1] += v
+    return {p: data[0] / data[1] for p, data in by_price.items() if data[1] > 0}
+
+
+def _minutes_to_hhmm(minutes: float) -> str:
+    """Convert minutes-from-9:00 to '~HH:MM' format. Negative or >290 → edge."""
+    if minutes < 0:
+        return "盤前"
+    if minutes > 290:  # past 13:50
+        return "尾盤後"
+    total = int(round(minutes))
+    h = 9 + total // 60
+    m = total % 60
+    return f"{h:02d}:{m:02d}"
+
+
+def broker_time_estimate(cells: list[dict], side: str,
+                         price_to_time: dict) -> float | None:
+    """Volume-weighted avg time (minutes from open) the broker traded on `side`.
+
+    Uses the price_to_time map to look up each cell's price. Cells whose price
+    isn't in the map are skipped. Returns None if no estimable cells.
+    """
+    if not price_to_time:
+        return None
+    total_val = 0.0
+    total_vol = 0
+    for c in cells:
+        v = c[side]
+        if v == 0:
+            continue
+        t = price_to_time.get(c["price"])
+        if t is None:
+            continue
+        total_val += t * v
+        total_vol += v
+    if total_vol == 0:
+        return None
+    return total_val / total_vol
+
+
 def broker_wash_candidates(rows: list[dict], day_low: float, day_high: float,
                            top_n: int = 5, min_each_side: int = 100,
-                           min_wash_score: float = 0.05) -> list[dict]:
+                           min_wash_score: float = 0.05,
+                           price_to_time: dict | None = None) -> list[dict]:
     """Detect 同分點 高賣低買 (sold high then bought low same day) — looks
     like distribution on net basis but is actually accumulation.
 
@@ -422,11 +514,13 @@ def broker_wash_candidates(rows: list[dict], day_low: float, day_high: float,
             "sell_shares": 0,
             "_buy_value": 0.0,
             "_sell_value": 0.0,
+            "_cells": [],
         })
         agg["buy_shares"] += r["buy"]
         agg["sell_shares"] += r["sell"]
         agg["_buy_value"] += r["price"] * r["buy"]
         agg["_sell_value"] += r["price"] * r["sell"]
+        agg["_cells"].append({"price": r["price"], "buy": r["buy"], "sell": r["sell"]})
 
     day_range = max(day_high - day_low, 0.01)
     candidates = []
@@ -438,7 +532,7 @@ def broker_wash_candidates(rows: list[dict], day_low: float, day_high: float,
         wash_score = (sell_avg - buy_avg) / day_range
         if wash_score < min_wash_score:
             continue
-        candidates.append({
+        cand = {
             "broker_id": b["broker_id"],
             "broker_name": b["broker_name"],
             "buy_shares": b["buy_shares"],
@@ -448,7 +542,22 @@ def broker_wash_candidates(rows: list[dict], day_low: float, day_high: float,
             "sell_avg": round(sell_avg, 2),
             "wash_score": wash_score,
             "price_gap": round(sell_avg - buy_avg, 2),
-        })
+        }
+        # Time-based classification — needs tick data
+        if price_to_time:
+            buy_t = broker_time_estimate(b["_cells"], "buy", price_to_time)
+            sell_t = broker_time_estimate(b["_cells"], "sell", price_to_time)
+            if buy_t is not None and sell_t is not None:
+                cand["buy_time_min"] = round(buy_t, 1)
+                cand["sell_time_min"] = round(sell_t, 1)
+                # ≥ 30 min difference = clear direction; else 模糊
+                if buy_t - sell_t >= 30:
+                    cand["time_pattern"] = "真洗盤低接"  # bought LATER than sold
+                elif sell_t - buy_t >= 30:
+                    cand["time_pattern"] = "追漲獲利出"  # sold LATER than bought
+                else:
+                    cand["time_pattern"] = "時序模糊"
+        candidates.append(cand)
     candidates.sort(
         key=lambda c: -c["wash_score"] * math.log(
             min(c["buy_shares"], c["sell_shares"]) + 1
@@ -684,15 +793,31 @@ def format_report(data: dict) -> str:
             net_str = (f"淨買 +{_fmt_zhang(net)}張" if net > 0
                        else f"淨賣 {_fmt_zhang(net)}張")
             pct_of_range = w["price_gap"] / rng * 100
-            interpret = (
-                "← 看似空、實際多 (淨賣但低接更多籌碼)"
-                if net < 0
-                else "← 同分點兩面操作，但確實淨買"
-            )
+            pat = w.get("time_pattern", "")
+            # Choose interpretation based on time pattern (preferred) or net (fallback)
+            if pat == "真洗盤低接":
+                interpret = "← ✅ 真洗盤低接 (確認順序: 先賣高、後買低)"
+            elif pat == "追漲獲利出":
+                interpret = "← ⚠ 追漲獲利出 (順序: 先買低、後賣高 — 非洗盤)"
+            elif pat == "時序模糊":
+                interpret = "← ⏱ 時序模糊 (買賣時間相近，無法區分)"
+            else:
+                interpret = (
+                    "← 看似空、實際多 (淨賣但低接更多籌碼)"
+                    if net < 0
+                    else "← 同分點兩面操作，但確實淨買"
+                )
+            buy_t = w.get("buy_time_min")
+            sell_t = w.get("sell_time_min")
+            time_str = ""
+            if buy_t is not None and sell_t is not None:
+                time_str = (f" / 賣 ~{_minutes_to_hhmm(sell_t)} "
+                              f"/ 買 ~{_minutes_to_hhmm(buy_t)}")
             lines.append(
                 f"  {w['broker_id']} {w['broker_name']}: "
                 f"賣 {_fmt_zhang(w['sell_shares'])}張 (avg ${w['sell_avg']:.2f}) "
                 f"/ 買 {_fmt_zhang(w['buy_shares'])}張 (avg ${w['buy_avg']:.2f})"
+                f"{time_str}"
             )
             lines.append(
                 f"    → 高賣低買差 +${w['price_gap']:.2f} "
@@ -904,8 +1029,16 @@ def analyze(stock_code: str, date: str | None = None,
                        low=ohlc["low"], high=ohlc["high"])
     stage = stage_breakdown(bsr["rows"], ohlc["low"], ohlc["high"])
     fingerprint = broker_fingerprint(bsr["rows"], top_n=5)
+    # Build price→time map from FinMind tick data for wash-candidate time
+    # direction classification. Falls back to None on failure — wash output
+    # still works but won't tag 真洗盤低接 vs 追漲獲利出.
+    try:
+        price_to_time = build_price_to_time_map(stock_code, trading_date)
+    except Exception:
+        price_to_time = {}
     wash = broker_wash_candidates(
         bsr["rows"], day_low=ohlc["low"], day_high=ohlc["high"], top_n=5,
+        price_to_time=price_to_time,
     )
 
     # 4. Resolve Chinese name
