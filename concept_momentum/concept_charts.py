@@ -425,6 +425,7 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
   <div class="tab" onclick="showTab('trend')">📈 3 個月趨勢</div>
   <div class="tab" onclick="showTab('leaders')">強勢族群領漲股</div>
   <div class="tab" onclick="showTab('full')">完整排行</div>
+  <a class="tab" href="/chip-price" style="text-decoration:none;color:inherit;">📋 籌碼價量查詢</a>
 </div>
 
 <div id="tab-breadth" class="tab-content active chart-wrap">
