@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.join(HERE, "concept_momentum"))
 
 from bsr_scraper import load_history as load_bsr_history, fetch_and_cache as fetch_bsr_today
 from tw_margin_monitor import fetch_finmind_history
+import finmind_client
 try:
     from stock_names import get_name as _zh_name
 except ImportError:
@@ -45,11 +46,39 @@ def correlation(xs: list[float], ys: list[float]) -> float:
     return num / (denx * deny)
 
 
+def max_consecutive_run(flags: list[bool]) -> int:
+    """Longest run of consecutive True values in `flags`. Returns 0 if all False."""
+    best = 0
+    cur = 0
+    for f in flags:
+        if f:
+            cur += 1
+            best = max(best, cur)
+        else:
+            cur = 0
+    return best
+
+
 def analyze(stock_code: str, days: int, finmind_token: str,
             min_active_days: int = 3, min_pct_of_volume: float = 0.05,
-            min_correlation: float = 0.5, top_n: int = 10,
+            min_correlation: float = 0.5,
+            min_return_correlation: float = 0.3,
+            min_top10_buyer_days: int = 3,
+            min_consecutive_top10: int = 2,
+            top_n: int = 10,
             skip_fetch_if_missing: bool = False) -> dict:
-    """Cross-analyze BSR + margin for one stock.
+    """Cross-analyze BSR + margin + price-return for one stock.
+
+    Targets 大戶用融資連續大量買進推高股價 — a broker is a candidate if:
+      - 累計 ≥ min_top10_buyer_days 個交易日是該檔當日 net-buyer top 10
+      - 至少有一段 ≥ min_consecutive_top10 個交易日連續在 top 10 (允許後續斷層)
+      - 與融資餘額同步增加 (corr(broker_net, margin_net) ≥ min_correlation)
+      - 與當日股價漲幅同步 (corr(broker_net, daily_return) ≥ min_return_correlation)
+
+    Why split top10_buyer_days vs consecutive_top10: BSR top-10 rotation is
+    fast for many stocks. Requiring strictly consecutive ≥3 over-filters; a
+    broker who is top 10 on 4 of 7 days with a 2-day streak somewhere is
+    plausibly a recurring buyer.
 
     skip_fetch_if_missing=True: 若今日 BSR cache 不存在直接 skip，不嘗試 Playwright fetch。
     用於批量 analyze-only 模式避免 ~1500 個失敗 fetch 各拖 3 秒。"""
@@ -69,13 +98,42 @@ def analyze(stock_code: str, days: int, finmind_token: str,
 
     bsr_dates = [h["date"] for h in history]
 
-    # 2. Load FinMind margin history
+    # 2. Load FinMind margin history + OHLC for daily-return series
     end_date = bsr_dates[-1]
     start_dt = datetime.strptime(bsr_dates[0], "%Y%m%d")
     finmind_start = start_dt.strftime("%Y-%m-%d")
     finmind_end = (datetime.strptime(end_date, "%Y%m%d")).strftime("%Y-%m-%d")
     margin_history = fetch_finmind_history(stock_code, finmind_start, finmind_end, finmind_token)
     margin_by_date = {m["date"]: m for m in margin_history}
+
+    # OHLC for daily return computation. Pull one extra trading day before
+    # bsr_dates[0] so we can compute return on the first BSR day.
+    ohlc_start = (start_dt - timedelta(days=10)).strftime("%Y-%m-%d")
+    try:
+        ohlc_rows = finmind_client.fetch_stock_price(
+            stock_code, ohlc_start, finmind_end, finmind_token
+        )
+    except Exception:
+        ohlc_rows = []
+    close_by_date = {
+        r["date"].replace("-", ""): float(r.get("close", 0)) for r in ohlc_rows
+    }
+    # daily_return[i] = (close[bsr_dates[i]] - close[prev_trading_day]) / close[prev]
+    ohlc_sorted_dates = sorted(close_by_date.keys())
+    return_by_date = {}
+    for d in bsr_dates:
+        # find latest ohlc date strictly before d
+        prev = None
+        for od in ohlc_sorted_dates:
+            if od < d:
+                prev = od
+            else:
+                break
+        cur_close = close_by_date.get(d, 0)
+        if prev and close_by_date[prev] > 0 and cur_close > 0:
+            return_by_date[d] = (cur_close - close_by_date[prev]) / close_by_date[prev]
+        else:
+            return_by_date[d] = 0.0
 
     # 3. For each broker that appears, build daily series
     all_brokers = {}
@@ -89,6 +147,17 @@ def analyze(stock_code: str, days: int, finmind_token: str,
                 "net": info["buy"] - info["sell"],
             }
 
+    # 3b. Per-day top-10 net-buyer set (for consecutive-streak check)
+    top10_buyers_per_day = {}
+    for h in history:
+        nets = [
+            (bid, info["buy"] - info["sell"])
+            for bid, info in h.get("brokers", {}).items()
+            if info["buy"] - info["sell"] > 0
+        ]
+        nets.sort(key=lambda x: -x[1])
+        top10_buyers_per_day[h["date"]] = {bid for bid, _ in nets[:10]}
+
     # 4. For each broker compute metrics
     candidates = []
     for bid, info in all_brokers.items():
@@ -96,6 +165,8 @@ def analyze(stock_code: str, days: int, finmind_token: str,
         active_days = 0  # days where broker net buy > min_pct_of_volume of total volume
         net_series = []
         margin_series = []
+        return_series = []
+        top10_flags = []
 
         for date in bsr_dates:
             day_data = info["daily"].get(date)
@@ -116,8 +187,20 @@ def analyze(stock_code: str, days: int, finmind_token: str,
                           - margin.get("repay", 0))
             margin_series.append(margin_net)
 
-        # Skip if not enough buying days
+            return_series.append(return_by_date.get(date, 0.0))
+            top10_flags.append(bid in top10_buyers_per_day.get(date, set()))
+
+        consecutive_top10 = max_consecutive_run(top10_flags)
+        top10_buyer_days = sum(top10_flags)
+
+        # Skip if not enough buying days (cumulative)
         if active_days < min_active_days:
+            continue
+        # Skip if not enough cumulative top-10 days
+        if top10_buyer_days < min_top10_buyer_days:
+            continue
+        # Skip if no minimum-length streak
+        if consecutive_top10 < min_consecutive_top10:
             continue
 
         total_buy = sum(d["buy"] for d in info["daily"].values())
@@ -126,24 +209,38 @@ def analyze(stock_code: str, days: int, finmind_token: str,
         if total_net <= 0:
             continue
 
-        corr = correlation(net_series, margin_series)
-        if corr < min_correlation:
+        margin_corr = correlation(net_series, margin_series)
+        if margin_corr < min_correlation:
             continue
+        return_corr = correlation(net_series, return_series)
+        if return_corr < min_return_correlation:
+            continue
+
+        # Composite score = geometric mean of two correlations × streak ratio
+        # (all in [0,1] after normalization). Lets us rank "stronger main
+        # players" above merely above-threshold ones.
+        streak_ratio = consecutive_top10 / len(bsr_dates) if bsr_dates else 0
+        score = ((margin_corr * return_corr) ** 0.5 if margin_corr > 0 and return_corr > 0 else 0) * streak_ratio
 
         candidates.append({
             "broker_id": bid,
             "broker_name": info["name"],
             "active_days": active_days,
+            "top10_buyer_days": top10_buyer_days,
+            "consecutive_top10": consecutive_top10,
             "total_buy": total_buy,
             "total_sell": total_sell,
             "total_net": total_net,
-            "correlation": corr,
+            "correlation": margin_corr,          # legacy alias = margin corr
+            "margin_correlation": margin_corr,
+            "return_correlation": return_corr,
+            "score": score,
             "buy_dates": [d for d in bsr_dates
                           if info["daily"].get(d, {}).get("net", 0) > 0],
         })
 
-    # 5. Sort by correlation desc
-    candidates.sort(key=lambda x: -x["correlation"])
+    # 5. Sort by composite score desc (strongest 推升 signal first)
+    candidates.sort(key=lambda x: -x["score"])
 
     # 6. Margin summary
     sorted_margin = sorted(margin_history, key=lambda x: x["date"])
@@ -175,22 +272,30 @@ def format_report(result: dict, stock_code: str) -> str:
         lines.append("⚠️ 區間融資並未淨增加，連動分析意義有限")
 
     lines.append("")
-    lines.append(f"【疑似用融資做短線的分點 (Top {len(result['candidates'])})】")
+    lines.append(f"【疑似大戶用融資推升的分點 (Top {len(result['candidates'])})】")
     if not result["candidates"]:
-        lines.append("  無符合條件的分點（需 ≥3 天買超且與融資正相關 ≥0.5）")
+        lines.append("  無符合條件的分點（需連續 ≥3 日 top 10 買 + 融資相關 ≥0.5 + 漲幅相關 ≥0.3）")
     else:
         for i, c in enumerate(result["candidates"], 1):
             buy_days_str = ", ".join(f"{d[4:6]}/{d[6:8]}" for d in c["buy_dates"])
+            mc = c.get("margin_correlation", c["correlation"])
+            rc = c.get("return_correlation", 0.0)
+            top10_days = c.get("top10_buyer_days", 0)
+            streak = c.get("consecutive_top10", 0)
+            score = c.get("score", 0)
             lines.append(
-                f"{i}. {c['broker_id']} {c['broker_name']}\n"
-                f"   買超天數: {c['active_days']}/{result['days_analyzed']} ({buy_days_str})\n"
+                f"{i}. {c['broker_id']} {c['broker_name']} (score {score:.2f})\n"
+                f"   Top 10 買超: 累計 {top10_days}/{result['days_analyzed']} 日，最長連續 {streak} 日\n"
+                f"   買超日: {buy_days_str}\n"
                 f"   累計買 {c['total_buy']/1000:,.0f}張 / 賣 {c['total_sell']/1000:,.0f}張 / 淨 +{c['total_net']/1000:,.0f}張\n"
-                f"   與融資餘額相關係數: {c['correlation']:.2f}"
+                f"   ➤ 與融資 corr: {mc:+.2f}  與漲幅 corr: {rc:+.2f}"
             )
 
     lines.append("")
-    lines.append("註：相關係數 = 該分點當日淨買 vs 當日融資淨增量的 Pearson 相關")
-    lines.append("    高相關不代表因果，僅顯示時間上的同步性")
+    lines.append("註：score = √(融資corr × 漲幅corr) × (連續日數/總日數)")
+    lines.append("    融資 corr = 該分點當日淨買 vs 當日融資淨增的 Pearson")
+    lines.append("    漲幅 corr = 該分點當日淨買 vs 當日股價漲幅的 Pearson")
+    lines.append("    連續 top 10 = 連續幾日在當日 net 買超榜 top 10 內")
     return "\n".join(lines)
 
 
@@ -200,7 +305,13 @@ def main():
     parser.add_argument("--days", type=int, default=5, help="回看天數（預設 5）")
     parser.add_argument("--min-days", type=int, default=3, help="最少買超天數（預設 3）")
     parser.add_argument("--min-pct", type=float, default=0.05, help="買超佔當日量門檻（預設 0.05）")
-    parser.add_argument("--min-corr", type=float, default=0.5, help="相關係數門檻（預設 0.5）")
+    parser.add_argument("--min-corr", type=float, default=0.5, help="融資相關係數門檻（預設 0.5）")
+    parser.add_argument("--min-return-corr", type=float, default=0.3,
+                        help="漲幅相關係數門檻（預設 0.3，較融資寬鬆因漲幅雜訊大）")
+    parser.add_argument("--min-top10-days", type=int, default=3,
+                        help="累計 top 10 買超天數門檻（預設 3）")
+    parser.add_argument("--min-streak", type=int, default=2,
+                        help="連續 top 10 買超天數最少門檻（預設 2）")
     parser.add_argument("--top-n", type=int, default=10, help="顯示前 N 名分點")
     parser.add_argument("--finmind-token")
     args = parser.parse_args()
@@ -214,6 +325,9 @@ def main():
                      min_active_days=args.min_days,
                      min_pct_of_volume=args.min_pct,
                      min_correlation=args.min_corr,
+                     min_return_correlation=args.min_return_corr,
+                     min_top10_buyer_days=args.min_top10_days,
+                     min_consecutive_top10=args.min_streak,
                      top_n=args.top_n)
     print(format_report(result, args.code))
 
