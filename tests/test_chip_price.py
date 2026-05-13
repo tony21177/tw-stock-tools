@@ -54,5 +54,17 @@ class TestParseBsrCsvWithPrices(unittest.TestCase):
         self.assertEqual(last[0]["sell"], 3100)
 
 
+class TestOhlcFromFinmind(unittest.TestCase):
+    def test_returns_dict_with_required_keys(self):
+        from tw_chip_price import get_ohlc
+        result = get_ohlc("2330")
+        # Real network — skip if no token or bad day
+        if not result:
+            self.skipTest("No FINMIND_TOKEN or no recent OHLC data")
+        for k in ("open", "high", "low", "close"):
+            self.assertIn(k, result)
+            self.assertGreater(result[k], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
