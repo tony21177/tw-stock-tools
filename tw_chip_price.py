@@ -389,6 +389,35 @@ def broker_top_cells(cells: list[dict], side: str = "buy",
     return filtered[:n]
 
 
+def adaptive_concentration_band(cells: list[dict], side: str,
+                                day_low: float, day_high: float,
+                                max_band_pct: float = 0.25) -> dict | None:
+    """Pick the tightest meaningful concentration band for a broker.
+
+    Tries thresholds 70% → 60% → 50% → 40% → 30%, picks the highest whose
+    resulting band width is ≤ `max_band_pct` of the day's range. Default
+    25% prevents the misleading "$237.5–$245.5 contains 71%" type bands
+    where the broker's activity is too spread to be actionable.
+
+    Falls back to narrowest threshold (30%) if every higher one is too wide.
+    Returned dict has the standard concentration_band keys plus
+    `threshold_used`.
+    """
+    day_range = max(day_high - day_low, 0.01)
+    for t in (0.7, 0.6, 0.5, 0.4, 0.3):
+        band = broker_concentration_band(cells, side=side, threshold=t)
+        if not band:
+            return None
+        width = band["core_high"] - band["core_low"]
+        if width / day_range <= max_band_pct:
+            band["threshold_used"] = t
+            return band
+    band = broker_concentration_band(cells, side=side, threshold=0.3)
+    if band:
+        band["threshold_used"] = 0.3
+    return band
+
+
 def broker_band_progression(stock_code: str, broker_id: str,
                             side: str = "buy", n_days: int = 4,
                             threshold: float = 0.7) -> list[dict]:
@@ -500,7 +529,10 @@ def format_report(data: dict) -> str:
     # OWN price activity, not the day's uniform high/mid/low bands.
     def _emit_broker_detail(b: dict, side: str) -> None:
         cells = b.get("cells", [])
-        band = broker_concentration_band(cells, side=side, threshold=0.7)
+        band = adaptive_concentration_band(
+            cells, side=side, day_low=ohlc["low"], day_high=ohlc["high"],
+            max_band_pct=0.25,
+        )
         if band:
             sign = "+" if side == "buy" else "-"
             label = "主買集中區" if side == "buy" else "主賣集中區"
