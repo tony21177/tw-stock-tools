@@ -377,9 +377,133 @@ def _emit_zone(lines: list[str], zone_rows: list[dict]) -> None:
         lines.append("  (本區無大量交易)")
 
 
-if __name__ == "__main__":
-    # Placeholder main — full implementation in later task
-    parser = argparse.ArgumentParser()
-    parser.add_argument("code")
+def analyze(stock_code: str, date: str | None = None,
+            no_fetch: bool = False) -> dict:
+    """Run the full pipeline: BSR fetch → OHLC → top cells / stage / fingerprint.
+
+    Returns a dict ready for format_report() (or empty dict on failure).
+    """
+    import bsr_scraper
+
+    # 1. BSR fetch (or load cached per-price file)
+    target = date or datetime.now().strftime("%Y%m%d")
+    cache_path = os.path.join(HERE, "bsr_cache", f"{stock_code}_{target}_prices.json")
+    bsr = {}
+    if no_fetch:
+        if not os.path.exists(cache_path):
+            print(f"[ERROR] --no-fetch but cache missing: {cache_path}", file=sys.stderr)
+            return {}
+        with open(cache_path) as f:
+            bsr = json.load(f)
+    else:
+        bsr = bsr_scraper.fetch_bsr_with_prices(stock_code)
+        if not bsr or not bsr.get("rows"):
+            print(f"[ERROR] BSR fetch returned empty for {stock_code}", file=sys.stderr)
+            return {}
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        with open(cache_path, "w") as f:
+            json.dump(bsr, f, ensure_ascii=False)
+
+    # 2. OHLC for stage range
+    ohlc = get_ohlc(stock_code, target)
+    if not ohlc:
+        # Fallback: derive range from BSR rows themselves
+        prices = [r["price"] for r in bsr["rows"]]
+        ohlc = {"open": min(prices), "high": max(prices),
+                "low": min(prices), "close": max(prices)}
+
+    # 3. Top cells + stage + fingerprint
+    cells = top_cells(bsr["rows"], top_n=10,
+                       low=ohlc["low"], high=ohlc["high"])
+    stage = stage_breakdown(bsr["rows"], ohlc["low"], ohlc["high"])
+    fingerprint = broker_fingerprint(bsr["rows"], top_n=5)
+
+    # 4. Resolve Chinese name
+    try:
+        from stock_names import get_name
+        name = get_name(stock_code, "")
+    except Exception:
+        name = ""
+
+    return {
+        "stock_code": stock_code,
+        "name": name,
+        "date": bsr.get("date", target),
+        "ohlc": ohlc,
+        "total_buy_shares": bsr.get("total_buy_shares", 0),
+        "total_sell_shares": bsr.get("total_sell_shares", 0),
+        "top_cells": cells,
+        "stage": stage,
+        "fingerprint": fingerprint,
+    }
+
+
+def _send_telegram(text: str, bot_token: str, chat_id: str) -> bool:
+    """Push report to Telegram chat. Chunks if > 4000 chars."""
+    api = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    max_len = 4000
+    chunks = [text] if len(text) <= max_len else []
+    if not chunks:
+        cur, lines = "", text.split("\n")
+        for ln in lines:
+            if len(cur) + len(ln) + 1 > max_len:
+                chunks.append(cur)
+                cur = ln
+            else:
+                cur = cur + "\n" + ln if cur else ln
+        if cur:
+            chunks.append(cur)
+    ok = True
+    for c in chunks:
+        body = json.dumps({"chat_id": chat_id, "text": c}).encode()
+        req = urllib.request.Request(
+            api, data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                if not json.loads(resp.read().decode()).get("ok"):
+                    ok = False
+        except Exception as e:
+            print(f"[TG error] {e}", file=sys.stderr)
+            ok = False
+    return ok
+
+
+def main():
+    parser = argparse.ArgumentParser(description="台股單檔籌碼價格分析")
+    parser.add_argument("code", help="股票代號")
+    parser.add_argument("--date", help="日期 YYYYMMDD (預設今天)")
+    parser.add_argument("--telegram", action="store_true",
+                        help="推送報告到 Telegram")
+    parser.add_argument("--bot-token",
+                        default=os.environ.get("TG_BOT_TOKEN", ""))
+    parser.add_argument("--chat-id", default=DEFAULT_CHAT_ID)
+    parser.add_argument("--json-out", help="同時寫結構化 JSON 到此路徑")
+    parser.add_argument("--no-fetch", action="store_true",
+                        help="只讀 cache，不打 TWSE")
     args = parser.parse_args()
-    print(get_ohlc(args.code))
+
+    data = analyze(args.code, date=args.date, no_fetch=args.no_fetch)
+    if not data:
+        sys.exit(1)
+    report = format_report(data)
+    print(report)
+
+    if args.json_out:
+        os.makedirs(os.path.dirname(os.path.abspath(args.json_out)) or ".",
+                    exist_ok=True)
+        with open(args.json_out, "w") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    if args.telegram:
+        if not args.bot_token:
+            print("[ERROR] --telegram requires TG_BOT_TOKEN", file=sys.stderr)
+            sys.exit(1)
+        ok = _send_telegram(report, args.bot_token, args.chat_id)
+        print(f"[TG] {'sent' if ok else 'partial/fail'}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
