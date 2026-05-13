@@ -57,6 +57,44 @@ def _parse_csv(text: str) -> dict:
     return aggregates
 
 
+def _parse_csv_with_prices(text: str) -> list[dict]:
+    """Parse TPEx CSV preserving per-(broker, price) cells.
+
+    CSV format: 序號,券商,價格,買進股數,賣出股數 (quoted values).
+    Returns list of {broker_id, broker_name, price, buy, sell}.
+    """
+    out = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line or not line.startswith('"') or not line[1].isdigit():
+            continue
+        parts = re.findall(r'"([^"]*)"', line)
+        if len(parts) < 5:
+            continue
+        try:
+            broker = parts[1].strip()
+            price = float(parts[2].replace(",", ""))
+            buy = int(parts[3].replace(",", ""))
+            sell = int(parts[4].replace(",", ""))
+        except (ValueError, IndexError):
+            continue
+        if not broker:
+            continue
+        m = re.match(r"^([A-Z0-9]{4,6})\s+(.+)$", broker)
+        if m:
+            bid, bname = m.group(1), m.group(2).strip()
+        else:
+            bid, bname = broker[:4], broker[4:].strip()
+        out.append({
+            "broker_id": bid,
+            "broker_name": bname,
+            "price": price,
+            "buy": buy,
+            "sell": sell,
+        })
+    return out
+
+
 def _start_xvfb() -> tuple[subprocess.Popen | None, str]:
     """Start a fresh Xvfb on display :99 and override DISPLAY env.
     Returns (process, display). Always uses Xvfb to avoid issues with
@@ -130,6 +168,81 @@ def fetch_tpex_broker(stock_code: str, max_attempts: int = 3) -> dict:
                         "brokers": brokers,
                         "total_buy": total_buy,
                         "total_sell": total_sell,
+                        "source": "tpex",
+                    }
+                finally:
+                    browser.close()
+    finally:
+        if xvfb_proc:
+            xvfb_proc.terminate()
+    return {}
+
+
+def fetch_tpex_with_prices(stock_code: str, max_attempts: int = 3) -> dict:
+    """Fetch TPEx broker data preserving per-(broker, price) rows.
+
+    Same Playwright + Turnstile flow as fetch_tpex_broker() but uses
+    _parse_csv_with_prices(). Returns {date, stock_code, rows,
+    total_buy_shares, total_sell_shares, source='tpex'} or {} on failure.
+    """
+    xvfb_proc, _ = _start_xvfb()
+    try:
+        with sync_playwright() as p:
+            for attempt in range(max_attempts):
+                browser = p.chromium.launch(headless=False)
+                try:
+                    page = browser.new_page()
+                    page.goto(TPEX_BROKER_URL,
+                              wait_until="domcontentloaded", timeout=30000)
+                    token = ""
+                    for _ in range(25):
+                        time.sleep(1)
+                        token = page.evaluate("""() => {
+                            const i = document.querySelector('input[name="cf-turnstile-response"]');
+                            return i ? i.value : '';
+                        }""")
+                        if token:
+                            break
+                    if not token:
+                        print(f"[WARN] {stock_code} no Turnstile token",
+                              file=sys.stderr)
+                        continue
+                    page.fill('#tables-form input[name="code"]', stock_code)
+                    try:
+                        with page.expect_download(timeout=30000) as dl_info:
+                            page.click('button[data-format="csv"]')
+                        download = dl_info.value
+                        with open(download.path(), "rb") as f:
+                            csv_bytes = f.read()
+                    except Exception as e:
+                        text = (
+                            page.locator("#tables-content").inner_text()
+                            if page.locator("#tables-content").count()
+                            else ""
+                        )
+                        if "查無" in text or "無資料" in text:
+                            return {
+                                "date": datetime.now().strftime("%Y%m%d"),
+                                "stock_code": stock_code, "rows": [],
+                                "total_buy_shares": 0, "total_sell_shares": 0,
+                                "no_data": True, "source": "tpex",
+                            }
+                        print(f"[WARN] {stock_code} download failed: {e}",
+                              file=sys.stderr)
+                        continue
+
+                    text = csv_bytes.decode("cp950", errors="replace")
+                    rows = _parse_csv_with_prices(text)
+                    if not rows:
+                        continue
+                    total_buy = sum(r["buy"] for r in rows)
+                    total_sell = sum(r["sell"] for r in rows)
+                    return {
+                        "date": datetime.now().strftime("%Y%m%d"),
+                        "stock_code": stock_code,
+                        "rows": rows,
+                        "total_buy_shares": total_buy,
+                        "total_sell_shares": total_sell,
                         "source": "tpex",
                     }
                 finally:

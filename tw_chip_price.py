@@ -656,13 +656,21 @@ def analyze(stock_code: str, date: str | None = None,
             bsr = json.load(f)
     else:
         bsr = bsr_scraper.fetch_bsr_with_prices(stock_code)
-        # TPEx (上櫃) detection — fetch_bsr_with_prices is currently TWSE-only.
-        # If we got 0 rows or a no_data flag, the stock may be 上櫃; tell user.
+        # If TWSE returned no_data or empty, try TPEx (上櫃) as a fallback.
         if not bsr or not bsr.get("rows") or bsr.get("no_data"):
-            print(f"[WARN] No TWSE BSR for {stock_code}. If 上櫃 (TPEx) stock, "
-                  f"per-price detail is not yet supported. Use /chip (aggregate) "
-                  f"instead.", file=sys.stderr)
-            return {}
+            print(f"[INFO] TWSE returned no data for {stock_code}, "
+                  f"trying TPEx...", file=sys.stderr)
+            try:
+                import tpex_scraper
+                bsr = tpex_scraper.fetch_tpex_with_prices(stock_code)
+            except Exception as e:
+                print(f"[ERROR] TPEx fetch failed for {stock_code}: {e}",
+                      file=sys.stderr)
+                return {}
+            if not bsr or not bsr.get("rows") or bsr.get("no_data"):
+                print(f"[WARN] No BSR data for {stock_code} on either TWSE "
+                      f"or TPEx.", file=sys.stderr)
+                return {}
         # Cache write deferred until after step 2 — we want to use FinMind's
         # authoritative trading date in the cache filename.
 
