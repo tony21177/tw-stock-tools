@@ -224,6 +224,68 @@ class TestHistoryArchive(unittest.TestCase):
         self.assertEqual(load_history("2313", base_dir=self.tmp), [])
 
 
+class TestBrokerWashCandidates(unittest.TestCase):
+    def test_detects_high_sell_low_buy_pattern(self):
+        from tw_chip_price import broker_wash_candidates
+        # Broker A: sold 5000 @$245, bought 3000 @$238 → wash_score positive
+        # Broker B: sold 100 @$240, bought 8000 @$245 → wash_score negative
+        # Broker C: only buys 5000 @$240 → one-sided, skipped
+        rows = [
+            {"broker_id": "A", "broker_name": "A", "price": 245.0,
+             "buy": 0, "sell": 5000},
+            {"broker_id": "A", "broker_name": "A", "price": 238.0,
+             "buy": 3000, "sell": 0},
+            {"broker_id": "B", "broker_name": "B", "price": 240.0,
+             "buy": 0, "sell": 100},
+            {"broker_id": "B", "broker_name": "B", "price": 245.0,
+             "buy": 8000, "sell": 0},
+            {"broker_id": "C", "broker_name": "C", "price": 240.0,
+             "buy": 5000, "sell": 0},
+        ]
+        result = broker_wash_candidates(
+            rows, day_low=235.0, day_high=250.0, top_n=5, min_each_side=50,
+        )
+        # Only A qualifies (B has negative wash, C is one-sided)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["broker_id"], "A")
+        self.assertEqual(result[0]["buy_shares"], 3000)
+        self.assertEqual(result[0]["sell_shares"], 5000)
+        self.assertAlmostEqual(result[0]["sell_avg"], 245.0, places=2)
+        self.assertAlmostEqual(result[0]["buy_avg"], 238.0, places=2)
+        # day range = 15, gap = 7 → wash_score ≈ 0.467
+        self.assertAlmostEqual(result[0]["wash_score"], 7.0 / 15.0, places=2)
+        self.assertEqual(result[0]["price_gap"], 7.0)
+        self.assertEqual(result[0]["net_shares"], -2000)
+
+    def test_skips_one_sided_brokers(self):
+        from tw_chip_price import broker_wash_candidates
+        rows = [
+            {"broker_id": "A", "broker_name": "A", "price": 245.0,
+             "buy": 0, "sell": 5000},
+            {"broker_id": "B", "broker_name": "B", "price": 238.0,
+             "buy": 3000, "sell": 0},
+        ]
+        # A is pure seller, B is pure buyer → no wash candidates
+        result = broker_wash_candidates(
+            rows, day_low=235.0, day_high=250.0, min_each_side=50,
+        )
+        self.assertEqual(result, [])
+
+    def test_skips_negative_wash_score(self):
+        from tw_chip_price import broker_wash_candidates
+        # A bought higher than sold (追漲後賣) — negative wash, excluded
+        rows = [
+            {"broker_id": "A", "broker_name": "A", "price": 240.0,
+             "buy": 0, "sell": 200},
+            {"broker_id": "A", "broker_name": "A", "price": 248.0,
+             "buy": 3000, "sell": 0},
+        ]
+        result = broker_wash_candidates(
+            rows, day_low=235.0, day_high=250.0, min_each_side=100,
+        )
+        self.assertEqual(result, [])
+
+
 class TestBrokerBandProgression(unittest.TestCase):
     def setUp(self):
         import tempfile, tw_chip_price

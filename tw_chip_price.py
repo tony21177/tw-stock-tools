@@ -389,6 +389,74 @@ def broker_top_cells(cells: list[dict], side: str = "buy",
     return filtered[:n]
 
 
+def broker_wash_candidates(rows: list[dict], day_low: float, day_high: float,
+                           top_n: int = 5, min_each_side: int = 100,
+                           min_wash_score: float = 0.05) -> list[dict]:
+    """Detect 同分點 高賣低買 (sold high then bought low same day) — looks
+    like distribution on net basis but is actually accumulation.
+
+    Example: broker sells 5,000張 @ avg \$245 + buys 3,000張 @ avg \$238
+    on a day with [low \$235, high \$250] range. Net is -2,000張 (looks like
+    selling), but the broker accumulated 3,000張 at materially lower prices
+    than they sold the 5,000張. That's 洗盤低接 — bullish for the smart
+    side of the trade.
+
+    For each broker with two-sided activity, computes:
+      wash_score = (sell_avg_price - buy_avg_price) / day_range
+        > 0  → sold higher than bought = 高賣低買 (bullish accumulation)
+        < 0  → bought higher than sold = 追漲後出 (bearish distribution)
+
+    Returns Top N sorted by wash_score weighted by log(min_volume) so
+    noise from tiny-volume two-sided rows doesn't drown out real signal.
+    Skips wash_score < min_wash_score and brokers without min_each_side
+    on both sides.
+    """
+    import math
+    per_broker = {}
+    for r in rows:
+        bid = r["broker_id"]
+        agg = per_broker.setdefault(bid, {
+            "broker_id": bid,
+            "broker_name": r["broker_name"],
+            "buy_shares": 0,
+            "sell_shares": 0,
+            "_buy_value": 0.0,
+            "_sell_value": 0.0,
+        })
+        agg["buy_shares"] += r["buy"]
+        agg["sell_shares"] += r["sell"]
+        agg["_buy_value"] += r["price"] * r["buy"]
+        agg["_sell_value"] += r["price"] * r["sell"]
+
+    day_range = max(day_high - day_low, 0.01)
+    candidates = []
+    for b in per_broker.values():
+        if b["buy_shares"] < min_each_side or b["sell_shares"] < min_each_side:
+            continue
+        buy_avg = b["_buy_value"] / b["buy_shares"]
+        sell_avg = b["_sell_value"] / b["sell_shares"]
+        wash_score = (sell_avg - buy_avg) / day_range
+        if wash_score < min_wash_score:
+            continue
+        candidates.append({
+            "broker_id": b["broker_id"],
+            "broker_name": b["broker_name"],
+            "buy_shares": b["buy_shares"],
+            "sell_shares": b["sell_shares"],
+            "net_shares": b["buy_shares"] - b["sell_shares"],
+            "buy_avg": round(buy_avg, 2),
+            "sell_avg": round(sell_avg, 2),
+            "wash_score": wash_score,
+            "price_gap": round(sell_avg - buy_avg, 2),
+        })
+    candidates.sort(
+        key=lambda c: -c["wash_score"] * math.log(
+            min(c["buy_shares"], c["sell_shares"]) + 1
+        )
+    )
+    return candidates[:top_n]
+
+
 def adaptive_concentration_band(cells: list[dict], side: str,
                                 day_low: float, day_high: float,
                                 max_band_pct: float = 0.25) -> dict | None:
@@ -605,6 +673,32 @@ def format_report(data: dict) -> str:
             )
             _emit_broker_detail(b, "sell")
 
+    # Wash candidates — 高賣低買 same-day pattern (淨賣超但實際低接收貨)
+    wash = data.get("wash_candidates", [])
+    if wash:
+        rng = max(ohlc["high"] - ohlc["low"], 0.01)
+        lines.append("")
+        lines.append("【🌀 高賣低買 — 同分點兩面操作 (洗盤低接型態)】")
+        for w in wash:
+            net = w["net_shares"]
+            net_str = (f"淨買 +{_fmt_zhang(net)}張" if net > 0
+                       else f"淨賣 {_fmt_zhang(net)}張")
+            pct_of_range = w["price_gap"] / rng * 100
+            interpret = (
+                "← 看似空、實際多 (淨賣但低接更多籌碼)"
+                if net < 0
+                else "← 同分點兩面操作，但確實淨買"
+            )
+            lines.append(
+                f"  {w['broker_id']} {w['broker_name']}: "
+                f"賣 {_fmt_zhang(w['sell_shares'])}張 (avg ${w['sell_avg']:.2f}) "
+                f"/ 買 {_fmt_zhang(w['buy_shares'])}張 (avg ${w['buy_avg']:.2f})"
+            )
+            lines.append(
+                f"    → 高賣低買差 +${w['price_gap']:.2f} "
+                f"({pct_of_range:.0f}% of 全日範圍)，{net_str} {interpret}"
+            )
+
     # Continuity footer — pull recent history (default 5 trading days)
     continuity = _format_continuity(data, days=5)
     if continuity:
@@ -805,11 +899,14 @@ def analyze(stock_code: str, date: str | None = None,
         with open(cache_path, "w") as f:
             json.dump(bsr, f, ensure_ascii=False)
 
-    # 3. Top cells + stage + fingerprint
+    # 3. Top cells + stage + fingerprint + wash candidates
     cells = top_cells(bsr["rows"], top_n=10,
                        low=ohlc["low"], high=ohlc["high"])
     stage = stage_breakdown(bsr["rows"], ohlc["low"], ohlc["high"])
     fingerprint = broker_fingerprint(bsr["rows"], top_n=5)
+    wash = broker_wash_candidates(
+        bsr["rows"], day_low=ohlc["low"], day_high=ohlc["high"], top_n=5,
+    )
 
     # 4. Resolve Chinese name
     try:
@@ -828,6 +925,7 @@ def analyze(stock_code: str, date: str | None = None,
         "top_cells": cells,
         "stage": stage,
         "fingerprint": fingerprint,
+        "wash_candidates": wash,
     }
     # 5. Archive to per-stock history (rolling 10 trading days). Idempotent —
     # re-running on the same day overwrites the same file. Skip on --no-fetch
