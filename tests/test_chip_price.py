@@ -66,5 +66,52 @@ class TestOhlcFromFinmind(unittest.TestCase):
             self.assertGreater(result[k], 0)
 
 
+class TestStageBreakdown(unittest.TestCase):
+    SAMPLE_ROWS = [
+        # Early zone (low quartile): $100-105
+        {"broker_id": "A001", "broker_name": "外資A",
+         "price": 101.0, "buy": 5000, "sell": 0},
+        {"broker_id": "B001", "broker_name": "散戶B",
+         "price": 102.0, "buy": 0, "sell": 200},
+        # Mid zone: $105-115
+        {"broker_id": "A001", "broker_name": "外資A",
+         "price": 110.0, "buy": 1000, "sell": 0},
+        {"broker_id": "C001", "broker_name": "外資C",
+         "price": 112.0, "buy": 800, "sell": 0},
+        # Late zone (high quartile): $115-120
+        {"broker_id": "B001", "broker_name": "散戶B",
+         "price": 118.0, "buy": 0, "sell": 1500},
+        {"broker_id": "A001", "broker_name": "外資A",
+         "price": 119.0, "buy": 300, "sell": 0},
+    ]
+
+    def test_three_zones_partition(self):
+        from tw_chip_price import stage_breakdown
+        result = stage_breakdown(self.SAMPLE_ROWS, low=100.0, high=120.0)
+        # Zones: early [100, 105], mid (105, 115], late (115, 120]
+        self.assertIn("early", result)
+        self.assertIn("mid", result)
+        self.assertIn("late", result)
+
+    def test_early_zone_top_buyer(self):
+        from tw_chip_price import stage_breakdown
+        result = stage_breakdown(self.SAMPLE_ROWS, low=100.0, high=120.0)
+        early = result["early"]
+        # A001 bought 5000 in early; B001 sold 200
+        a = [r for r in early if r["broker_id"] == "A001"][0]
+        self.assertEqual(a["buy_shares"], 5000)
+        self.assertEqual(a["sell_shares"], 0)
+        b = [r for r in early if r["broker_id"] == "B001"][0]
+        self.assertEqual(b["sell_shares"], 200)
+
+    def test_late_zone_top_seller(self):
+        from tw_chip_price import stage_breakdown
+        result = stage_breakdown(self.SAMPLE_ROWS, low=100.0, high=120.0)
+        late = result["late"]
+        # B001 sold 1500 in late; A001 bought 300
+        b = [r for r in late if r["broker_id"] == "B001"][0]
+        self.assertEqual(b["sell_shares"], 1500)
+
+
 if __name__ == "__main__":
     unittest.main()

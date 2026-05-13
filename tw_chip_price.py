@@ -74,6 +74,63 @@ def get_ohlc(stock_code: str, date: str | None = None) -> dict:
     }
 
 
+ZONE_LOW_FRACTION = 0.25
+ZONE_HIGH_FRACTION = 0.75
+
+
+def stage_breakdown(rows: list[dict], low: float, high: float) -> dict:
+    """Split rows into 3 price zones and aggregate buy/sell per broker per zone.
+
+    Zones:
+      early = [low, low + 0.25 × (high − low)]
+      mid   = (low + 0.25 × range, low + 0.75 × range]
+      late  = (low + 0.75 × range, high]
+
+    Returns:
+      {"early": [{broker_id, broker_name, buy_shares, sell_shares, net_shares}, ...],
+       "mid":   [...],
+       "late":  [...]}
+    Each list sorted by abs(net_shares) descending.
+    """
+    rng = high - low
+    if rng <= 0:
+        # Flat price day — everything in mid
+        zones = {"early": [], "mid": rows, "late": []}
+    else:
+        early_max = low + ZONE_LOW_FRACTION * rng
+        late_min = low + ZONE_HIGH_FRACTION * rng
+        zone_rows = {"early": [], "mid": [], "late": []}
+        for r in rows:
+            p = r["price"]
+            if p <= early_max:
+                zone_rows["early"].append(r)
+            elif p <= late_min:
+                zone_rows["mid"].append(r)
+            else:
+                zone_rows["late"].append(r)
+        zones = zone_rows
+
+    result = {}
+    for zone, zrows in zones.items():
+        per_broker = {}
+        for r in zrows:
+            bid = r["broker_id"]
+            agg = per_broker.setdefault(bid, {
+                "broker_id": bid,
+                "broker_name": r["broker_name"],
+                "buy_shares": 0,
+                "sell_shares": 0,
+            })
+            agg["buy_shares"] += r["buy"]
+            agg["sell_shares"] += r["sell"]
+        for a in per_broker.values():
+            a["net_shares"] = a["buy_shares"] - a["sell_shares"]
+        sorted_list = sorted(per_broker.values(),
+                              key=lambda x: -abs(x["net_shares"]))
+        result[zone] = sorted_list
+    return result
+
+
 if __name__ == "__main__":
     # Placeholder main — full implementation in later task
     parser = argparse.ArgumentParser()
