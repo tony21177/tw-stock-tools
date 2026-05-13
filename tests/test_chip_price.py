@@ -182,5 +182,67 @@ class TestTopCells(unittest.TestCase):
         self.assertIn("高檔倒貨", late_sell["tag"])
 
 
+class TestFormatReport(unittest.TestCase):
+    def test_report_includes_header_and_sections(self):
+        from tw_chip_price import format_report
+        data = {
+            "stock_code": "2313",
+            "name": "華通",
+            "date": "20260512",
+            "ohlc": {"open": 246.0, "high": 264.5, "low": 246.0, "close": 260.0},
+            "total_buy_shares": 93922000,
+            "total_sell_shares": 93922000,
+            "top_cells": [
+                {"broker_id": "1480", "broker_name": "美商高盛",
+                 "price": 246.5, "side": "buy", "volume": 8200000,
+                 "zone": "early", "tag": "⬇ 早盤搶低"},
+            ],
+            "stage": {"early": [], "mid": [], "late": []},
+            "fingerprint": {"top_buyers": [], "top_sellers": []},
+        }
+        report = format_report(data)
+        # Header
+        self.assertIn("2313", report)
+        self.assertIn("華通", report)
+        self.assertIn("246.00", report)
+        self.assertIn("260.00", report)
+        # Top cells section
+        self.assertIn("Top", report)
+        self.assertIn("8,200", report)  # 8200000 shares / 1000 = 8200 張
+        self.assertIn("早盤搶低", report)
+        # Section headers
+        self.assertIn("三階段", report)
+        self.assertIn("價格指紋", report)
+
+    def test_negative_net_shares_formats_correctly(self):
+        from tw_chip_price import _fmt_zhang
+        # -1500 should render as "-1", not "-2" (no floor-div bug)
+        self.assertEqual(_fmt_zhang(-1500), "-1")
+        # -2999 should render as "-2"
+        self.assertEqual(_fmt_zhang(-2999), "-2")
+        # Positive still works
+        self.assertEqual(_fmt_zhang(8200000), "8,200")
+        # Zero
+        self.assertEqual(_fmt_zhang(0), "0")
+
+    def test_format_report_handles_partial_stage(self):
+        from tw_chip_price import format_report
+        data = {
+            "stock_code": "0000",
+            "name": "test",
+            "date": "20260512",
+            "ohlc": {"open": 100.0, "high": 110.0, "low": 100.0, "close": 105.0},
+            "total_buy_shares": 1000000,
+            "total_sell_shares": 1000000,
+            "top_cells": [],
+            # Note: missing "mid" and "late" keys
+            "stage": {"early": []},
+            "fingerprint": {"top_buyers": [], "top_sellers": []},
+        }
+        # Should not raise KeyError
+        report = format_report(data)
+        self.assertIn("三階段", report)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -262,6 +262,121 @@ def top_cells(rows: list[dict], top_n: int = 10,
     return cells[:top_n]
 
 
+def _fmt_zhang(shares: int) -> str:
+    """股 → 張 with thousands separator (e.g., 8200000 → '8,200')."""
+    return f"{int(shares / 1000):,}"
+
+
+def _fmt_date(yyyymmdd: str) -> str:
+    return f"{yyyymmdd[:4]}/{yyyymmdd[4:6]}/{yyyymmdd[6:8]}"
+
+
+def format_report(data: dict) -> str:
+    """Render the analysis result as Telegram-friendly text.
+
+    data = {stock_code, name, date, ohlc, total_buy_shares, total_sell_shares,
+            top_cells, stage, fingerprint, [optional] notes}
+    """
+    code = data["stock_code"]
+    name = data.get("name", "")
+    date = data["date"]
+    ohlc = data["ohlc"]
+    change_pct = ((ohlc["close"] - ohlc["open"]) / ohlc["open"] * 100
+                  if ohlc["open"] > 0 else 0)
+
+    lines = []
+    lines.append(f"{code} {name} 籌碼價格分析 ({_fmt_date(date)})")
+    lines.append(f"開盤 ${ohlc['open']:.2f} / 收盤 ${ohlc['close']:.2f} / "
+                  f"高 ${ohlc['high']:.2f} / 低 ${ohlc['low']:.2f} "
+                  f"({change_pct:+.2f}%)")
+    lines.append(f"總量 {_fmt_zhang(data['total_buy_shares'])} 張")
+    lines.append("")
+
+    # Top cells
+    lines.append("【🔥 Top 10 大單 cells (broker × price)】")
+    if not data["top_cells"]:
+        lines.append("  (無資料)")
+    else:
+        for i, c in enumerate(data["top_cells"], 1):
+            side_label = "買" if c["side"] == "buy" else "賣"
+            lines.append(
+                f"{i}. {c['broker_id']} {c['broker_name']} @${c['price']:.2f} "
+                f"{side_label} {_fmt_zhang(c['volume'])} 張 {c['tag']}"
+            )
+    lines.append("")
+
+    # Stage analysis
+    lines.append("【⏰ 三階段分析】")
+    rng = ohlc["high"] - ohlc["low"]
+    if rng > 0:
+        lines.append(f"早盤 (低 25%: ${ohlc['low']:.2f} ~ "
+                      f"${ohlc['low'] + 0.25 * rng:.2f}):")
+    else:
+        lines.append("早盤:")
+    _emit_zone(lines, data["stage"].get("early", []))
+    lines.append("")
+    if rng > 0:
+        lines.append(f"盤中 (中 50%: ${ohlc['low'] + 0.25 * rng:.2f} ~ "
+                      f"${ohlc['low'] + 0.75 * rng:.2f}):")
+    else:
+        lines.append("盤中:")
+    _emit_zone(lines, data["stage"].get("mid", []))
+    lines.append("")
+    if rng > 0:
+        lines.append(f"尾盤 (高 25%: ${ohlc['low'] + 0.75 * rng:.2f} ~ "
+                      f"${ohlc['high']:.2f}):")
+    else:
+        lines.append("尾盤:")
+    _emit_zone(lines, data["stage"].get("late", []))
+    lines.append("")
+
+    # Fingerprint
+    lines.append("【🎯 Top 5 買超分點價格指紋】")
+    if not data["fingerprint"]["top_buyers"]:
+        lines.append("  (無)")
+    else:
+        for b in data["fingerprint"]["top_buyers"]:
+            pr_lo, pr_hi = b["price_range"]
+            lines.append(
+                f"  {b['broker_id']} {b['broker_name']} "
+                f"+{_fmt_zhang(b['net_shares'])} 張 — "
+                f"avg ${b['avg_price']:.2f}, 範圍 ${pr_lo:.2f}~${pr_hi:.2f}"
+            )
+    lines.append("")
+    lines.append("【🎯 Top 5 賣超分點價格指紋】")
+    if not data["fingerprint"]["top_sellers"]:
+        lines.append("  (無)")
+    else:
+        for b in data["fingerprint"]["top_sellers"]:
+            pr_lo, pr_hi = b["price_range"]
+            lines.append(
+                f"  {b['broker_id']} {b['broker_name']} "
+                f"{_fmt_zhang(b['net_shares'])} 張 — "
+                f"avg ${b['avg_price']:.2f}, 範圍 ${pr_lo:.2f}~${pr_hi:.2f}"
+            )
+    return "\n".join(lines)
+
+
+def _emit_zone(lines: list[str], zone_rows: list[dict]) -> None:
+    """Helper: append top 3 buyers + top 3 sellers from a zone's sorted rows."""
+    buyers = [r for r in zone_rows if r["net_shares"] > 0][:3]
+    sellers = [r for r in zone_rows if r["net_shares"] < 0][:3]
+    if buyers:
+        labels = " / ".join(
+            f"{r['broker_name']} +{_fmt_zhang(r['net_shares'])} 張"
+            for r in buyers
+        )
+        lines.append(f"  🟢 買方主力: {labels}")
+    if sellers:
+        labels = " / ".join(
+            f"{r['broker_name']} {_fmt_zhang(r['net_shares'])} 張"
+            for r in sellers
+        )
+        lines.append(f"  🔴 賣方主力: {labels}")
+    if not buyers and not sellers:
+        lines.append("  (本區無大量交易)")
+
+
 if __name__ == "__main__":
     # Placeholder main — full implementation in later task
     parser = argparse.ArgumentParser()
