@@ -328,41 +328,65 @@ def _fmt_zhang(shares: int) -> str:
     return f"{int(shares / 1000):,}"
 
 
-def price_bands_for_broker(cells: list[dict], low: float, high: float,
-                           n_bands: int = 3) -> list[dict]:
-    """Bucket a broker's cells into n_bands equal-width price bands.
+def broker_concentration_band(cells: list[dict], side: str = "buy",
+                              threshold: float = 0.7) -> dict | None:
+    """Find the tightest contiguous price range containing `threshold`
+    fraction of this broker's `side`-volume.
 
-    Returns list of {label, low, high, buy, sell, net} ordered high→low.
-    Labels for n_bands=3 are '高檔', '中檔', '低檔'; otherwise 'B1', 'B2', ...
-    Flat-day (rng ≤ 0) collapses everything into a single band labelled '收盤價'.
+    Each broker has their own price profile — uniform day-level high/mid/low
+    bands hide the per-broker concentration. This finds, e.g., that 高盛
+    bought 70% of their volume in a narrow $258~$264 cluster, while
+    摩根大通 spread the same 70% across $250~$262.
+
+    Returns {core_low, core_high, core_volume, core_pct, total_volume}
+    or None if no `side`-volume in cells.
     """
-    rng = high - low
-    if rng <= 0:
-        buy = sum(c["buy"] for c in cells)
-        sell = sum(c["sell"] for c in cells)
-        return [{
-            "label": "收盤價", "low": low, "high": low,
-            "buy": buy, "sell": sell, "net": buy - sell,
-        }]
-    labels = (["低檔", "中檔", "高檔"] if n_bands == 3
-              else [f"B{i + 1}" for i in range(n_bands)])
-    bands = []
-    for i in range(n_bands):
-        b_lo = low + rng * i / n_bands
-        b_hi = low + rng * (i + 1) / n_bands
-        # Inclusive on the top edge of the last band, half-open otherwise.
-        if i == n_bands - 1:
-            in_band = lambda p, lo=b_lo, hi=b_hi: lo <= p <= hi
-        else:
-            in_band = lambda p, lo=b_lo, hi=b_hi: lo <= p < hi
-        buy = sum(c["buy"] for c in cells if in_band(c["price"]))
-        sell = sum(c["sell"] for c in cells if in_band(c["price"]))
-        bands.append({
-            "label": labels[i], "low": b_lo, "high": b_hi,
-            "buy": buy, "sell": sell, "net": buy - sell,
-        })
-    bands.reverse()  # high → low
-    return bands
+    side_vol = sum(c[side] for c in cells)
+    if side_vol == 0:
+        return None
+    target = side_vol * threshold
+    sorted_cells = sorted(cells, key=lambda c: c["price"])
+    n = len(sorted_cells)
+
+    # Sliding window over price-sorted cells: shrink from left whenever the
+    # window still covers >= target volume, track the smallest price-width
+    # window that ever did.
+    best_low_idx, best_high_idx, best_width = 0, n - 1, float("inf")
+    left = 0
+    cur_vol = 0
+    for right in range(n):
+        cur_vol += sorted_cells[right][side]
+        while left < right and cur_vol - sorted_cells[left][side] >= target:
+            cur_vol -= sorted_cells[left][side]
+            left += 1
+        if cur_vol >= target:
+            width = sorted_cells[right]["price"] - sorted_cells[left]["price"]
+            if width < best_width:
+                best_width = width
+                best_low_idx, best_high_idx = left, right
+
+    core_volume = sum(
+        sorted_cells[i][side]
+        for i in range(best_low_idx, best_high_idx + 1)
+    )
+    return {
+        "core_low": sorted_cells[best_low_idx]["price"],
+        "core_high": sorted_cells[best_high_idx]["price"],
+        "core_volume": core_volume,
+        "core_pct": core_volume / side_vol,
+        "total_volume": side_vol,
+    }
+
+
+def broker_top_cells(cells: list[dict], side: str = "buy",
+                     n: int = 3) -> list[dict]:
+    """Top `n` cells for `side` (buy/sell), sorted by that side's volume desc.
+
+    Skips cells with zero `side`-volume. Returns at most `n` cells.
+    """
+    filtered = [c for c in cells if c[side] > 0]
+    filtered.sort(key=lambda c: -c[side])
+    return filtered[:n]
 
 
 def _fmt_date(yyyymmdd: str) -> str:
@@ -428,8 +452,30 @@ def format_report(data: dict) -> str:
     _emit_zone(lines, data["stage"].get("late", []))
     lines.append("")
 
-    # Fingerprint
-    o_low, o_high = ohlc["low"], ohlc["high"]
+    # Fingerprint — each broker's concentration is computed against their
+    # OWN price activity, not the day's uniform high/mid/low bands.
+    def _emit_broker_detail(b: dict, side: str) -> None:
+        cells = b.get("cells", [])
+        band = broker_concentration_band(cells, side=side, threshold=0.7)
+        if band:
+            sign = "+" if side == "buy" else "-"
+            label = "主買集中區" if side == "buy" else "主賣集中區"
+            lines.append(
+                f"    🎯 {label}: ${band['core_low']:.2f}~${band['core_high']:.2f} "
+                f"({sign}{_fmt_zhang(band['core_volume'])}張，佔該分點"
+                f"{'買進' if side == 'buy' else '賣出'}量 "
+                f"{band['core_pct'] * 100:.0f}%)"
+            )
+        top = broker_top_cells(cells, side=side, n=3)
+        if top:
+            sign = "+" if side == "buy" else "-"
+            parts = [
+                f"${c['price']:.2f} {sign}{_fmt_zhang(c[side])}張"
+                for c in top
+            ]
+            label = "Top 3 買價" if side == "buy" else "Top 3 賣價"
+            lines.append(f"    {label}: {' / '.join(parts)}")
+
     lines.append("【🎯 Top 5 買超分點價格指紋】")
     if not data["fingerprint"]["top_buyers"]:
         lines.append("  (無)")
@@ -441,14 +487,7 @@ def format_report(data: dict) -> str:
                 f"+{_fmt_zhang(b['net_shares'])} 張 — "
                 f"avg ${b['avg_price']:.2f}, 範圍 ${pr_lo:.2f}~${pr_hi:.2f}"
             )
-            bands = price_bands_for_broker(b.get("cells", []), o_low, o_high)
-            band_parts = [
-                f"{bd['label']} ${bd['low']:.2f}~${bd['high']:.2f} "
-                f"+{_fmt_zhang(bd['buy'])}張"
-                for bd in bands if bd["buy"] > 0
-            ]
-            if band_parts:
-                lines.append(f"    📊 主買價帶: {' / '.join(band_parts)}")
+            _emit_broker_detail(b, "buy")
     lines.append("")
     lines.append("【🎯 Top 5 賣超分點價格指紋】")
     if not data["fingerprint"]["top_sellers"]:
@@ -461,14 +500,7 @@ def format_report(data: dict) -> str:
                 f"{_fmt_zhang(b['net_shares'])} 張 — "
                 f"avg ${b['avg_price']:.2f}, 範圍 ${pr_lo:.2f}~${pr_hi:.2f}"
             )
-            bands = price_bands_for_broker(b.get("cells", []), o_low, o_high)
-            band_parts = [
-                f"{bd['label']} ${bd['low']:.2f}~${bd['high']:.2f} "
-                f"-{_fmt_zhang(bd['sell'])}張"
-                for bd in bands if bd["sell"] > 0
-            ]
-            if band_parts:
-                lines.append(f"    📊 主賣價帶: {' / '.join(band_parts)}")
+            _emit_broker_detail(b, "sell")
 
     # Continuity footer — pull recent history (default 5 trading days)
     continuity = _format_continuity(data, days=5)

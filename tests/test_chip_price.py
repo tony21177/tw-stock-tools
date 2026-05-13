@@ -76,49 +76,80 @@ class TestParseBsrDate(unittest.TestCase):
         self.assertEqual(_parse_bsr_date(""), "")
 
 
-class TestPriceBandsForBroker(unittest.TestCase):
-    CELLS = [
-        # Across $100-$130 range:
-        # Low (100-110): bought 2000
-        {"price": 100.0, "buy": 1500, "sell": 0},
-        {"price": 105.0, "buy": 500, "sell": 0},
-        # Mid (110-120): bought 3000, sold 200
-        {"price": 115.0, "buy": 3000, "sell": 200},
-        # High (120-130): bought 5000, sold 1000
-        {"price": 125.0, "buy": 5000, "sell": 0},
-        {"price": 130.0, "buy": 0, "sell": 1000},  # at upper edge
-    ]
+class TestBrokerConcentrationBand(unittest.TestCase):
+    def test_tight_cluster_narrows_to_few_cells(self):
+        from tw_chip_price import broker_concentration_band
+        # 80% of buy volume sits in $258-$262 (3 cells, 8500 of 10000)
+        cells = [
+            {"price": 246.0, "buy": 500, "sell": 0},
+            {"price": 250.0, "buy": 1000, "sell": 0},
+            {"price": 258.0, "buy": 3000, "sell": 0},
+            {"price": 260.0, "buy": 3000, "sell": 0},
+            {"price": 262.0, "buy": 2500, "sell": 0},
+        ]
+        band = broker_concentration_band(cells, side="buy", threshold=0.7)
+        # Need 70% of 10000 = 7000. Smallest window covering 7000+:
+        # $258-$262 covers 8500 (3 cells, $4 wide).
+        self.assertEqual(band["core_low"], 258.0)
+        self.assertEqual(band["core_high"], 262.0)
+        self.assertEqual(band["core_volume"], 8500)
+        self.assertAlmostEqual(band["core_pct"], 0.85, places=2)
+        self.assertEqual(band["total_volume"], 10000)
 
-    def test_three_bands_total_matches_input(self):
-        from tw_chip_price import price_bands_for_broker
-        bands = price_bands_for_broker(self.CELLS, low=100.0, high=130.0)
-        # Expect 3 bands ordered high→low
-        self.assertEqual(len(bands), 3)
-        self.assertEqual(bands[0]["label"], "高檔")
-        self.assertEqual(bands[1]["label"], "中檔")
-        self.assertEqual(bands[2]["label"], "低檔")
-        # Sums conserve totals
-        total_buy = sum(b["buy"] for b in bands)
-        total_sell = sum(b["sell"] for b in bands)
-        self.assertEqual(total_buy, 10000)
-        self.assertEqual(total_sell, 1200)
+    def test_returns_none_for_zero_side_volume(self):
+        from tw_chip_price import broker_concentration_band
+        cells = [
+            {"price": 100.0, "buy": 0, "sell": 500},  # all sells, no buys
+        ]
+        self.assertIsNone(
+            broker_concentration_band(cells, side="buy", threshold=0.7)
+        )
 
-    def test_high_band_captures_top_buying(self):
-        from tw_chip_price import price_bands_for_broker
-        bands = price_bands_for_broker(self.CELLS, low=100.0, high=130.0)
-        high = bands[0]
-        # High band [120, 130]: includes $125 (5000 buy) + $130 (1000 sell)
-        self.assertEqual(high["buy"], 5000)
-        self.assertEqual(high["sell"], 1000)
+    def test_single_cell_returns_zero_width(self):
+        from tw_chip_price import broker_concentration_band
+        cells = [{"price": 100.0, "buy": 5000, "sell": 0}]
+        band = broker_concentration_band(cells, side="buy", threshold=0.7)
+        self.assertEqual(band["core_low"], 100.0)
+        self.assertEqual(band["core_high"], 100.0)
+        self.assertEqual(band["core_pct"], 1.0)
 
-    def test_flat_day_collapses_to_single_band(self):
-        from tw_chip_price import price_bands_for_broker
-        cells = [{"price": 100.0, "buy": 500, "sell": 200}]
-        bands = price_bands_for_broker(cells, low=100.0, high=100.0)
-        self.assertEqual(len(bands), 1)
-        self.assertEqual(bands[0]["label"], "收盤價")
-        self.assertEqual(bands[0]["buy"], 500)
-        self.assertEqual(bands[0]["sell"], 200)
+    def test_sell_side_works_same_way(self):
+        from tw_chip_price import broker_concentration_band
+        cells = [
+            {"price": 100.0, "buy": 0, "sell": 100},
+            {"price": 110.0, "buy": 0, "sell": 800},
+            {"price": 111.0, "buy": 0, "sell": 600},
+            {"price": 120.0, "buy": 0, "sell": 100},
+        ]
+        # 70% of 1600 = 1120. $110-$111 covers 1400 (2 cells, $1 wide).
+        band = broker_concentration_band(cells, side="sell", threshold=0.7)
+        self.assertEqual(band["core_low"], 110.0)
+        self.assertEqual(band["core_high"], 111.0)
+
+
+class TestBrokerTopCells(unittest.TestCase):
+    def test_top_3_by_buy_volume(self):
+        from tw_chip_price import broker_top_cells
+        cells = [
+            {"price": 100.0, "buy": 500, "sell": 100},
+            {"price": 102.0, "buy": 5000, "sell": 0},
+            {"price": 105.0, "buy": 1500, "sell": 200},
+            {"price": 108.0, "buy": 800, "sell": 0},
+            {"price": 110.0, "buy": 0, "sell": 1000},
+        ]
+        top = broker_top_cells(cells, side="buy", n=3)
+        self.assertEqual([c["price"] for c in top], [102.0, 105.0, 108.0])
+
+    def test_excludes_zero_volume_on_chosen_side(self):
+        from tw_chip_price import broker_top_cells
+        cells = [
+            {"price": 100.0, "buy": 500, "sell": 0},
+            {"price": 110.0, "buy": 0, "sell": 1000},
+        ]
+        # Only $100 has buy > 0
+        top = broker_top_cells(cells, side="buy", n=3)
+        self.assertEqual(len(top), 1)
+        self.assertEqual(top[0]["price"], 100.0)
 
 
 class TestHistoryArchive(unittest.TestCase):
