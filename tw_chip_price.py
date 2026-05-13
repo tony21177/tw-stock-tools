@@ -131,6 +131,65 @@ def stage_breakdown(rows: list[dict], low: float, high: float) -> dict:
     return result
 
 
+def broker_fingerprint(rows: list[dict], top_n: int = 5) -> dict:
+    """Per-broker summary: total buy/sell, average price, price range.
+
+    Returns:
+      {"top_buyers": [{broker_id, broker_name, buy_shares, sell_shares,
+                       net_shares, avg_price, price_range (lo, hi),
+                       cells: [...sorted by abs(net) per price...]}, ...],
+       "top_sellers": [...same shape, net_shares < 0...]}
+    Sorted by abs(net_shares) descending.
+    """
+    per_broker = {}
+    for r in rows:
+        bid = r["broker_id"]
+        agg = per_broker.setdefault(bid, {
+            "broker_id": bid,
+            "broker_name": r["broker_name"],
+            "buy_shares": 0,
+            "sell_shares": 0,
+            "cells": [],
+            "_buy_value": 0.0,
+            "_sell_value": 0.0,
+            "_min_price": float("inf"),
+            "_max_price": 0.0,
+        })
+        agg["buy_shares"] += r["buy"]
+        agg["sell_shares"] += r["sell"]
+        agg["cells"].append({"price": r["price"], "buy": r["buy"], "sell": r["sell"]})
+        agg["_buy_value"] += r["price"] * r["buy"]
+        agg["_sell_value"] += r["price"] * r["sell"]
+        if r["buy"] > 0 or r["sell"] > 0:
+            agg["_min_price"] = min(agg["_min_price"], r["price"])
+            agg["_max_price"] = max(agg["_max_price"], r["price"])
+
+    for a in per_broker.values():
+        a["net_shares"] = a["buy_shares"] - a["sell_shares"]
+        total_shares = a["buy_shares"] + a["sell_shares"]
+        weighted = a["_buy_value"] + a["_sell_value"]
+        a["avg_price"] = round(weighted / total_shares, 2) if total_shares else 0
+        a["price_range"] = (
+            a["_min_price"] if a["_min_price"] != float("inf") else 0.0,
+            a["_max_price"],
+        )
+        a["cells"].sort(key=lambda c: -(c["buy"] + c["sell"]))
+        # drop internal accumulators
+        del a["_buy_value"]
+        del a["_sell_value"]
+        del a["_min_price"]
+        del a["_max_price"]
+
+    buyers = [b for b in per_broker.values() if b["net_shares"] > 0]
+    sellers = [b for b in per_broker.values() if b["net_shares"] < 0]
+    buyers.sort(key=lambda x: -x["net_shares"])
+    sellers.sort(key=lambda x: x["net_shares"])
+    return {
+        "top_buyers": buyers[:top_n],
+        "top_sellers": sellers[:top_n],
+    }
+
+
 if __name__ == "__main__":
     # Placeholder main — full implementation in later task
     parser = argparse.ArgumentParser()

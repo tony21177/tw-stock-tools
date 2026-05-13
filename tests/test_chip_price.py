@@ -113,5 +113,40 @@ class TestStageBreakdown(unittest.TestCase):
         self.assertEqual(b["sell_shares"], 1500)
 
 
+class TestBrokerFingerprint(unittest.TestCase):
+    ROWS = [
+        # 外資A — 累積買在 $100 / $110，少量在 $119
+        {"broker_id": "A001", "broker_name": "外資A",
+         "price": 100.0, "buy": 5000, "sell": 0},
+        {"broker_id": "A001", "broker_name": "外資A",
+         "price": 110.0, "buy": 3000, "sell": 0},
+        {"broker_id": "A001", "broker_name": "外資A",
+         "price": 119.0, "buy": 500, "sell": 0},
+        # 散戶B — 賣出集中 $118-120
+        {"broker_id": "B001", "broker_name": "散戶B",
+         "price": 118.0, "buy": 0, "sell": 1500},
+        {"broker_id": "B001", "broker_name": "散戶B",
+         "price": 120.0, "buy": 0, "sell": 800},
+    ]
+
+    def test_returns_top_n_brokers(self):
+        from tw_chip_price import broker_fingerprint
+        result = broker_fingerprint(self.ROWS, top_n=2)
+        self.assertEqual(len(result["top_buyers"]), 1)  # only A001 net+
+        self.assertEqual(result["top_buyers"][0]["broker_id"], "A001")
+        self.assertEqual(len(result["top_sellers"]), 1)  # only B001 net-
+        self.assertEqual(result["top_sellers"][0]["broker_id"], "B001")
+
+    def test_top_buyer_price_summary(self):
+        from tw_chip_price import broker_fingerprint
+        result = broker_fingerprint(self.ROWS, top_n=2)
+        a = result["top_buyers"][0]
+        # A001: total +8500張, avg cost ≈ (5000×100 + 3000×110 + 500×119) / 8500
+        self.assertEqual(a["net_shares"], 8500)
+        # Avg cost: (500000 + 330000 + 59500) / 8500 = 104.65
+        self.assertAlmostEqual(a["avg_price"], 104.65, places=1)
+        self.assertEqual(a["price_range"], (100.0, 119.0))
+
+
 if __name__ == "__main__":
     unittest.main()
