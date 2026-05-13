@@ -103,6 +103,27 @@ def _parse_bsr_csv(text: str) -> dict:
     return aggregates
 
 
+def _parse_bsr_date(text: str) -> str:
+    """Extract the trading date from a BSR CSV's header (line 1).
+
+    TWSE writes the date as ROC year on line 1 like "115/05/12,日期"
+    (ROC year 115 = AD 2026). Returns "YYYYMMDD" on success, "" on failure.
+    Use this to stamp cache files and report headers with the actual trading
+    day, not datetime.now() (which lies when 5/13's BSR hasn't yet published
+    and TWSE still serves 5/12 data).
+    """
+    if not text:
+        return ""
+    lines = text.split("\n")
+    if len(lines) < 2:
+        return ""
+    m = re.match(r"\s*(\d{1,3})/(\d{1,2})/(\d{1,2})", lines[1])
+    if not m:
+        return ""
+    roc_year, mm, dd = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    return f"{roc_year + 1911}{mm:02d}{dd:02d}"
+
+
 def _parse_bsr_csv_with_prices(text: str) -> list[dict]:
     """Parse the BSR CSV into per-(broker, price) rows.
 
@@ -253,7 +274,7 @@ def fetch_bsr(stock_code: str, max_attempts: int = 10,
 
 
 def fetch_bsr_with_prices(stock_code: str, max_attempts: int = 10,
-                          session=None) -> dict:
+                          session: requests.Session | None = None) -> dict:
     """Fetch and parse BSR data preserving per-(broker, price) rows.
 
     Same overall flow as fetch_bsr() but uses _parse_bsr_csv_with_prices()
@@ -262,7 +283,6 @@ def fetch_bsr_with_prices(stock_code: str, max_attempts: int = 10,
        total_buy_shares, total_sell_shares}
     Returns {} on failure after max_attempts.
     """
-    import requests
     if session is None:
         session = requests.Session()
     headers = {"User-Agent": UA}
@@ -323,8 +343,12 @@ def fetch_bsr_with_prices(stock_code: str, max_attempts: int = 10,
                 return {}
             total_buy = sum(r["buy"] for r in rows)
             total_sell = sum(r["sell"] for r in rows)
+            # Prefer the date from the CSV header — TWSE may serve T-1 data
+            # before today's BSR is published (~17:30). Falls back to today
+            # only if parsing fails.
+            parsed_date = _parse_bsr_date(text)
             return {
-                "date": datetime.now().strftime("%Y%m%d"),
+                "date": parsed_date or datetime.now().strftime("%Y%m%d"),
                 "stock_code": stock_code,
                 "rows": rows,
                 "total_buy_shares": total_buy,

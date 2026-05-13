@@ -7,7 +7,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, REPO)
 
-from bsr_scraper import _parse_bsr_csv_with_prices
+from bsr_scraper import _parse_bsr_csv_with_prices, _parse_bsr_date
 
 
 # Realistic CSV slice — left/right two-record pairs, broker like "1020合　　庫"
@@ -52,6 +52,28 @@ class TestParseBsrCsvWithPrices(unittest.TestCase):
         self.assertEqual(last[0]["broker_name"], "國泰敦南")
         self.assertEqual(last[0]["price"], 264.0)
         self.assertEqual(last[0]["sell"], 3100)
+
+
+class TestParseBsrDate(unittest.TestCase):
+    def test_roc_year_three_digit(self):
+        # 115/05/12 → ROC 115 = AD 2026 → "20260512"
+        csv = "證券代號 ,2313,證券名稱 ,華通\n115/05/12,日期\n序,...\n"
+        self.assertEqual(_parse_bsr_date(csv), "20260512")
+
+    def test_roc_year_two_digit(self):
+        # 99/05/12 → ROC 99 = AD 2010 → "20100512"
+        self.assertEqual(_parse_bsr_date(SAMPLE_CSV), "20100512")
+
+    def test_single_digit_month_day_padded(self):
+        csv = "header\n115/5/3,日期\nrest\n"
+        self.assertEqual(_parse_bsr_date(csv), "20260503")
+
+    def test_missing_date_returns_empty(self):
+        csv = "header\nno date here\nrest\n"
+        self.assertEqual(_parse_bsr_date(csv), "")
+
+    def test_empty_text_returns_empty(self):
+        self.assertEqual(_parse_bsr_date(""), "")
 
 
 class TestOhlcFromFinmind(unittest.TestCase):

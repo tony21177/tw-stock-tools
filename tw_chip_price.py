@@ -41,8 +41,12 @@ def _get_token() -> str:
 def get_ohlc(stock_code: str, date: str | None = None) -> dict:
     """Fetch OHLC for stage analysis. Uses FinMind TaiwanStockPrice.
 
-    Returns {open, high, low, close} for the most recent trading day at or
-    before `date`. Returns {} on failure or no data.
+    Returns {open, high, low, close, date} for the most recent trading day
+    at or before `date`. The returned `date` field (YYYYMMDD) is the actual
+    trading day FinMind served — use this as the authoritative trading date
+    for the chip-price report, since the TWSE BSR endpoint doesn't expose the
+    trading day in its CSV or HTML response.
+    Returns {} on failure or no data.
     """
     import finmind_client
     token = _get_token()
@@ -66,11 +70,13 @@ def get_ohlc(stock_code: str, date: str | None = None) -> dict:
     target_dash = f"{target[:4]}-{target[4:6]}-{target[6:8]}"
     match = [r for r in rows if r["date"] == target_dash]
     chosen = match[0] if match else rows[-1]
+    chosen_dash = chosen.get("date", "")
     return {
         "open": float(chosen.get("open", 0)),
         "high": float(chosen.get("max", 0)),
         "low": float(chosen.get("min", 0)),
         "close": float(chosen.get("close", 0)),
+        "date": chosen_dash.replace("-", "") if chosen_dash else "",
     }
 
 
@@ -385,13 +391,19 @@ def analyze(stock_code: str, date: str | None = None,
     """
     import bsr_scraper
 
-    # 1. BSR fetch (or load cached per-price file)
+    # 1. BSR fetch (or load cached per-price file).
+    # `target` is only used to pick the cache file in --no-fetch mode. After
+    # a live fetch we re-derive the trading date from FinMind (the BSR
+    # endpoint doesn't expose the trading day, so we'd otherwise stamp with
+    # datetime.now() and lie about T-1 data being today's).
     target = date or datetime.now().strftime("%Y%m%d")
-    cache_path = os.path.join(HERE, "bsr_cache", f"{stock_code}_{target}_prices.json")
     bsr = {}
     if no_fetch:
+        cache_path = os.path.join(HERE, "bsr_cache",
+                                  f"{stock_code}_{target}_prices.json")
         if not os.path.exists(cache_path):
-            print(f"[ERROR] --no-fetch but cache missing: {cache_path}", file=sys.stderr)
+            print(f"[ERROR] --no-fetch but cache missing: {cache_path}",
+                  file=sys.stderr)
             return {}
         with open(cache_path) as f:
             bsr = json.load(f)
@@ -404,17 +416,34 @@ def analyze(stock_code: str, date: str | None = None,
                   f"per-price detail is not yet supported. Use /chip (aggregate) "
                   f"instead.", file=sys.stderr)
             return {}
-        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-        with open(cache_path, "w") as f:
-            json.dump(bsr, f, ensure_ascii=False)
+        # Cache write deferred until after step 2 — we want to use FinMind's
+        # authoritative trading date in the cache filename.
 
-    # 2. OHLC for stage range
+    # 2. OHLC for stage range. The returned ohlc["date"] is FinMind's latest
+    # available trading day for this stock — the same day TWSE BSR is
+    # serving (BSR publishes after FinMind close prices, so FinMind's latest
+    # is always >= TWSE BSR's day). Use this as the report's trading date.
     ohlc = get_ohlc(stock_code, target)
+    if ohlc and ohlc.get("date"):
+        trading_date = ohlc["date"]
+        # Patch BSR's date stamp to match the authoritative trading day.
+        bsr["date"] = trading_date
+    else:
+        # FinMind missing — fall back to whatever BSR returned (today).
+        trading_date = bsr.get("date") or target
     if not ohlc:
         # Fallback: derive range from BSR rows themselves
         prices = [r["price"] for r in bsr["rows"]]
         ohlc = {"open": min(prices), "high": max(prices),
                 "low": min(prices), "close": max(prices)}
+
+    # Now write the cache with the corrected date in the filename.
+    if not no_fetch:
+        cache_path = os.path.join(HERE, "bsr_cache",
+                                  f"{stock_code}_{trading_date}_prices.json")
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        with open(cache_path, "w") as f:
+            json.dump(bsr, f, ensure_ascii=False)
 
     # 3. Top cells + stage + fingerprint
     cells = top_cells(bsr["rows"], top_n=10,
