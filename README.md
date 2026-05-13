@@ -406,7 +406,7 @@ TG_BOT_TOKEN=xxx FINMIND_TOKEN=xxx python3 ~/project/tw_stock_tools/tw_broker_mo
 1. BSR 沒有歷史，需從今日起累積
 2. Cloudflare Turnstile 偶爾偵測（10-20% 失敗率，會自動重試）
 3. 無法區分「分點買進」中現股 vs 融資的比例 — 只能用相關性做 inference
-4. 真實分點融資資料需要付費（FinMind 贊助版的 `TaiwanStockTradingDailyReport`，未實作）
+4. 公開資料源都沒有 per-(分點 × 現股/融資) 細項：FinMind v4/v3 完整 enum (~100 datasets) 掃過，沒有此維度的 dataset (`TaiwanStockTradingDailyReport` 不存在)。連贊助 tier 也沒有。實務替代：HiStock 有「分點融資估計」但是 inference 結果，不完全準。
 
 ---
 
@@ -1081,11 +1081,13 @@ warm cache 後續查詢秒級。
 - 點擊 CSV 下載按鈕取得完整資料（cp950 編碼）
 
 ### FinMind
-- 融資融券歷史：`TaiwanStockMarginPurchaseShortSale`（免費版可用）
-- 分點交易：`TaiwanStockTradingDailyReport`（贊助版）
+- 融資融券歷史（per-stock total）：`TaiwanStockMarginPurchaseShortSale`（免費版可用）
 - 個股基本資料：`TaiwanStockInfo`（免費版可用）
+- 借券交易 (per-stock total)：`TaiwanStockSecuritiesLending`（贊助版）
+- 全市場一日借券賣出餘額：`TaiwanDailyShortSaleBalances`（贊助版）
 - 單檔查詢需要 data_id，`start_date` 和 `end_date`
 - 免費版 600 req/hr
+- ❌ **沒有 per-(分點 × 融資/現股) 的 dataset**。v4/v3 完整 enum 掃過，連贊助 tier 也沒有此維度資料。實測 `TaiwanStockTradingDailyReport` 不存在 (2026-05-13)。
 
 ### Yahoo Finance
 - 歷史價格：`https://query1.finance.yahoo.com/v8/finance/chart/{code}.TW?interval=1d&range=3mo`
