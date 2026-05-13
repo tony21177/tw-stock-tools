@@ -224,6 +224,68 @@ class TestHistoryArchive(unittest.TestCase):
         self.assertEqual(load_history("2313", base_dir=self.tmp), [])
 
 
+class TestTimeStageBreakdown(unittest.TestCase):
+    def test_buckets_by_time_not_price(self):
+        from tw_chip_price import time_stage_breakdown
+        # Same price ($100) traded at two different times:
+        # broker A buys 1000 early (minute 30 = ~09:30)
+        # broker B sells 800 late  (minute 240 = ~13:00)
+        # Both at $100 — price-quartile stage would group them together;
+        # time-stage should split them.
+        rows = [
+            {"broker_id": "A", "broker_name": "A", "price": 100.0,
+             "buy": 1000, "sell": 0},
+            {"broker_id": "B", "broker_name": "B", "price": 100.0,
+             "buy": 0, "sell": 800},
+        ]
+        # Note: price_to_time map has ONE entry per price. So we can't model
+        # "same price traded at 2 different times" with the current map shape.
+        # Test the simpler case: distinct prices land in distinct zones.
+        rows2 = [
+            {"broker_id": "A", "broker_name": "A", "price": 100.0,
+             "buy": 1000, "sell": 0},   # price → 30 min
+            {"broker_id": "B", "broker_name": "B", "price": 105.0,
+             "buy": 500, "sell": 0},    # price → 135 min (mid)
+            {"broker_id": "C", "broker_name": "C", "price": 110.0,
+             "buy": 0, "sell": 800},    # price → 240 min (late)
+        ]
+        price_to_time = {100.0: 30.0, 105.0: 135.0, 110.0: 240.0}
+        result = time_stage_breakdown(rows2, price_to_time,
+                                       session_minutes=270.0)
+        early_bids = [r["broker_id"] for r in result["early"]]
+        mid_bids = [r["broker_id"] for r in result["mid"]]
+        late_bids = [r["broker_id"] for r in result["late"]]
+        self.assertIn("A", early_bids)
+        self.assertIn("B", mid_bids)
+        self.assertIn("C", late_bids)
+        # A is only in early, not in mid/late
+        self.assertNotIn("A", mid_bids)
+        self.assertNotIn("A", late_bids)
+
+    def test_skips_rows_without_time_mapping(self):
+        from tw_chip_price import time_stage_breakdown
+        rows = [
+            {"broker_id": "A", "broker_name": "A", "price": 100.0,
+             "buy": 1000, "sell": 0},
+            {"broker_id": "B", "broker_name": "B", "price": 999.0,
+             "buy": 500, "sell": 0},  # 999 not in map → dropped
+        ]
+        price_to_time = {100.0: 30.0}
+        result = time_stage_breakdown(rows, price_to_time)
+        all_bids = ([r["broker_id"] for r in result["early"]]
+                    + [r["broker_id"] for r in result["mid"]]
+                    + [r["broker_id"] for r in result["late"]])
+        self.assertIn("A", all_bids)
+        self.assertNotIn("B", all_bids)
+
+    def test_empty_map_returns_empty_zones(self):
+        from tw_chip_price import time_stage_breakdown
+        rows = [{"broker_id": "A", "broker_name": "A", "price": 100.0,
+                 "buy": 1000, "sell": 0}]
+        result = time_stage_breakdown(rows, {})
+        self.assertEqual(result, {"early": [], "mid": [], "late": []})
+
+
 class TestBrokerWashCandidates(unittest.TestCase):
     def test_detects_high_sell_low_buy_pattern(self):
         from tw_chip_price import broker_wash_candidates

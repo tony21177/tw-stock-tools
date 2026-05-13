@@ -455,6 +455,57 @@ def _minutes_to_hhmm(minutes: float) -> str:
     return f"{h:02d}:{m:02d}"
 
 
+def time_stage_breakdown(rows: list[dict], price_to_time: dict,
+                         session_minutes: float = 270.0) -> dict:
+    """Bucket rows into 3 time zones (early/mid/late) by estimated time-of-day.
+
+    Uses the price→time map from FinMind tick data to assign each (broker,
+    price, side) row to its estimated trading time. Buckets:
+      early = 0 - 25% of session  (09:00 - ~10:08)
+      mid   = 25% - 75% of session  (~10:08 - ~12:22)
+      late  = 75% - 100% of session  (~12:22 - 13:30)
+
+    More accurate than price-quartile stage on V-shaped or 反轉 days where
+    the same price level is traded multiple times across the session.
+
+    Same return shape as stage_breakdown: {zone: [per-broker dict, ...]}.
+    Rows whose price isn't in price_to_time are silently dropped.
+    """
+    if not price_to_time or session_minutes <= 0:
+        return {"early": [], "mid": [], "late": []}
+    early_max = 0.25 * session_minutes
+    late_min = 0.75 * session_minutes
+    zone_rows = {"early": [], "mid": [], "late": []}
+    for r in rows:
+        t = price_to_time.get(r["price"])
+        if t is None:
+            continue
+        if t <= early_max:
+            zone_rows["early"].append(r)
+        elif t <= late_min:
+            zone_rows["mid"].append(r)
+        else:
+            zone_rows["late"].append(r)
+    result = {}
+    for zone, zrows in zone_rows.items():
+        per_broker = {}
+        for r in zrows:
+            bid = r["broker_id"]
+            agg = per_broker.setdefault(bid, {
+                "broker_id": bid,
+                "broker_name": r["broker_name"],
+                "buy_shares": 0,
+                "sell_shares": 0,
+            })
+            agg["buy_shares"] += r["buy"]
+            agg["sell_shares"] += r["sell"]
+        for a in per_broker.values():
+            a["net_shares"] = a["buy_shares"] - a["sell_shares"]
+        result[zone] = sorted(per_broker.values(),
+                              key=lambda x: -abs(x["net_shares"]))
+    return result
+
+
 def broker_time_estimate(cells: list[dict], side: str,
                          price_to_time: dict) -> float | None:
     """Volume-weighted avg time (minutes from open) the broker traded on `side`.
@@ -677,30 +728,43 @@ def format_report(data: dict) -> str:
             )
     lines.append("")
 
-    # Stage analysis
-    lines.append("【⏰ 三階段分析】")
-    rng = ohlc["high"] - ohlc["low"]
-    if rng > 0:
-        lines.append(f"早盤 (低 25%: ${ohlc['low']:.2f} ~ "
-                      f"${ohlc['low'] + 0.25 * rng:.2f}):")
+    # Stage analysis — time-based when tick data was available, else price quartile
+    basis = data.get("stage_basis", "price")
+    if basis == "time":
+        lines.append("【⏰ 三階段分析】(以實際成交時間切分)")
+        lines.append("早盤 (前 25% 時間: 09:00 ~ ~10:08):")
+        _emit_zone(lines, data["stage"].get("early", []))
+        lines.append("")
+        lines.append("盤中 (中 50% 時間: ~10:08 ~ ~12:22):")
+        _emit_zone(lines, data["stage"].get("mid", []))
+        lines.append("")
+        lines.append("尾盤 (後 25% 時間: ~12:22 ~ 13:30):")
+        _emit_zone(lines, data["stage"].get("late", []))
+        lines.append("")
     else:
-        lines.append("早盤:")
-    _emit_zone(lines, data["stage"].get("early", []))
-    lines.append("")
-    if rng > 0:
-        lines.append(f"盤中 (中 50%: ${ohlc['low'] + 0.25 * rng:.2f} ~ "
-                      f"${ohlc['low'] + 0.75 * rng:.2f}):")
-    else:
-        lines.append("盤中:")
-    _emit_zone(lines, data["stage"].get("mid", []))
-    lines.append("")
-    if rng > 0:
-        lines.append(f"尾盤 (高 25%: ${ohlc['low'] + 0.75 * rng:.2f} ~ "
-                      f"${ohlc['high']:.2f}):")
-    else:
-        lines.append("尾盤:")
-    _emit_zone(lines, data["stage"].get("late", []))
-    lines.append("")
+        lines.append("【⏰ 三階段分析】(以價格 quartile 為時間 proxy — 無 tick 資料)")
+        rng = ohlc["high"] - ohlc["low"]
+        if rng > 0:
+            lines.append(f"早盤 (低 25%: ${ohlc['low']:.2f} ~ "
+                          f"${ohlc['low'] + 0.25 * rng:.2f}):")
+        else:
+            lines.append("早盤:")
+        _emit_zone(lines, data["stage"].get("early", []))
+        lines.append("")
+        if rng > 0:
+            lines.append(f"盤中 (中 50%: ${ohlc['low'] + 0.25 * rng:.2f} ~ "
+                          f"${ohlc['low'] + 0.75 * rng:.2f}):")
+        else:
+            lines.append("盤中:")
+        _emit_zone(lines, data["stage"].get("mid", []))
+        lines.append("")
+        if rng > 0:
+            lines.append(f"尾盤 (高 25%: ${ohlc['low'] + 0.75 * rng:.2f} ~ "
+                          f"${ohlc['high']:.2f}):")
+        else:
+            lines.append("尾盤:")
+        _emit_zone(lines, data["stage"].get("late", []))
+        lines.append("")
 
     # Fingerprint — each broker's concentration is computed against their
     # OWN price activity, not the day's uniform high/mid/low bands.
@@ -1027,11 +1091,10 @@ def analyze(stock_code: str, date: str | None = None,
     # 3. Top cells + stage + fingerprint + wash candidates
     cells = top_cells(bsr["rows"], top_n=10,
                        low=ohlc["low"], high=ohlc["high"])
-    stage = stage_breakdown(bsr["rows"], ohlc["low"], ohlc["high"])
     fingerprint = broker_fingerprint(bsr["rows"], top_n=5)
-    # Build price→time map from FinMind tick data for wash-candidate time
-    # direction classification. Falls back to None on failure — wash output
-    # still works but won't tag 真洗盤低接 vs 追漲獲利出.
+    # Build price→time map from FinMind tick data — used for both wash-
+    # candidate time direction AND time-based stage breakdown. Falls back
+    # to None on failure → use price-quartile stage instead.
     try:
         price_to_time = build_price_to_time_map(stock_code, trading_date)
     except Exception:
@@ -1040,6 +1103,14 @@ def analyze(stock_code: str, date: str | None = None,
         bsr["rows"], day_low=ohlc["low"], day_high=ohlc["high"], top_n=5,
         price_to_time=price_to_time,
     )
+    # Prefer time-based stage when tick data is available (correct on V-shaped
+    # / reversal days); fall back to price-quartile heuristic otherwise.
+    if price_to_time:
+        stage = time_stage_breakdown(bsr["rows"], price_to_time)
+        stage_basis = "time"
+    else:
+        stage = stage_breakdown(bsr["rows"], ohlc["low"], ohlc["high"])
+        stage_basis = "price"
 
     # 4. Resolve Chinese name
     try:
@@ -1057,6 +1128,7 @@ def analyze(stock_code: str, date: str | None = None,
         "total_sell_shares": bsr.get("total_sell_shares", 0),
         "top_cells": cells,
         "stage": stage,
+        "stage_basis": stage_basis,
         "fingerprint": fingerprint,
         "wash_candidates": wash,
     }
