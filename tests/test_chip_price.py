@@ -224,6 +224,83 @@ class TestHistoryArchive(unittest.TestCase):
         self.assertEqual(load_history("2313", base_dir=self.tmp), [])
 
 
+class TestBrokerBandProgression(unittest.TestCase):
+    def setUp(self):
+        import tempfile, tw_chip_price
+        self.tmp = tempfile.mkdtemp(prefix="chip_price_progress_test_")
+        self._orig_dir = tw_chip_price.HISTORY_DIR
+        tw_chip_price.HISTORY_DIR = self.tmp
+
+    def tearDown(self):
+        import shutil, tw_chip_price
+        tw_chip_price.HISTORY_DIR = self._orig_dir
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_history(self, code: str, date: str,
+                       broker_id: str, cells: list[dict]) -> None:
+        record = {
+            "stock_code": code,
+            "date": date,
+            "fingerprint": {
+                "top_buyers": [{
+                    "broker_id": broker_id,
+                    "broker_name": broker_id,
+                    "cells": cells,
+                }],
+                "top_sellers": [],
+            },
+        }
+        from tw_chip_price import save_history
+        save_history(record, days_to_keep=10)
+
+    def test_progression_returns_per_day_band(self):
+        from tw_chip_price import broker_band_progression
+        # 3 days with shifting buy band
+        self._write_history("2313", "20260510", "1480", [
+            {"price": 245.0, "buy": 2000, "sell": 0},
+            {"price": 250.0, "buy": 3000, "sell": 0},
+        ])
+        self._write_history("2313", "20260511", "1480", [
+            {"price": 252.0, "buy": 2000, "sell": 0},
+            {"price": 256.0, "buy": 3000, "sell": 0},
+        ])
+        self._write_history("2313", "20260512", "1480", [
+            {"price": 260.0, "buy": 3000, "sell": 0},
+            {"price": 263.0, "buy": 2000, "sell": 0},
+        ])
+        prog = broker_band_progression("2313", "1480", side="buy", n_days=5)
+        self.assertEqual(len(prog), 3)
+        # Sorted asc by date
+        self.assertEqual([p["date"] for p in prog],
+                         ["20260510", "20260511", "20260512"])
+        # Lows should shift upward
+        lows = [p["low"] for p in prog]
+        self.assertLess(lows[0], lows[1])
+        self.assertLess(lows[1], lows[2])
+
+    def test_progression_skips_days_without_broker(self):
+        from tw_chip_price import broker_band_progression
+        # Broker 1480 only appears 5/10, missing 5/11
+        self._write_history("2313", "20260510", "1480", [
+            {"price": 245.0, "buy": 5000, "sell": 0},
+        ])
+        # Day with different top buyer
+        self._write_history("2313", "20260511", "9999", [
+            {"price": 250.0, "buy": 5000, "sell": 0},
+        ])
+        prog = broker_band_progression("2313", "1480", side="buy", n_days=5)
+        # Only 5/10 has 1480 — should return single entry
+        self.assertEqual(len(prog), 1)
+        self.assertEqual(prog[0]["date"], "20260510")
+
+    def test_progression_empty_when_no_history(self):
+        from tw_chip_price import broker_band_progression
+        self.assertEqual(
+            broker_band_progression("9999", "1480", side="buy", n_days=5),
+            [],
+        )
+
+
 class TestContinuityFooter(unittest.TestCase):
     def setUp(self):
         import tempfile, tw_chip_price

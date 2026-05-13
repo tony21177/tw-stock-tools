@@ -147,6 +147,35 @@ def scan_and_save(stock_codes: list[str], delay: float = 0.6) -> dict:
     return {"success": success, "failed": failed}
 
 
+def backfill_chip_price_history(stock_codes: list[str],
+                                delay: float = 0.3) -> dict:
+    """Run chip_price.analyze() for each stock to populate chip_price_history.
+
+    Lets the /chip-price tool's continuity footer + per-broker band
+    progression (C feature) have data on all top stocks daily, not just
+    the ones the user manually triggered chip-price on. Cost: 1 extra BSR
+    fetch (CAPTCHA) per stock — ~3-5 sec/stock, ~15-20 min total for 241.
+    Failures are swallowed (per-stock, doesn't block batch).
+    """
+    import tw_chip_price
+    success, failed = 0, []
+    for i, code in enumerate(stock_codes):
+        try:
+            result = tw_chip_price.analyze(code)
+            if result:
+                success += 1
+            else:
+                failed.append(code)
+        except Exception as e:
+            print(f"[WARN] chip_price backfill {code}: {e}", file=sys.stderr)
+            failed.append(code)
+        time.sleep(delay)
+        if (i + 1) % 20 == 0:
+            print(f"  chip_price 進度 {i + 1}/{len(stock_codes)} 成功 {success}",
+                  file=sys.stderr)
+    return {"success": success, "failed": failed}
+
+
 def analyze_all(stock_codes: list[str], days: int, finmind_token: str,
                 min_corr: float = 0.5, min_days: int = 3,
                 require_margin_increase: bool = True,
@@ -234,6 +263,8 @@ def main():
     parser.add_argument("--finmind-token")
     parser.add_argument("--analyze-only", action="store_true",
                         help="跳過 BSR 抓取，直接用快取做分析")
+    parser.add_argument("--skip-chip-price-backfill", action="store_true",
+                        help="跳過 chip_price_history 累積 (節省 ~15-20 min)")
     parser.add_argument("--allow-margin-decrease", action="store_true",
                         help="允許區間融資餘額為負成長的標的入榜 (預設只保留正成長 = 主力建倉訊號)")
     parser.add_argument("--json-out", help="將今日結果寫到指定 JSON 檔案路徑（dashboard 歷史榜用）")
@@ -264,16 +295,23 @@ def main():
           file=sys.stderr)
 
     if not args.analyze_only:
-        print(f"【步驟 2/3】抓 BSR 分點資料...", file=sys.stderr)
+        print(f"【步驟 2/4】抓 BSR 分點資料...", file=sys.stderr)
         scan_result = scan_and_save(codes)
         print(f"  成功 {scan_result['success']}/{len(codes)}", file=sys.stderr)
 
-    print(f"【步驟 3/3】跑連動分析（{args.days} 日歷史）...", file=sys.stderr)
+    print(f"【步驟 3/4】跑連動分析（{args.days} 日歷史）...", file=sys.stderr)
     results = analyze_all(codes, args.days, finmind_token,
                           min_corr=args.min_corr, min_days=args.min_days,
                           require_margin_increase=not args.allow_margin_decrease,
                           skip_fetch_if_missing=args.analyze_only)
     print(f"  命中 {len(results)} 檔", file=sys.stderr)
+
+    if not args.analyze_only and not args.skip_chip_price_backfill:
+        print(f"【步驟 4/4】產生 chip_price_history (per-broker price-band 多日進展)...",
+              file=sys.stderr)
+        cp_result = backfill_chip_price_history(codes)
+        print(f"  chip_price backfill 成功 {cp_result['success']}/{len(codes)}",
+              file=sys.stderr)
 
     if args.json_out:
         os.makedirs(os.path.dirname(os.path.abspath(args.json_out)) or ".", exist_ok=True)

@@ -389,6 +389,50 @@ def broker_top_cells(cells: list[dict], side: str = "buy",
     return filtered[:n]
 
 
+def broker_band_progression(stock_code: str, broker_id: str,
+                            side: str = "buy", n_days: int = 4,
+                            threshold: float = 0.7) -> list[dict]:
+    """Return the broker's main `side`-band for each of the last n_days.
+
+    Reads chip_price_history, finds the broker in each day's
+    fingerprint.top_buyers/top_sellers, runs broker_concentration_band on
+    their cells. Used to render multi-day price-band progression — was the
+    broker pushing the band upward day-by-day (推升) or staying flat
+    (averaging in)?
+
+    Returns list of {date, low, high, volume, pct} ordered by date asc.
+    Empty if no history or broker absent.
+    """
+    history = load_history(stock_code, days=n_days)
+    if not history:
+        return []
+    side_key = "top_buyers" if side == "buy" else "top_sellers"
+    progression = []
+    for h in history:
+        broker = next(
+            (b for b in h.get("fingerprint", {}).get(side_key, [])
+             if b.get("broker_id") == broker_id),
+            None,
+        )
+        if not broker:
+            continue
+        cells = broker.get("cells", [])
+        if not cells:
+            continue
+        band = broker_concentration_band(cells, side=side, threshold=threshold)
+        if not band:
+            continue
+        progression.append({
+            "date": h.get("date", ""),
+            "low": band["core_low"],
+            "high": band["core_high"],
+            "volume": band["core_volume"],
+            "pct": band["core_pct"],
+        })
+    progression.sort(key=lambda x: x["date"])
+    return progression
+
+
 def _fmt_date(yyyymmdd: str) -> str:
     return f"{yyyymmdd[:4]}/{yyyymmdd[4:6]}/{yyyymmdd[6:8]}"
 
@@ -475,6 +519,33 @@ def format_report(data: dict) -> str:
             ]
             label = "Top 3 買價" if side == "buy" else "Top 3 賣價"
             lines.append(f"    {label}: {' / '.join(parts)}")
+        # C 軌跡 — multi-day main-band progression (skip if < 2 history days)
+        progression = broker_band_progression(
+            data["stock_code"], b["broker_id"], side=side, n_days=5,
+        )
+        today = data.get("date", "")
+        past = [p for p in progression if p["date"] != today]
+        if len(past) >= 1:
+            arrow_parts = [
+                f"{p['date'][4:6]}/{p['date'][6:8]} ${p['low']:.2f}~${p['high']:.2f}"
+                for p in past
+            ]
+            # Append today's band as the rightmost point
+            if band:
+                arrow_parts.append(
+                    f"{today[4:6]}/{today[6:8]} "
+                    f"${band['core_low']:.2f}~${band['core_high']:.2f} (今)"
+                )
+            # Heuristic: if low end shifted up over time, label as 推升
+            lows = [p["low"] for p in past]
+            if band:
+                lows.append(band["core_low"])
+            trend = "推升中" if lows[-1] > lows[0] else (
+                "下移" if lows[-1] < lows[0] else "盤整"
+            )
+            label = "主買區軌跡" if side == "buy" else "主賣區軌跡"
+            lines.append(f"    📈 {label} ({trend}): "
+                          + " → ".join(arrow_parts))
 
     lines.append("【🎯 Top 5 買超分點價格指紋】")
     if not data["fingerprint"]["top_buyers"]:
