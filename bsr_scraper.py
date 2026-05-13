@@ -103,6 +103,54 @@ def _parse_bsr_csv(text: str) -> dict:
     return aggregates
 
 
+def _parse_bsr_csv_with_prices(text: str) -> list[dict]:
+    """Parse the BSR CSV into per-(broker, price) rows.
+
+    Returns list of {broker_id, broker_name, price (float),
+                     buy (int shares), sell (int shares)}.
+    Companion to _parse_bsr_csv which aggregates over price; this one preserves
+    every (broker, price) cell for intraday price-vs-broker analysis.
+    """
+    out = []
+    lines = text.split("\n")
+    # Header is lines 0-2 (title, stock code/name, columns)
+    for line in lines[3:]:
+        line = line.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split(",")]
+        # CSV layout: seq, broker, price, buy, sell, ,, seq, broker, price, buy, sell
+        for offset in (0, 6):
+            if len(parts) < offset + 5:
+                continue
+            broker = parts[offset + 1]
+            if not broker:
+                continue
+            try:
+                price = float(parts[offset + 2])
+                buy = int(parts[offset + 3])
+                sell = int(parts[offset + 4])
+            except (ValueError, IndexError):
+                continue
+            broker = re.sub(r"\s+", " ", broker.replace("　", " ")).strip()
+            # broker like "1020合 庫" — first 4-6 alphanumeric chars are id, rest is name
+            m = re.match(r"^([A-Z0-9]{4,6})\s*(.+)$", broker)
+            if m:
+                broker_id = m.group(1)
+                broker_name = m.group(2).strip()
+            else:
+                broker_id = broker[:4]
+                broker_name = broker[4:].strip()
+            out.append({
+                "broker_id": broker_id,
+                "broker_name": broker_name,
+                "price": price,
+                "buy": buy,
+                "sell": sell,
+            })
+    return out
+
+
 def _is_valid_image(content: bytes) -> bool:
     """Quick check if bytes look like a real image (PNG/JPEG/GIF)."""
     if len(content) < 100:
