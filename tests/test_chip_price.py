@@ -626,18 +626,40 @@ class TestTopCells(unittest.TestCase):
         self.assertEqual(result[0]["volume"], 10000)
         self.assertEqual(result[0]["side"], "buy")
 
-    def test_direction_tag(self):
+    def test_direction_tag_price_fallback(self):
         from tw_chip_price import top_cells
-        # 高盛 buy at $100 (low 25% of [100,120]) → 早盤搶低
+        # No price_to_time → fall back to price-quartile labels:
+        # 高盛 buy at $100 (low 25% of [100,120]) → 低檔搶進
+        # 國泰 sell at $120 (high 25%) → 高檔倒貨
         result = top_cells(self.ROWS, top_n=4, low=100.0, high=120.0)
         early_buy = [r for r in result
                      if r["broker_id"] == "G" and r["price"] == 100.0][0]
         self.assertEqual(early_buy["zone"], "early")
-        self.assertIn("早盤搶低", early_buy["tag"])
+        self.assertIn("低檔搶進", early_buy["tag"])
         late_sell = [r for r in result
                      if r["broker_id"] == "K" and r["price"] == 120.0][0]
         self.assertEqual(late_sell["zone"], "late")
         self.assertIn("高檔倒貨", late_sell["tag"])
+
+    def test_direction_tag_time_based(self):
+        from tw_chip_price import top_cells
+        # With price_to_time, tags describe REAL time-of-day, not price level.
+        # Map prices to minutes from 09:00 open (session 270 min):
+        #   $100 was traded mostly late in session (minute 240)
+        #   $120 was traded mostly early in session (minute 30)
+        # So buy@$100 → "尾盤買進" (late zone), sell@$120 → "早盤賣壓" (early)
+        # Price-only logic would give the opposite labels.
+        price_to_time = {100.0: 240.0, 119.0: 100.0, 120.0: 30.0, 110.0: 135.0}
+        result = top_cells(self.ROWS, top_n=4, low=100.0, high=120.0,
+                            price_to_time=price_to_time)
+        c100_buy = [r for r in result
+                    if r["broker_id"] == "G" and r["price"] == 100.0][0]
+        self.assertEqual(c100_buy["zone"], "late")
+        self.assertIn("尾盤買進", c100_buy["tag"])
+        c120_sell = [r for r in result
+                     if r["broker_id"] == "K" and r["price"] == 120.0][0]
+        self.assertEqual(c120_sell["zone"], "early")
+        self.assertIn("早盤賣壓", c120_sell["tag"])
 
 
 class TestFormatReport(unittest.TestCase):

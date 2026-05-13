@@ -251,19 +251,40 @@ def broker_fingerprint(rows: list[dict], top_n: int = 5) -> dict:
     }
 
 
-def _zone_and_tag(price: float, side: str, low: float, high: float) -> tuple[str, str]:
+def _zone_and_tag(price: float, side: str, low: float, high: float,
+                  price_to_time: dict | None = None,
+                  session_minutes: float = 270.0) -> tuple[str, str]:
     """Return (zone, tag) for a (price, side) cell.
 
     Zones: early (≤ 25%), mid (25-75%), late (> 75%).
-    Tags:
-      buy@early → '⬇ 早盤搶低'
-      buy@mid   → '↗ 盤中追進'
-      buy@late  → '▽ 高檔追進'
-      sell@early → '△ 低檔賣壓'
-      sell@mid   → '↘ 盤中出脫'
-      sell@late  → '⬆ 高檔倒貨'
-    Flat day (rng ≤ 0): everything 'mid', tag without zone descriptor.
+    Tags depend on whether tick data is available (price_to_time given):
+    - Time-based (preferred): 早盤買進 / 盤中買進 / 尾盤買進 / 早盤賣壓 etc.
+      Labels describe **WHEN** the trade happened (real time-of-day).
+    - Price-quartile fallback (no tick): 低檔搶進 / 中檔買進 / 高檔追進 etc.
+      Labels describe price level only (time unknown).
+
+    Flat day (rng ≤ 0 in price-fallback) collapses to 'mid'.
     """
+    if price_to_time:
+        t = price_to_time.get(price)
+        if t is not None:
+            if t <= 0.25 * session_minutes:
+                zone = "early"
+            elif t <= 0.75 * session_minutes:
+                zone = "mid"
+            else:
+                zone = "late"
+            tags = {
+                ("buy", "early"):  "⬇ 早盤買進",
+                ("buy", "mid"):    "↗ 盤中買進",
+                ("buy", "late"):   "⬆ 尾盤買進",
+                ("sell", "early"): "△ 早盤賣壓",
+                ("sell", "mid"):   "↘ 盤中賣壓",
+                ("sell", "late"):  "▽ 尾盤倒貨",
+            }
+            return zone, tags.get((side, zone), "")
+        # Price not in tick map — fall through to price-quartile
+
     rng = high - low
     if rng <= 0:
         zone = "mid"
@@ -276,29 +297,34 @@ def _zone_and_tag(price: float, side: str, low: float, high: float) -> tuple[str
         else:
             zone = "late"
     tags = {
-        ("buy", "early"):  "⬇ 早盤搶低",
-        ("buy", "mid"):    "↗ 盤中追進",
+        ("buy", "early"):  "⬇ 低檔搶進",
+        ("buy", "mid"):    "↗ 中檔買進",
         ("buy", "late"):   "▽ 高檔追進",
         ("sell", "early"): "△ 低檔賣壓",
-        ("sell", "mid"):   "↘ 盤中出脫",
+        ("sell", "mid"):   "↘ 中檔出脫",
         ("sell", "late"):  "⬆ 高檔倒貨",
     }
     return zone, tags.get((side, zone), "")
 
 
 def top_cells(rows: list[dict], top_n: int = 10,
-               low: float = 0.0, high: float = 0.0) -> list[dict]:
+               low: float = 0.0, high: float = 0.0,
+               price_to_time: dict | None = None) -> list[dict]:
     """Top N (broker, price, side) cells by volume.
 
     Each row contributes up to 2 cells (one buy, one sell, if both > 0).
     Returns list sorted by volume descending:
       [{broker_id, broker_name, price, side ('buy'|'sell'), volume,
         zone, tag}, ...]
+
+    `price_to_time` enables time-based zone/tag labels (consistent with
+    time_stage_breakdown). Without it, falls back to price-quartile.
     """
     cells = []
     for r in rows:
         if r["buy"] > 0:
-            zone, tag = _zone_and_tag(r["price"], "buy", low, high)
+            zone, tag = _zone_and_tag(r["price"], "buy", low, high,
+                                       price_to_time=price_to_time)
             cells.append({
                 "broker_id": r["broker_id"],
                 "broker_name": r["broker_name"],
@@ -309,7 +335,8 @@ def top_cells(rows: list[dict], top_n: int = 10,
                 "tag": tag,
             })
         if r["sell"] > 0:
-            zone, tag = _zone_and_tag(r["price"], "sell", low, high)
+            zone, tag = _zone_and_tag(r["price"], "sell", low, high,
+                                       price_to_time=price_to_time)
             cells.append({
                 "broker_id": r["broker_id"],
                 "broker_name": r["broker_name"],
@@ -1089,16 +1116,17 @@ def analyze(stock_code: str, date: str | None = None,
             json.dump(bsr, f, ensure_ascii=False)
 
     # 3. Top cells + stage + fingerprint + wash candidates
-    cells = top_cells(bsr["rows"], top_n=10,
-                       low=ohlc["low"], high=ohlc["high"])
     fingerprint = broker_fingerprint(bsr["rows"], top_n=5)
-    # Build price→time map from FinMind tick data — used for both wash-
-    # candidate time direction AND time-based stage breakdown. Falls back
-    # to None on failure → use price-quartile stage instead.
+    # Build price→time map from FinMind tick data — used for top_cells tags,
+    # wash-candidate time direction AND time-based stage breakdown. Falls
+    # back to None on failure → tags + stage use price-quartile heuristic.
     try:
         price_to_time = build_price_to_time_map(stock_code, trading_date)
     except Exception:
         price_to_time = {}
+    cells = top_cells(bsr["rows"], top_n=10,
+                       low=ohlc["low"], high=ohlc["high"],
+                       price_to_time=price_to_time)
     wash = broker_wash_candidates(
         bsr["rows"], day_low=ohlc["low"], day_high=ohlc["high"], top_n=5,
         price_to_time=price_to_time,
