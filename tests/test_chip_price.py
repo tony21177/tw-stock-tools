@@ -76,6 +76,210 @@ class TestParseBsrDate(unittest.TestCase):
         self.assertEqual(_parse_bsr_date(""), "")
 
 
+class TestPriceBandsForBroker(unittest.TestCase):
+    CELLS = [
+        # Across $100-$130 range:
+        # Low (100-110): bought 2000
+        {"price": 100.0, "buy": 1500, "sell": 0},
+        {"price": 105.0, "buy": 500, "sell": 0},
+        # Mid (110-120): bought 3000, sold 200
+        {"price": 115.0, "buy": 3000, "sell": 200},
+        # High (120-130): bought 5000, sold 1000
+        {"price": 125.0, "buy": 5000, "sell": 0},
+        {"price": 130.0, "buy": 0, "sell": 1000},  # at upper edge
+    ]
+
+    def test_three_bands_total_matches_input(self):
+        from tw_chip_price import price_bands_for_broker
+        bands = price_bands_for_broker(self.CELLS, low=100.0, high=130.0)
+        # Expect 3 bands ordered high→low
+        self.assertEqual(len(bands), 3)
+        self.assertEqual(bands[0]["label"], "高檔")
+        self.assertEqual(bands[1]["label"], "中檔")
+        self.assertEqual(bands[2]["label"], "低檔")
+        # Sums conserve totals
+        total_buy = sum(b["buy"] for b in bands)
+        total_sell = sum(b["sell"] for b in bands)
+        self.assertEqual(total_buy, 10000)
+        self.assertEqual(total_sell, 1200)
+
+    def test_high_band_captures_top_buying(self):
+        from tw_chip_price import price_bands_for_broker
+        bands = price_bands_for_broker(self.CELLS, low=100.0, high=130.0)
+        high = bands[0]
+        # High band [120, 130]: includes $125 (5000 buy) + $130 (1000 sell)
+        self.assertEqual(high["buy"], 5000)
+        self.assertEqual(high["sell"], 1000)
+
+    def test_flat_day_collapses_to_single_band(self):
+        from tw_chip_price import price_bands_for_broker
+        cells = [{"price": 100.0, "buy": 500, "sell": 200}]
+        bands = price_bands_for_broker(cells, low=100.0, high=100.0)
+        self.assertEqual(len(bands), 1)
+        self.assertEqual(bands[0]["label"], "收盤價")
+        self.assertEqual(bands[0]["buy"], 500)
+        self.assertEqual(bands[0]["sell"], 200)
+
+
+class TestHistoryArchive(unittest.TestCase):
+    def setUp(self):
+        import tempfile, tw_chip_price
+        self.tmp = tempfile.mkdtemp(prefix="chip_price_history_test_")
+        # Patch HISTORY_DIR for isolation
+        self._orig_dir = tw_chip_price.HISTORY_DIR
+        tw_chip_price.HISTORY_DIR = self.tmp
+
+    def tearDown(self):
+        import shutil, tw_chip_price
+        tw_chip_price.HISTORY_DIR = self._orig_dir
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _make_record(self, code: str, date: str, top_buyer_id: str = "A") -> dict:
+        return {
+            "stock_code": code,
+            "name": code,
+            "date": date,
+            "ohlc": {"open": 100.0, "high": 110.0, "low": 100.0, "close": 105.0},
+            "total_buy_shares": 1000000,
+            "total_sell_shares": 1000000,
+            "top_cells": [],
+            "stage": {"early": [], "mid": [], "late": []},
+            "fingerprint": {
+                "top_buyers": [{"broker_id": top_buyer_id, "broker_name": "X",
+                                "net_shares": 1000, "avg_price": 100.0,
+                                "price_range": (100.0, 110.0)}],
+                "top_sellers": [],
+            },
+        }
+
+    def test_save_and_load_roundtrip(self):
+        from tw_chip_price import save_history, load_history
+        save_history(self._make_record("2313", "20260512"))
+        out = load_history("2313", days=10, base_dir=self.tmp)
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["date"], "20260512")
+
+    def test_load_returns_newest_first(self):
+        from tw_chip_price import save_history, load_history
+        for d in ("20260508", "20260512", "20260510"):
+            save_history(self._make_record("2313", d))
+        out = load_history("2313", days=10, base_dir=self.tmp)
+        self.assertEqual([r["date"] for r in out],
+                         ["20260512", "20260510", "20260508"])
+
+    def test_save_prunes_to_keep_window(self):
+        from tw_chip_price import save_history, load_history
+        for d in ("20260501", "20260502", "20260503", "20260504",
+                  "20260505", "20260506", "20260507", "20260508",
+                  "20260509", "20260510", "20260511", "20260512"):
+            save_history(self._make_record("2313", d), days_to_keep=10)
+        out = load_history("2313", days=20, base_dir=self.tmp)
+        # 12 written, only 10 kept (newest 10)
+        self.assertEqual(len(out), 10)
+        self.assertEqual(out[0]["date"], "20260512")
+        self.assertEqual(out[-1]["date"], "20260503")
+
+    def test_load_isolates_by_stock_code(self):
+        from tw_chip_price import save_history, load_history
+        save_history(self._make_record("2313", "20260512"))
+        save_history(self._make_record("2330", "20260512"))
+        self.assertEqual(len(load_history("2313", base_dir=self.tmp)), 1)
+        self.assertEqual(len(load_history("9999", base_dir=self.tmp)), 0)
+
+    def test_save_skips_when_missing_keys(self):
+        from tw_chip_price import save_history, load_history
+        save_history({"stock_code": "2313"})  # missing date
+        save_history({"date": "20260512"})  # missing stock_code
+        self.assertEqual(load_history("2313", base_dir=self.tmp), [])
+
+
+class TestContinuityFooter(unittest.TestCase):
+    def setUp(self):
+        import tempfile, tw_chip_price
+        self.tmp = tempfile.mkdtemp(prefix="chip_price_cont_test_")
+        self._orig_dir = tw_chip_price.HISTORY_DIR
+        tw_chip_price.HISTORY_DIR = self.tmp
+
+    def tearDown(self):
+        import shutil, tw_chip_price
+        tw_chip_price.HISTORY_DIR = self._orig_dir
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _record(self, date: str, top_buyer_ids: list[str],
+                top_seller_ids: list[str]) -> dict:
+        return {
+            "stock_code": "2313",
+            "date": date,
+            "fingerprint": {
+                "top_buyers": [{"broker_id": bid, "broker_name": bid}
+                               for bid in top_buyer_ids],
+                "top_sellers": [{"broker_id": sid, "broker_name": sid}
+                                for sid in top_seller_ids],
+            },
+        }
+
+    def test_continuity_counts_appearances(self):
+        from tw_chip_price import save_history, _format_continuity
+        # 3 history days: 高盛 (G) in top 3 buyers on 2 of them
+        save_history(self._record("20260510", ["G", "X"], ["K"]))
+        save_history(self._record("20260511", ["G", "Y"], ["K"]))
+        save_history(self._record("20260509", ["Z"], ["K"]))
+        today = self._record("20260512", ["G"], ["K"])
+        lines = _format_continuity(today, days=5)
+        joined = "\n".join(lines)
+        self.assertIn("近 3", joined)
+        self.assertIn("G 2/3", joined)
+        self.assertIn("K 3/3", joined)
+
+    def test_empty_history_returns_empty_list(self):
+        from tw_chip_price import _format_continuity
+        today = self._record("20260512", ["G"], ["K"])
+        self.assertEqual(_format_continuity(today, days=5), [])
+
+
+class TestInferBsrTradingDate(unittest.TestCase):
+    def test_returns_empty_when_no_rows(self):
+        from tw_chip_price import infer_bsr_trading_date
+        self.assertEqual(infer_bsr_trading_date("2313", []), "")
+
+    def test_returns_empty_when_no_token(self):
+        from tw_chip_price import infer_bsr_trading_date
+        import tw_chip_price as mod
+        original = mod._get_token
+        mod._get_token = lambda: ""
+        try:
+            rows = [{"price": 100.0, "buy": 1000, "sell": 0}]
+            self.assertEqual(infer_bsr_trading_date("2313", rows), "")
+        finally:
+            mod._get_token = original
+
+    def test_matches_day_by_volume(self):
+        """Stub finmind_client; confirm volume match wins over price-range."""
+        from tw_chip_price import infer_bsr_trading_date
+        import tw_chip_price as mod
+        original_token = mod._get_token
+        original_finmind = sys.modules.get("finmind_client")
+        mod._get_token = lambda: "stub_token"
+        import types
+        fake = types.SimpleNamespace()
+        fake.fetch_stock_price = lambda code, start, end, token: [
+            {"date": "2026-05-11", "max": 254.5, "min": 242.0, "Trading_Volume": 81477797},
+            {"date": "2026-05-12", "max": 264.5, "min": 246.0, "Trading_Volume": 93921908},
+            {"date": "2026-05-13", "max": 258.5, "min": 237.0, "Trading_Volume": 91042000},
+        ]
+        sys.modules["finmind_client"] = fake
+        try:
+            bsr_rows = [{"price": 246.0, "buy": 93921908, "sell": 0}]
+            result = infer_bsr_trading_date("2313", bsr_rows, target="20260513")
+            self.assertEqual(result, "20260512")
+        finally:
+            mod._get_token = original_token
+            if original_finmind is not None:
+                sys.modules["finmind_client"] = original_finmind
+            else:
+                sys.modules.pop("finmind_client", None)
+
+
 class TestOhlcFromFinmind(unittest.TestCase):
     def test_returns_dict_with_required_keys(self):
         from tw_chip_price import get_ohlc

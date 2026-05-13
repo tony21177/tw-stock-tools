@@ -20,6 +20,8 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "concept_momentum"))
 
 DEFAULT_CHAT_ID = "-5229750819"
+HISTORY_DIR = os.path.join(HERE, "chip_price_history")
+HISTORY_KEEP_DAYS = 10
 
 
 def _get_token() -> str:
@@ -35,6 +37,59 @@ def _get_token() -> str:
                 return line.split("FINMIND_TOKEN=")[1].split()[0]
     except Exception:
         pass
+    return ""
+
+
+def infer_bsr_trading_date(stock_code: str, bsr_rows: list[dict],
+                           target: str | None = None) -> str:
+    """Identify which trading day this BSR fetch represents.
+
+    TWSE BSR's CSV has no date and FinMind's "latest day" can be one trading
+    day ahead of BSR's between ~14:00 (FinMind close) and ~17:30 (BSR
+    publish). Disambiguate by matching BSR's actual (price_low, price_high,
+    total_volume) against FinMind's OHLC + Volume for the last few trading
+    days. The day whose triple matches is BSR's day.
+
+    Returns YYYYMMDD on success, "" if FinMind unavailable or no match.
+    """
+    if not bsr_rows:
+        return ""
+    import finmind_client
+    token = _get_token()
+    if not token:
+        return ""
+    bsr_low = min(r["price"] for r in bsr_rows)
+    bsr_high = max(r["price"] for r in bsr_rows)
+    bsr_volume = sum(r["buy"] for r in bsr_rows)
+    target = target or datetime.now().strftime("%Y%m%d")
+    end_dt = datetime.strptime(target, "%Y%m%d")
+    start_dt = end_dt - timedelta(days=15)
+    try:
+        rows = finmind_client.fetch_stock_price(
+            stock_code,
+            start_dt.strftime("%Y-%m-%d"),
+            end_dt.strftime("%Y-%m-%d"),
+            token,
+        )
+    except Exception:
+        return ""
+    if not rows:
+        return ""
+    # Walk newest → oldest. Match by exact volume first (most discriminating),
+    # then by price range as fallback.
+    for r in reversed(rows):
+        try:
+            fm_high = float(r.get("max", 0))
+            fm_low = float(r.get("min", 0))
+            fm_vol = int(r.get("Trading_Volume", 0))
+        except (TypeError, ValueError):
+            continue
+        # Volume match — single-share precision suffices to identify the day
+        if fm_vol == bsr_volume:
+            return r["date"].replace("-", "")
+        # Fallback: price range within 5 cents
+        if abs(fm_high - bsr_high) < 0.05 and abs(fm_low - bsr_low) < 0.05:
+            return r["date"].replace("-", "")
     return ""
 
 
@@ -273,6 +328,43 @@ def _fmt_zhang(shares: int) -> str:
     return f"{int(shares / 1000):,}"
 
 
+def price_bands_for_broker(cells: list[dict], low: float, high: float,
+                           n_bands: int = 3) -> list[dict]:
+    """Bucket a broker's cells into n_bands equal-width price bands.
+
+    Returns list of {label, low, high, buy, sell, net} ordered high→low.
+    Labels for n_bands=3 are '高檔', '中檔', '低檔'; otherwise 'B1', 'B2', ...
+    Flat-day (rng ≤ 0) collapses everything into a single band labelled '收盤價'.
+    """
+    rng = high - low
+    if rng <= 0:
+        buy = sum(c["buy"] for c in cells)
+        sell = sum(c["sell"] for c in cells)
+        return [{
+            "label": "收盤價", "low": low, "high": low,
+            "buy": buy, "sell": sell, "net": buy - sell,
+        }]
+    labels = (["低檔", "中檔", "高檔"] if n_bands == 3
+              else [f"B{i + 1}" for i in range(n_bands)])
+    bands = []
+    for i in range(n_bands):
+        b_lo = low + rng * i / n_bands
+        b_hi = low + rng * (i + 1) / n_bands
+        # Inclusive on the top edge of the last band, half-open otherwise.
+        if i == n_bands - 1:
+            in_band = lambda p, lo=b_lo, hi=b_hi: lo <= p <= hi
+        else:
+            in_band = lambda p, lo=b_lo, hi=b_hi: lo <= p < hi
+        buy = sum(c["buy"] for c in cells if in_band(c["price"]))
+        sell = sum(c["sell"] for c in cells if in_band(c["price"]))
+        bands.append({
+            "label": labels[i], "low": b_lo, "high": b_hi,
+            "buy": buy, "sell": sell, "net": buy - sell,
+        })
+    bands.reverse()  # high → low
+    return bands
+
+
 def _fmt_date(yyyymmdd: str) -> str:
     return f"{yyyymmdd[:4]}/{yyyymmdd[4:6]}/{yyyymmdd[6:8]}"
 
@@ -337,6 +429,7 @@ def format_report(data: dict) -> str:
     lines.append("")
 
     # Fingerprint
+    o_low, o_high = ohlc["low"], ohlc["high"]
     lines.append("【🎯 Top 5 買超分點價格指紋】")
     if not data["fingerprint"]["top_buyers"]:
         lines.append("  (無)")
@@ -348,6 +441,14 @@ def format_report(data: dict) -> str:
                 f"+{_fmt_zhang(b['net_shares'])} 張 — "
                 f"avg ${b['avg_price']:.2f}, 範圍 ${pr_lo:.2f}~${pr_hi:.2f}"
             )
+            bands = price_bands_for_broker(b.get("cells", []), o_low, o_high)
+            band_parts = [
+                f"{bd['label']} ${bd['low']:.2f}~${bd['high']:.2f} "
+                f"+{_fmt_zhang(bd['buy'])}張"
+                for bd in bands if bd["buy"] > 0
+            ]
+            if band_parts:
+                lines.append(f"    📊 主買價帶: {' / '.join(band_parts)}")
     lines.append("")
     lines.append("【🎯 Top 5 賣超分點價格指紋】")
     if not data["fingerprint"]["top_sellers"]:
@@ -360,7 +461,121 @@ def format_report(data: dict) -> str:
                 f"{_fmt_zhang(b['net_shares'])} 張 — "
                 f"avg ${b['avg_price']:.2f}, 範圍 ${pr_lo:.2f}~${pr_hi:.2f}"
             )
+            bands = price_bands_for_broker(b.get("cells", []), o_low, o_high)
+            band_parts = [
+                f"{bd['label']} ${bd['low']:.2f}~${bd['high']:.2f} "
+                f"-{_fmt_zhang(bd['sell'])}張"
+                for bd in bands if bd["sell"] > 0
+            ]
+            if band_parts:
+                lines.append(f"    📊 主賣價帶: {' / '.join(band_parts)}")
+
+    # Continuity footer — pull recent history (default 5 trading days)
+    continuity = _format_continuity(data, days=5)
+    if continuity:
+        lines.append("")
+        lines.extend(continuity)
+
     return "\n".join(lines)
+
+
+def save_history(data: dict, days_to_keep: int = HISTORY_KEEP_DAYS) -> None:
+    """Save an analyze() output to the per-stock history archive.
+
+    Writes to `chip_price_history/{code}_{date}.json` (full data including
+    fingerprint cells and stage breakdown — typically 30-60 KB per file).
+    Prunes the same stock's older entries so only the `days_to_keep` newest
+    remain. Silently no-ops if data is missing stock_code or date.
+    """
+    import glob
+    if not data.get("stock_code") or not data.get("date"):
+        return
+    os.makedirs(HISTORY_DIR, exist_ok=True)
+    fp = os.path.join(HISTORY_DIR, f"{data['stock_code']}_{data['date']}.json")
+    with open(fp, "w") as f:
+        json.dump(data, f, ensure_ascii=False)
+    pattern = os.path.join(HISTORY_DIR, f"{data['stock_code']}_*.json")
+    files = sorted(glob.glob(pattern), reverse=True)
+    for old in files[days_to_keep:]:
+        try:
+            os.remove(old)
+        except OSError:
+            pass
+
+
+def load_history(stock_code: str, days: int = HISTORY_KEEP_DAYS,
+                 base_dir: str | None = None) -> list[dict]:
+    """Read up to `days` most recent history entries for `stock_code`.
+
+    Returns list sorted by date descending (newest first). Empty list if no
+    history or directory missing. Silently skips files that fail to parse.
+    `base_dir` resolves to HISTORY_DIR at call time when None (lets tests
+    patch the module-level constant after import).
+    """
+    import glob
+    if base_dir is None:
+        base_dir = HISTORY_DIR
+    pattern = os.path.join(base_dir, f"{stock_code}_*.json")
+    files = sorted(glob.glob(pattern), reverse=True)[:days]
+    out = []
+    for fp in files:
+        try:
+            with open(fp) as f:
+                out.append(json.load(f))
+        except (json.JSONDecodeError, OSError):
+            continue
+    return out
+
+
+def _format_continuity(data: dict, days: int = 5) -> list[str]:
+    """Return a 連續性 footer comparing today's top buyers/sellers to history.
+
+    For each of today's Top 3 buyers and sellers, counts how many of the past
+    `days` trading days they appeared in that day's Top 3 (same side). Empty
+    list if no usable history.
+    """
+    history = load_history(data["stock_code"], days=days + 1)
+    today_date = data.get("date", "")
+    history = [h for h in history if h.get("date") and h["date"] != today_date]
+    if not history:
+        return []
+
+    today_buyers = data["fingerprint"]["top_buyers"][:3]
+    today_sellers = data["fingerprint"]["top_sellers"][:3]
+    today_buyer_ids = [b["broker_id"] for b in today_buyers]
+    today_seller_ids = [s["broker_id"] for s in today_sellers]
+
+    buyer_counts: dict[str, int] = {}
+    seller_counts: dict[str, int] = {}
+    for h in history:
+        fp = h.get("fingerprint", {})
+        past_buyers = [b["broker_id"] for b in fp.get("top_buyers", [])[:3]]
+        past_sellers = [s["broker_id"] for s in fp.get("top_sellers", [])[:3]]
+        for bid in today_buyer_ids:
+            if bid in past_buyers:
+                buyer_counts[bid] = buyer_counts.get(bid, 0) + 1
+        for sid in today_seller_ids:
+            if sid in past_sellers:
+                seller_counts[sid] = seller_counts.get(sid, 0) + 1
+
+    name_for = {b["broker_id"]: b["broker_name"] for b in today_buyers}
+    name_for.update({s["broker_id"]: s["broker_name"] for s in today_sellers})
+
+    n_history = len(history)
+    lines = [f"【📅 近 {n_history} 個交易日連續性 (今日除外)】"]
+    if today_buyer_ids:
+        parts = [
+            f"{name_for.get(bid, bid)} {buyer_counts.get(bid, 0)}/{n_history}"
+            for bid in today_buyer_ids
+        ]
+        lines.append(f"  🟢 今日 Top 3 買方歷史 Top 3 命中: {' / '.join(parts)}")
+    if today_seller_ids:
+        parts = [
+            f"{name_for.get(sid, sid)} {seller_counts.get(sid, 0)}/{n_history}"
+            for sid in today_seller_ids
+        ]
+        lines.append(f"  🔴 今日 Top 3 賣方歷史 Top 3 命中: {' / '.join(parts)}")
+    return lines
 
 
 def _emit_zone(lines: list[str], zone_rows: list[dict]) -> None:
@@ -419,18 +634,20 @@ def analyze(stock_code: str, date: str | None = None,
         # Cache write deferred until after step 2 — we want to use FinMind's
         # authoritative trading date in the cache filename.
 
-    # 2. OHLC for stage range. The returned ohlc["date"] is FinMind's latest
-    # available trading day for this stock — the same day TWSE BSR is
-    # serving (BSR publishes after FinMind close prices, so FinMind's latest
-    # is always >= TWSE BSR's day). Use this as the report's trading date.
-    ohlc = get_ohlc(stock_code, target)
-    if ohlc and ohlc.get("date"):
-        trading_date = ohlc["date"]
-        # Patch BSR's date stamp to match the authoritative trading day.
+    # 2. Identify BSR's actual trading day by matching its price+volume
+    # against FinMind history. FinMind closes earlier than BSR publishes
+    # (~14:00 vs ~17:30), so during that window FinMind's "latest" is one
+    # day ahead of BSR's; matching by volume disambiguates.
+    inferred_date = infer_bsr_trading_date(stock_code, bsr["rows"], target)
+    if inferred_date:
+        trading_date = inferred_date
         bsr["date"] = trading_date
     else:
-        # FinMind missing — fall back to whatever BSR returned (today).
         trading_date = bsr.get("date") or target
+
+    # 3. OHLC for stage range — fetched for the inferred trading day so
+    # stage zones bucket BSR cells against that day's actual high/low.
+    ohlc = get_ohlc(stock_code, trading_date)
     if not ohlc:
         # Fallback: derive range from BSR rows themselves
         prices = [r["price"] for r in bsr["rows"]]
@@ -458,7 +675,7 @@ def analyze(stock_code: str, date: str | None = None,
     except Exception:
         name = ""
 
-    return {
+    result = {
         "stock_code": stock_code,
         "name": name,
         "date": bsr.get("date", target),
@@ -469,6 +686,12 @@ def analyze(stock_code: str, date: str | None = None,
         "stage": stage,
         "fingerprint": fingerprint,
     }
+    # 5. Archive to per-stock history (rolling 10 trading days). Idempotent —
+    # re-running on the same day overwrites the same file. Skip on --no-fetch
+    # since that's typically a debug replay, not a fresh analysis.
+    if not no_fetch:
+        save_history(result)
+    return result
 
 
 def _send_telegram(text: str, bot_token: str, chat_id: str) -> bool:
