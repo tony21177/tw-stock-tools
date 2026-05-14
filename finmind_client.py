@@ -93,6 +93,26 @@ def fetch_short_sale_balances_market(date: str, token: str) -> list[dict]:
     }, token)
 
 
+def fetch_balance_sheet(stock_id: str, start_date: str, end_date: str,
+                         token: str) -> list[dict]:
+    """Fetch 資產負債表 line items (per quarter).
+
+    Returns rows with shape:
+      {date, stock_id, type, value, origin_name}
+    `type` is a CamelCase identifier (e.g., 'CurrentContractLiabilities');
+    `origin_name` is the Chinese label (e.g., '合約負債').
+    `value` is in TWD (whole 元, divide by 1000 for 千元).
+
+    Each quarter has ~80-300 rows (one per line item). Filter by `type` to
+    get the metric you want.
+    """
+    return _call("TaiwanStockBalanceSheet", {
+        "data_id": stock_id,
+        "start_date": start_date,
+        "end_date": end_date,
+    }, token)
+
+
 def fetch_stock_price_tick(stock_id: str, date: str,
                            token: str) -> list[dict]:
     """Fetch tick-by-tick 成交資料 for one stock on one date.
