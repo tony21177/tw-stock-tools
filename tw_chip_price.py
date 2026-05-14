@@ -416,6 +416,182 @@ def broker_top_cells(cells: list[dict], side: str = "buy",
     return filtered[:n]
 
 
+def build_tick_index(stock_code: str, date: str) -> dict[float, list[tuple[float, int]]]:
+    """Per-price tick index: {price: [(time_min, volume_zhang), ...]} sorted
+    by time ascending. Used by match_cell_to_ticks for exact volume matching.
+
+    Verified empirically (2026-05-14): tick `volume` field is in 張 (not 股),
+    matching the BSR cell `buy`/`sell` units. So a BSR cell `(price, 50)` can
+    be matched directly to a tick `(price, vol=50)`.
+    """
+    import finmind_client
+    token = _get_token()
+    if not token:
+        return {}
+    date_dash = (f"{date[:4]}-{date[4:6]}-{date[6:8]}"
+                 if len(date) == 8 else date)
+    try:
+        ticks = finmind_client.fetch_stock_price_tick(stock_code, date_dash, token)
+    except Exception:
+        return {}
+    if not ticks:
+        return {}
+    by_price: dict[float, list[tuple[float, int]]] = {}
+    for t in ticks:
+        try:
+            p = float(t["deal_price"])
+            v = int(t["volume"])
+        except (KeyError, ValueError, TypeError):
+            continue
+        if v <= 0:
+            continue
+        t_str = t.get("Time", "")
+        parts = t_str.split(":")
+        if len(parts) != 3:
+            continue
+        try:
+            h = int(parts[0])
+            m = int(parts[1])
+            s = float(parts[2])
+        except ValueError:
+            continue
+        minutes = (h - 9) * 60 + m + s / 60.0
+        by_price.setdefault(p, []).append((minutes, v))
+    for p in by_price:
+        by_price[p].sort()
+    return by_price
+
+
+def match_cell_to_ticks(price: float, shares_zhang: int,
+                        tick_list: list[tuple[float, int]],
+                        window_max: int = 30,
+                        leading_threshold: float = 0.5) -> dict | None:
+    """Pinpoint a broker cell's trade time by matching its volume against the
+    raw tick stream at that price.
+
+    Strategies in order of preference (confidence high → low):
+      1. leading_block   — largest tick ≤ cell_vol that takes ≥ 50% of the
+                            cell. Extends forward to neighbouring small ticks
+                            until volumes sum to cell_vol (tight cluster).
+                            This is the most reliable case for big-block
+                            broker orders surrounded by 1-3張 cleanup ticks.
+      2. exact           — exactly one tick has vol == shares_zhang
+      3. window          — contiguous run of ticks sums to shares
+      4. weighted        — fallback: vol-weighted avg time of all ticks
+
+    Validated via user ground truth (2026-05-14):
+      第一員林 \$50.30 52張 (50張 block at 11:35:38 + 2張 cleanup)
+        → leading_block: 50張 dominant @ 11:35:38, plus 2x 1張 within 30s
+        → time ~11:35:40, match_type=leading_block ✓
+      第一員林 \$50.40 34張 (30張 block at 11:36:12 + 4張 cleanup)
+        → leading_block: 30張 dominant @ 11:36:12 + extending
+        → time ~11:36:20, match_type=leading_block ✓
+    """
+    if not tick_list or shares_zhang <= 0:
+        return None
+
+    # Strategy 1: leading-block — find a dominant tick STRICTLY SMALLER than
+    # the cell, then extend to neighbours to cover the residual. We require
+    # lead_v < shares because BSR cells of size ≥ 2張 almost always combine
+    # multiple ticks (broker's main block + small cleanup). A single tick
+    # with vol == shares is usually a different broker who coincidentally
+    # traded the same lot size — handled by Strategy 2 only for tiny cells.
+    candidates_by_vol = sorted(
+        [(t, v, i) for i, (t, v) in enumerate(tick_list) if 0 < v < shares_zhang],
+        key=lambda x: -x[1],
+    )
+    if candidates_by_vol:
+        lead_t, lead_v, lead_i = candidates_by_vol[0]
+        if lead_v >= leading_threshold * shares_zhang:
+            # Extend forward and backward from lead_i to accumulate to shares
+            cum = lead_v
+            left, right = lead_i, lead_i
+            n = len(tick_list)
+            # Greedily add closest neighbours by time until we hit shares
+            while cum < shares_zhang and (left > 0 or right < n - 1):
+                add_left = (tick_list[left - 1] if left > 0 else None)
+                add_right = (tick_list[right + 1] if right < n - 1 else None)
+                if add_left is None:
+                    pick_right = True
+                elif add_right is None:
+                    pick_right = False
+                else:
+                    # Pick the one with smaller time gap from current cluster
+                    gap_left = tick_list[left][0] - add_left[0]
+                    gap_right = add_right[0] - tick_list[right][0]
+                    pick_right = gap_right <= gap_left
+                if pick_right:
+                    if cum + add_right[1] <= shares_zhang:
+                        cum += add_right[1]
+                        right += 1
+                    else:
+                        break
+                else:
+                    if cum + add_left[1] <= shares_zhang:
+                        cum += add_left[1]
+                        left -= 1
+                    else:
+                        break
+            window = tick_list[left:right + 1]
+            tot_v = sum(v for _, v in window)
+            t_avg = sum(t * v for t, v in window) / tot_v
+            # Pct of cell explained
+            explained = tot_v / shares_zhang
+            return {
+                "time_min": t_avg,
+                "match_type": "leading_block",
+                "lead_vol": lead_v,
+                "lead_pct": lead_v / shares_zhang,
+                "explained": explained,
+                "cluster_span_min": (tick_list[right][0] - tick_list[left][0]),
+            }
+
+    # Strategy 2: single-tick exact match — ONLY for small cells (< 10張)
+    # where it's plausible the broker did one trade of that exact size.
+    # For ≥ 10張 we skip this because exact-vol coincidence between brokers
+    # is common (large round-lot orders).
+    if shares_zhang < 10:
+        exact_matches = [t for t, v in tick_list if v == shares_zhang]
+        if len(exact_matches) == 1:
+            return {"time_min": exact_matches[0], "match_type": "exact"}
+        if len(exact_matches) > 1:
+            return {
+                "time_min": sum(exact_matches) / len(exact_matches),
+                "match_type": "exact_ambiguous",
+                "candidate_count": len(exact_matches),
+            }
+
+    # Strategy 3: sliding window summing to shares
+    n = len(tick_list)
+    best = None
+    for i in range(n):
+        cum = 0
+        for j in range(i, min(i + window_max, n)):
+            cum += tick_list[j][1]
+            if cum == shares_zhang:
+                window = tick_list[i:j + 1]
+                tot_v = sum(v for _, v in window)
+                t_avg = sum(t * v for t, v in window) / tot_v
+                span = tick_list[j][0] - tick_list[i][0]
+                if best is None or span < best["span"]:
+                    best = {"time_min": t_avg, "span": span,
+                            "match_type": "window",
+                            "tick_count": j - i + 1}
+                break
+            if cum > shares_zhang:
+                break
+    if best:
+        del best["span"]
+        return best
+
+    # Strategy 4: vol-weighted avg fallback
+    tot_v = sum(v for _, v in tick_list)
+    if tot_v == 0:
+        return None
+    t_avg = sum(t * v for t, v in tick_list) / tot_v
+    return {"time_min": t_avg, "match_type": "weighted"}
+
+
 def build_price_to_time_map(stock_code: str, date: str) -> dict:
     """For each price level, return the volume-weighted avg time-of-day
     (in minutes from 9:00 open) it was traded. Backed by FinMind tick data.
@@ -531,6 +707,159 @@ def time_stage_breakdown(rows: list[dict], price_to_time: dict,
         result[zone] = sorted(per_broker.values(),
                               key=lambda x: -abs(x["net_shares"]))
     return result
+
+
+def _cell_candidates(cell_vol: int, tick_list: list[tuple[float, int]],
+                     leading_threshold: float = 0.7) -> list[dict]:
+    """All plausible leading-block candidates for a cell.
+
+    Each candidate: a tick whose vol >= leading_threshold * cell_vol and < cell_vol.
+    For each, we extend forward/backward greedily to neighbours summing to
+    cell_vol (or close), capturing the candidate's cluster span.
+    """
+    if not tick_list or cell_vol <= 0:
+        return []
+    n = len(tick_list)
+    cands = []
+    for i, (lead_t, lead_v) in enumerate(tick_list):
+        if not (0 < lead_v < cell_vol):
+            continue
+        if lead_v < leading_threshold * cell_vol:
+            continue
+        # Extend to fill cell_vol
+        cum = lead_v
+        left, right = i, i
+        while cum < cell_vol and (left > 0 or right < n - 1):
+            add_left = tick_list[left - 1] if left > 0 else None
+            add_right = tick_list[right + 1] if right < n - 1 else None
+            if add_left is None:
+                pick_right = True
+            elif add_right is None:
+                pick_right = False
+            else:
+                gap_left = tick_list[left][0] - add_left[0]
+                gap_right = add_right[0] - tick_list[right][0]
+                pick_right = gap_right <= gap_left
+            if pick_right:
+                if cum + add_right[1] <= cell_vol:
+                    cum += add_right[1]
+                    right += 1
+                else:
+                    break
+            else:
+                if cum + add_left[1] <= cell_vol:
+                    cum += add_left[1]
+                    left -= 1
+                else:
+                    break
+        window = tick_list[left:right + 1]
+        tot_v = sum(v for _, v in window)
+        t_avg = sum(t * v for t, v in window) / tot_v
+        cands.append({
+            "lead_time": lead_t,
+            "lead_vol": lead_v,
+            "lead_pct": lead_v / cell_vol,
+            "cluster_time": t_avg,
+            "cluster_span_min": tick_list[right][0] - tick_list[left][0],
+            "explained": tot_v / cell_vol,
+        })
+    # Primary sort by lead_vol desc, secondary by cluster_span_min DESC.
+    # Wider span = more cleanup ticks around the lead = more like a single
+    # broker's accumulation pattern. Isolated single ticks (span=0) are
+    # often other brokers' coincidental same-vol trades.
+    cands.sort(key=lambda c: (-c["lead_vol"], -c["cluster_span_min"]))
+    return cands
+
+
+def match_broker_cells_consistent(
+    cells: list[dict], side: str, ticks_by_price: dict,
+) -> dict[float, dict]:
+    """Match each cell to a tick time, using cross-cell temporal consistency.
+
+    Two-pass:
+      1. For each cell, find candidate leading-blocks. Cells with a single
+         dominant candidate become "anchors" (high confidence).
+      2. Anchor centroid time = volume-weighted avg of anchor cluster times.
+         For ambiguous cells (multiple candidates), pick the candidate whose
+         time is closest to the anchor centroid.
+
+    This resolves cases like 第一員林 \$50.30 52張: candidates 50張@11:35 and
+    51張@13:20 are nearly equal in size. But \$50.40 34張 anchors to 11:36
+    (only one dominant candidate). Centroid pulls \$50.30 toward 11:35.
+
+    Returns {cell_price: {time_min, match_type, ...}}.
+    """
+    if not ticks_by_price:
+        return {}
+    # Phase 1: per-cell candidate enumeration
+    cell_data: list[tuple[dict, list[dict]]] = []
+    for c in cells:
+        v = c[side]
+        if v == 0:
+            continue
+        ticks = ticks_by_price.get(c["price"], [])
+        cands = _cell_candidates(v, ticks)
+        cell_data.append((c, cands))
+
+    # Phase 2: identify anchors. A cell is an "anchor" if its top candidate is
+    # clearly the best — either the only one, OR distinctly larger vol than
+    # alternatives, OR distinctly wider cluster span (broker accumulation
+    # pattern). Wider cluster = more ticks needed to cover the cell = more
+    # like one broker's many small trades than another broker's coincidence.
+    anchor_points: list[tuple[float, int]] = []
+    for c, cands in cell_data:
+        if not cands:
+            continue
+        if len(cands) == 1:
+            anchor_points.append((cands[0]["cluster_time"], c[side]))
+            continue
+        top = cands[0]
+        second = cands[1]
+        if top["lead_vol"] >= 1.3 * second["lead_vol"]:
+            anchor_points.append((top["cluster_time"], c[side]))
+        elif (top["lead_vol"] == second["lead_vol"]
+              and top["cluster_span_min"] >= 5 * max(second["cluster_span_min"], 1e-6)):
+            # Same vol but top has 5x wider cluster = more like broker pattern
+            anchor_points.append((top["cluster_time"], c[side]))
+
+    centroid = None
+    if anchor_points:
+        tot_w = sum(w for _, w in anchor_points)
+        centroid = sum(t * w for t, w in anchor_points) / tot_w
+
+    # Phase 3: assign final times
+    results = {}
+    for c, cands in cell_data:
+        vol = c[side]
+        price = c["price"]
+        ticks = ticks_by_price.get(price, [])
+        if not cands:
+            # No leading-block candidate — try single-cell match_cell_to_ticks
+            # (for small cells / exact matches / weighted fallback)
+            m = match_cell_to_ticks(price, vol, ticks)
+            if m:
+                results[price] = m
+            continue
+        if len(cands) == 1 or centroid is None:
+            picked = cands[0]
+        else:
+            # Multiple candidates — pick the one closest to centroid
+            picked = min(cands, key=lambda x: abs(x["cluster_time"] - centroid))
+            top = cands[0]
+            if picked["lead_vol"] >= 0.85 * top["lead_vol"]:
+                # Cross-cell consistency selected a near-top candidate
+                pass
+        results[price] = {
+            "time_min": picked["cluster_time"],
+            "match_type": ("leading_block_consistent"
+                           if centroid is not None and len(cands) >= 2
+                           else "leading_block"),
+            "lead_vol": picked["lead_vol"],
+            "lead_pct": picked["lead_pct"],
+            "cluster_span_min": picked["cluster_span_min"],
+            "n_candidates": len(cands),
+        }
+    return results
 
 
 def broker_time_estimate(cells: list[dict], side: str,

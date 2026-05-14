@@ -409,8 +409,11 @@ def _render_broker_drilldown(code: str, date: str, broker_query: str,
                 f'<div class="empty">找不到符合的分點。試「代號」(5381) 或「分行名稱」'
                 f'(員林、台南、信義 …)</div></section>')
 
-    # Build price→time map once (covers all matched brokers)
+    # Build price→time map (weighted-avg per price) + tick index (raw ticks
+    # per price). The map is used for cells without leading-block matches;
+    # the index drives per-cell exact matching via match_broker_cells_consistent.
     ptm = tw_chip_price.build_price_to_time_map(code, date)
+    tick_idx = tw_chip_price.build_tick_index(code, date)
     day_low = ohlc.get("low", 0)
     day_high = ohlc.get("high", 0)
     rng = max(day_high - day_low, 0.01)
@@ -462,9 +465,39 @@ def _render_broker_drilldown(code: str, date: str, broker_query: str,
             max_band_pct=0.25,
         )
 
-        # Time estimates
-        buy_t = tw_chip_price.broker_time_estimate(cells, "buy", ptm) if ptm else None
-        sell_t = tw_chip_price.broker_time_estimate(cells, "sell", ptm) if ptm else None
+        # Per-cell time matching via cross-cell consistency (tick-level
+        # leading-block detection). Cells need vol in 張 to match tick units;
+        # raw BSR is in 股, so we divide by 1000 first.
+        cells_zhang = [
+            {"price": c["price"], "buy": c["buy"] // 1000,
+             "sell": c["sell"] // 1000}
+            for c in cells
+        ]
+        buy_matches = (tw_chip_price.match_broker_cells_consistent(
+            cells_zhang, "buy", tick_idx) if tick_idx else {})
+        sell_matches = (tw_chip_price.match_broker_cells_consistent(
+            cells_zhang, "sell", tick_idx) if tick_idx else {})
+
+        # Overall buy/sell time (volume-weighted over matched cells)
+        def _overall_time(matches, cells, side):
+            total_w, total_v = 0.0, 0
+            for c in cells:
+                v = c[side] // 1000
+                if v == 0:
+                    continue
+                m = matches.get(c["price"])
+                if not m:
+                    continue
+                total_w += m["time_min"] * v
+                total_v += v
+            return total_w / total_v if total_v > 0 else None
+        buy_t = _overall_time(buy_matches, cells, "buy")
+        sell_t = _overall_time(sell_matches, cells, "sell")
+        # Fall back to old weighted-avg if no tick matches
+        if buy_t is None and total_buy > 0 and ptm:
+            buy_t = tw_chip_price.broker_time_estimate(cells, "buy", ptm)
+        if sell_t is None and total_sell > 0 and ptm:
+            sell_t = tw_chip_price.broker_time_estimate(cells, "sell", ptm)
 
         # Wash score if both sides have activity
         wash_html = ""
@@ -491,8 +524,28 @@ def _render_broker_drilldown(code: str, date: str, broker_query: str,
         # Show all cells, sorted by total volume desc
         sorted_cells = sorted(cells, key=lambda c: -(c["buy"] + c["sell"]))
         for c in sorted_cells:
-            t = ptm.get(c["price"]) if ptm else None
-            t_str = tw_chip_price._minutes_to_hhmm(t) if t is not None else "?"
+            # Per-cell match-based time (preferred) with confidence label;
+            # fall back to weighted-avg if no leading-block found.
+            # Buy + sell can each have a separate match.
+            buy_match = buy_matches.get(c["price"]) if c["buy"] > 0 else None
+            sell_match = sell_matches.get(c["price"]) if c["sell"] > 0 else None
+            primary_match = buy_match or sell_match
+            if primary_match:
+                t_str = tw_chip_price._minutes_to_hhmm(primary_match["time_min"])
+                mt = primary_match["match_type"]
+                confidence = {
+                    "exact": "✅",
+                    "exact_ambiguous": "≈",
+                    "leading_block": "🎯",
+                    "leading_block_consistent": "🎯+",
+                    "window": "🔄",
+                    "weighted": "≈",
+                }.get(mt, "?")
+                t_html = f'~{t_str} <small>{confidence}</small>'
+            else:
+                t = ptm.get(c["price"]) if ptm else None
+                t_str = tw_chip_price._minutes_to_hhmm(t) if t is not None else "?"
+                t_html = f'~{t_str} <small>≈</small>'
             buy_html = (f'<span class="buy">+{_fmt_zhang(c["buy"])}</span>'
                         if c["buy"] > 0 else "")
             sell_html = (f'<span class="sell">-{_fmt_zhang(c["sell"])}</span>'
@@ -501,7 +554,7 @@ def _render_broker_drilldown(code: str, date: str, broker_query: str,
                 f'<tr><td class="num">${c["price"]:.2f}</td>'
                 f'<td class="num">{buy_html}</td>'
                 f'<td class="num">{sell_html}</td>'
-                f'<td class="num small">~{t_str}</td></tr>'
+                f'<td class="num small">{t_html}</td></tr>'
             )
 
         # Band progression (cross-day)
