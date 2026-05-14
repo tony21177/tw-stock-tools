@@ -10,6 +10,7 @@ import html as html_lib
 import json
 import os
 import sys
+from datetime import datetime
 from flask import Flask, request, send_from_directory, send_file
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -771,6 +772,182 @@ def _render_chip_price_page(code: str | None = None,
 {broker_html}
 </body>
 </html>"""
+
+
+def _render_contract_liabilities_page(code: str = "", years: int = 3,
+                                      rows: list[dict] | None = None,
+                                      name: str = "",
+                                      error: str = "") -> str:
+    """Web page: 合約負債 history for a stock."""
+    code_attr = html_lib.escape(code or "")
+    body = ""
+    if error:
+        body = f'<div class="error">⚠ {html_lib.escape(error)}</div>'
+    elif rows is not None and not rows:
+        body = ('<div class="empty">⚠ FinMind 沒有此股票的合約負債資料。'
+                '可能原因：純代工製造業 (e.g., 台積電/鴻海) 不揭露合約負債、'
+                '合併到「其他流動負債」未拆分、或無實質合約負債 (售後即收款型)。</div>')
+    elif rows:
+        rows_html = []
+        for r in rows:
+            cur = r["current"]
+            non = r["noncurrent"]
+            tot = r["total"]
+            qoq = r.get("qoq_pct")
+            yoy = r.get("yoy_pct")
+            qoq_cls = ("pos" if qoq is not None and qoq > 0
+                       else ("neg" if qoq is not None and qoq < 0 else ""))
+            yoy_cls = ("pos" if yoy is not None and yoy > 0
+                       else ("neg" if yoy is not None and yoy < 0 else ""))
+            qoq_str = (f"{'+' if qoq >= 0 else ''}{qoq:.1f}%"
+                       if qoq is not None else "—")
+            yoy_str = (f"{'+' if yoy >= 0 else ''}{yoy:.1f}%"
+                       if yoy is not None else "—")
+            non_str = f"{non / 1000:,.0f}" if non > 0 else "—"
+            rows_html.append(
+                f'<tr>'
+                f'<td>{r["date"]}</td>'
+                f'<td class="num">{cur / 1000:,.0f}</td>'
+                f'<td class="num">{non_str}</td>'
+                f'<td class="num"><b>{tot / 1000:,.0f}</b></td>'
+                f'<td class="num {qoq_cls}">{qoq_str}</td>'
+                f'<td class="num {yoy_cls}">{yoy_str}</td>'
+                f'</tr>'
+            )
+        # CAGR
+        cagr_str = ""
+        if len(rows) >= 2 and rows[0]["total"] > 0:
+            span_years = (
+                (datetime.strptime(rows[-1]["date"], "%Y-%m-%d")
+                 - datetime.strptime(rows[0]["date"], "%Y-%m-%d")).days
+                / 365.25
+            )
+            if span_years > 0:
+                cagr = ((rows[-1]["total"] / rows[0]["total"])
+                        ** (1 / span_years) - 1) * 100
+                cagr_cls = "pos" if cagr > 0 else "neg"
+                cagr_str = (f'<p>📈 期間 CAGR: <span class="{cagr_cls}">'
+                             f'<b>{cagr:+.1f}%</b></span> '
+                             f'({rows[0]["date"]} → {rows[-1]["date"]})</p>')
+        body = f"""
+<section class="header-card">
+  <h2>{_esc(code)} {_esc(name)} 合約負債 (近 {years} 年 / {len(rows)} 季)</h2>
+  {cagr_str}
+</section>
+<section>
+  <table class="report-table">
+    <thead><tr>
+      <th>季底</th>
+      <th class="num">流動合約負債 (千元)</th>
+      <th class="num">非流動 (千元)</th>
+      <th class="num">合計 (千元)</th>
+      <th class="num">QoQ%</th>
+      <th class="num">YoY%</th>
+    </tr></thead>
+    <tbody>{''.join(rows_html)}</tbody>
+  </table>
+  <p class="small">註：合約負債 ↑ = 客戶預訂款增加 (未來營收能見度提升) /
+     ↓ = 已轉認列為營收或新預訂下降</p>
+</section>"""
+    return f"""<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>合約負債 — 台股單檔歷史</title>
+<style>
+  body {{ font-family: -apple-system, "Segoe UI", "Microsoft JhengHei",
+           sans-serif; max-width: 1100px; margin: 1em auto; padding: 0 1em;
+           background: #f7f7f9; color: #222; }}
+  h1 {{ font-size: 1.4em; margin: 0.5em 0; }}
+  form {{ display: flex; gap: 8px; align-items: center;
+          background: white; padding: 12px; border-radius: 6px;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 12px; }}
+  input[type=text], input[type=number] {{ font-size: 16px; padding: 8px 12px;
+                       border: 1px solid #ccc; border-radius: 4px; }}
+  input[type=text] {{ width: 120px; }}
+  input[type=number] {{ width: 60px; }}
+  button {{ font-size: 16px; padding: 8px 16px; cursor: pointer;
+            background: #0066cc; color: white; border: none;
+            border-radius: 4px; }}
+  button:hover {{ background: #0052a3; }}
+  nav a {{ margin-right: 12px; color: #0066cc; text-decoration: none; }}
+  .error {{ background: #fee; border: 1px solid #f99; padding: 12px;
+            border-radius: 4px; color: #c00; margin-bottom: 12px; }}
+  .empty {{ background: white; padding: 16px; border-radius: 6px;
+            color: #666; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+            margin-bottom: 12px; }}
+  section {{ background: white; padding: 12px 16px; border-radius: 6px;
+              margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }}
+  section.header-card h2 {{ margin: 0 0 6px 0; font-size: 1.3em; }}
+  table.report-table {{ width: 100%; border-collapse: collapse;
+                         font-size: 0.9em; }}
+  table.report-table th, table.report-table td {{ padding: 6px 10px;
+                                                    border-bottom: 1px solid #eee;
+                                                    text-align: left; }}
+  table.report-table th {{ background: #fafafa; font-weight: 600;
+                            color: #555; font-size: 0.9em; }}
+  table.report-table .num {{ text-align: right;
+                              font-variant-numeric: tabular-nums; }}
+  .pos {{ color: #c30; }}
+  .neg {{ color: #060; }}
+  .small, small {{ font-size: 0.85em; color: #666; }}
+  @media (max-width: 768px) {{
+    body {{ padding: 0 4px; margin: 0.5em auto; }}
+    section {{ overflow-x: auto; }}
+    table.report-table {{ font-size: 0.78em; }}
+    table.report-table th, table.report-table td {{ padding: 4px 5px; }}
+  }}
+</style>
+</head>
+<body>
+<nav>
+  <a href="/">← 大盤 dashboard</a>
+  <a href="/chip-price">📋 籌碼價量</a>
+  <a href="/contract-liabilities">💰 合約負債</a>
+</nav>
+<h1>💰 合約負債歷史</h1>
+
+<form method="get" action="/contract-liabilities">
+  <label for="code">股票代號:</label>
+  <input type="text" id="code" name="code" value="{code_attr}"
+         placeholder="例: 6669" autofocus required>
+  <label for="years">回看年數:</label>
+  <input type="number" id="years" name="years" value="{years}" min="1" max="10">
+  <button type="submit">查詢</button>
+</form>
+<p class="small">💡 合約負債 = 客戶預收款 / 訂金。
+   ↑ = 未來營收能見度提升；↓ = 訂單已轉認列。常用於 ODM/工程/SaaS 業
+   (e.g. <a href="/contract-liabilities?code=6669">6669 緯穎</a> ·
+   <a href="/contract-liabilities?code=2454">2454 聯發科</a> ·
+   <a href="/contract-liabilities?code=1101">1101 台泥</a>)</p>
+
+{body}
+</body>
+</html>"""
+
+
+@app.route("/contract-liabilities")
+def contract_liabilities():
+    import tw_contract_liabilities
+    code = (request.args.get("code") or "").strip()
+    try:
+        years = int(request.args.get("years") or "3")
+        years = max(1, min(years, 10))
+    except ValueError:
+        years = 3
+    if not code:
+        return _render_contract_liabilities_page()
+    try:
+        rows = tw_contract_liabilities.fetch_contract_liabilities(
+            code, years=years)
+        rows = tw_contract_liabilities.annotate_changes(rows)
+    except Exception as e:
+        return _render_contract_liabilities_page(
+            code=code, years=years, error=f"{type(e).__name__}: {e}")
+    name = tw_contract_liabilities._zh_name(code)
+    return _render_contract_liabilities_page(code=code, years=years,
+                                              rows=rows, name=name)
 
 
 @app.route("/chip-price")
