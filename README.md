@@ -1193,16 +1193,34 @@ python3 -m patchright install chromium
 - 🔄 `window` — sliding window 多 ticks 和等於 cell vol
 - ≈ `weighted` — vol-weighted avg fallback
 
-**驗證 3 個 ground truth case (2026-05-14)**：
-- 第一員林 \$50.30 52張 (50 張 single block + 2 cleanup) → ~11:36 ✓ (truth 11:35:38)
-- 第一員林 \$50.40 34張 (30 張 single block + 4 cleanup) → ~11:36 ✓ (truth 11:36:12)
-- 兆豐台南 \$50.60 37張 (30 張 main + 7 spread across 10:33-10:36) → ~10:33 ✓ (truth 10:32:50.502)
+**4 個 ground truth case 驗證 (2026-05-14)**：
 
-**演算法原則 — cluster span 比 lead_vol 更能識別 broker**：
-- 真實 broker 主力 buy = lead block + 多個 cleanup small ticks 散布幾分鐘 (span 寬)
+| # | Cell | 用戶實際 | 演算法 | 狀態 |
+|---|---|---|---|---|
+| 1 | 第一員林 \$50.30 52張 | 50張 block @ 11:35:38 + 2 cleanup | ~11:36 | ✅ |
+| 2 | 第一員林 \$50.40 34張 | 30張 block @ 11:36:12 + 4 cleanup | ~11:36 | ✅ |
+| 3 | 兆豐台南 \$50.60 37張 | 30張 main @ 10:32:50 + spread to 10:36 | ~10:33 | ✅ |
+| 4 | 兆豐台南 \$50.20  8張 | 4張 + 4×1張 burst @ 13:16:20-24 (4 sec) | ~11:58 (alt 13:14 ≈ truth) | ❌ |
+
+**演算法原則 (從 case 1-3 推出)**：
+- 真實 broker 主力 buy = lead block + cleanup small ticks 散布幾分鐘 (span 寬)
 - 別人剛好同 vol 單一筆 = isolated single tick (span 窄)
 - 當 2+ candidates 都 lead_pct >= 70% (都可疑)，**取 cluster_span_min DESC** 比 lead_vol DESC 準
 - 例：兆豐台南 5/14 \$50.60 37 張 — 候選 35張@10:28 (span 3s = 別人) vs 30張@10:33 (span 4min = 用戶) → 取 span 寬 ✓
+
+**Case 4 揭露的根本限制 — 兩種對立的 broker 填單 pattern**：
+
+| Pattern | 結構 | Span | 識別性 |
+|---|---|---|---|
+| **A. 擴散填單** | lead block + cleanup 散在分鐘級 (case 1-3) | 寬 (10s-4min) | ✓ 用 span DESC 區分 |
+| **B. 密集 burst** | lead block + cleanup 全在秒級 (case 4) | 窄 (3-10s) | ❌ 跟其他 broker 短 burst 無法區分 |
+
+**同一個 broker 可能 cell A 用 Pattern A 填、cell B 用 Pattern B 填**（兆豐台南就是這樣：\$50.60 用 A，\$50.20 用 B）。對 Pattern B 公開資料無解 — TWSE 沒提供 broker→tick mapping，無法區分用戶 4+4×1 vs 別人 7+1 (兩者 span 都短)。
+
+**對使用者的影響 / 補償**：
+- 工具自動產生 `alternatives` (top 2 不同時間 candidates) 顯示在 UI
+- Case 4 例: primary ~11:58 ❌，alt ~13:14 ✓ (跟 truth 13:16 只差 2 分)
+- 使用者用 alternatives + 自己 trade 記憶可以**手動修正** algorithm 的猜測
 
 ### 滾動歷史 archive (chip_price_history)
 
@@ -1239,6 +1257,7 @@ FINMIND_TOKEN=... python3 tw_chip_price.py 2313 --date 20260512 --no-fetch  # ca
 - 主買區軌跡需 ≥ 1 日歷史；連續性 footer 需 ≥ 1 日歷史
 - FinMind tick data 需 sponsor 版 (有 token 即可)；失敗時自動 fallback 到 price-quartile 三階段 + net-based wash 判讀
 - **單一價位多 broker 同 vol coincidence** 在 G 段 cross-cell consistency 解之前是無解的：若該分點全部 cell 都缺乏 anchor (同 vol 多 candidates 而 cluster span 差不多)，centroid 無從建立 → 退回最大 vol candidate 當代表 (可能誤判)。這是公開資料 (BSR 沒分點 → tick mapping) 的根本上限
+- **Pattern B 密集 burst 填單無解** (case 4: 兆豐台南 \$50.20 8張 4 秒內 4+1+1+1+1) — broker 用市價/積極限價單秒級填單，跟其他 broker 的短 burst 無法區分。Mitigation: 工具自動顯示 alternatives 讓使用者用自己 trade 記憶手動 override。詳見上面 4 case 表
 
 ### 未來改進 (TODO / wishlist)
 
