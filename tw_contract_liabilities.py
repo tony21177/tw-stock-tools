@@ -140,10 +140,17 @@ def format_report(stock_code: str, rows: list[dict], years: int) -> str:
     name = _zh_name(stock_code)
     if not rows:
         return (f"{stock_code} {name} 合約負債分析 (近 {years} 年)\n\n"
-                f"⚠ FinMind 沒有此股票的合約負債資料。可能原因：\n"
-                f"  - 該股不揭露合約負債 (e.g., 純代工製造業)\n"
-                f"  - 合約負債合併到「其他流動負債」內未單獨拆分\n"
-                f"  - 該股無實質合約負債 (e.g., 售後即收款型)")
+                f"⚠ 此股票 FinMind 沒有「合約負債」獨立科目資料。\n\n"
+                f"原因：該公司 XBRL 申報時未把 CurrentContractLiabilities 拆出，"
+                f"多半合併在「其他流動負債 OtherCurrentLiabilities」內。\n\n"
+                f"常見不揭露的類型：\n"
+                f"  - 純代工製造業 (e.g., 2330 台積電 / 2317 鴻海) — PO 即收款，"
+                f"無實質預收\n"
+                f"  - 部分 ODM (e.g., 6282 康舒) — 客戶用 PO 制不付訂金\n"
+                f"  - 反例同業有揭露：2308 台達電 / 2301 光寶科 / 6669 緯穎 / "
+                f"2454 聯發科\n\n"
+                f"建議：去 公開資訊觀測站 (MOPS) 看該公司財報附註細目，或改用"
+                f"該集團母公司/同業同類比 (e.g., 6282 看 2301 光寶科 或 2308 台達電)。")
     lines = []
     lines.append(f"{stock_code} {name} 合約負債 (近 {years} 年 / "
                   f"{len(rows)} 季)")

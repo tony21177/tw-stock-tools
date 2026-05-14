@@ -784,9 +784,28 @@ def _render_contract_liabilities_page(code: str = "", years: int = 3,
     if error:
         body = f'<div class="error">⚠ {html_lib.escape(error)}</div>'
     elif rows is not None and not rows:
-        body = ('<div class="empty">⚠ FinMind 沒有此股票的合約負債資料。'
-                '可能原因：純代工製造業 (e.g., 台積電/鴻海) 不揭露合約負債、'
-                '合併到「其他流動負債」未拆分、或無實質合約負債 (售後即收款型)。</div>')
+        code_esc = html_lib.escape(code)
+        body = (
+            '<div class="empty">'
+            f'<p><b>⚠ {code_esc} {html_lib.escape(name)} 沒有「合約負債」獨立科目資料</b></p>'
+            '<p>原因：該公司 XBRL 申報時未把 <code>CurrentContractLiabilities</code> '
+            '拆出，多半合併在「其他流動負債 (OtherCurrentLiabilities)」內。</p>'
+            '<p>常見不揭露的類型：</p>'
+            '<ul>'
+            '<li>純代工製造業 (e.g., 2330 台積電 / 2317 鴻海) — PO 即收款，無實質預收</li>'
+            '<li>部分 ODM (e.g., 6282 康舒) — 客戶用 PO 制不付訂金</li>'
+            '<li>反例同業有揭露：'
+            '<a href="/contract-liabilities?code=2308">2308 台達電</a> · '
+            '<a href="/contract-liabilities?code=2301">2301 光寶科</a> · '
+            '<a href="/contract-liabilities?code=6669">6669 緯穎</a> · '
+            '<a href="/contract-liabilities?code=2454">2454 聯發科</a></li>'
+            '</ul>'
+            '<p><b>建議</b>：去 <a href="https://mops.twse.com.tw/" target="_blank">'
+            '公開資訊觀測站 (MOPS)</a> 看該公司財報附註細目，'
+            '或改用該集團母公司/同業作 proxy '
+            '(e.g., 6282 → 看 2301 光寶科 或 2308 台達電)。</p>'
+            '</div>'
+        )
     elif rows:
         rows_html = []
         for r in rows:
