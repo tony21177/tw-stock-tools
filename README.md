@@ -1168,6 +1168,33 @@ python3 -m patchright install chromium
 - 高命中 = 持續主導 (信號可信)
 - 0/N = broker 完全輪替（短線投機 / pattern reversal）
 
+**G. 精準時序匹配 — 跨 cell 一致性** (`match_broker_cells_consistent`, 2026-05-14 加入)
+
+舊的 `build_price_to_time_map` 只給「**該價位整體**」的成交平均時刻，跟「**該分點在該價位的成交**」可能差很多。實測 ground truth：第一員林 5/14 \$50.30 50 張實際 11:35:38 成交，舊算法估算 12:17 (差 42 分鐘)；\$50.40 30 張實際 11:36:12，估算 12:37 (差 61 分鐘)。
+
+新算法 — 4 層 fallback：
+
+1. **`build_tick_index(stock_code, date)`** — 從 FinMind 抓全部 ticks，建 `{price: [(time_min, vol_zhang), ...]}` index
+2. **`_cell_candidates(cell_vol, tick_list)`** — 對每個 BSR cell，枚舉所有「leading_block」候選 tick：vol 至少佔 cell_vol 70%、嚴格小於 cell_vol (因為 BSR cell 通常是「主要 block + 小量 cleanup」組合，不是單一 tick 與 cell 完全相等)
+3. **`match_broker_cells_consistent(cells, side, ticks_by_price)`** — 跨 cell 共聚 (cross-cell consistency)：
+   - **Anchor**：某 cell 有「明顯獨大」的 candidate，視為 anchor (high confidence)
+     - 單一 candidate
+     - 或 top vol ≥ 1.3× second vol
+     - 或同 vol 但 top cluster_span 寬 ≥ 5× → broker accumulation pattern
+       (寬 cluster = 主 block + 鄰近 cleanup 小單，比 isolated single tick 更像同分點)
+   - **Centroid**：所有 anchor 的 time 加權平均
+   - **Pull**：模糊 cell (多候選 / 無明顯獨大) 取最接近 centroid 的 candidate
+4. **Fallback** — 無 candidate 退到 `weighted` (price→time avg)
+
+`match_type` 標籤透露信心度，UI 顯示為 confidence badge：
+- ✅ `exact` — 單一 tick vol 完全等於 cell vol (僅小 cell)
+- 🎯+ `leading_block_consistent` — leading block + cross-cell anchor 一致
+- 🎯 `leading_block` — leading block 但無 anchor cross-check
+- 🔄 `window` — sliding window 多 ticks 和等於 cell vol
+- ≈ `weighted` — vol-weighted avg fallback
+
+**驗證**：第一員林 \$50.30 52張 → 11:36 ✓ / \$50.40 34張 → 11:36 ✓ (跟 ground truth 11:35:38 / 11:36:12 都 ±1 分鐘內)
+
 ### 滾動歷史 archive (chip_price_history)
 
 - 每次 `analyze()` 自動寫 `chip_price_history/{code}_{date}.json` (slim ~50-200 KB)
@@ -1197,8 +1224,32 @@ FINMIND_TOKEN=... python3 tw_chip_price.py 2313 --date 20260512 --no-fetch  # ca
 
 ### 限制與 caveat
 - **TWSE (上市)** 100% 支援；**TPEx (上櫃)** 透過 Playwright + Turnstile (~30 sec/檔，3491 已驗)
-- **tick data 估算時序是 proxy**：每個價位給 ONE volume-weighted avg time，同價位多時段成交時時間是中間值；30 min 的 wash gap 閾值已涵蓋此噪音
+- **tick data 估算時序是 proxy**：weighted-avg 算法易被尾盤大量成交拉偏；G 段的精準匹配對「主 block + cleanup」cell 有效，但對全分散小單 (e.g., 全部 1-3 張零散買) 退回 weighted (`match_type=weighted`)
 - **chip_price_history 需累積** — broker_monitor 18:00 cron 開始累積 (2026-05-13 上線)，**第 2 天起**有跨日軌跡，第 3+ 天起資料完整
 - CAPTCHA 解析靠 ddddocr，成功率 ~80% (失敗自動重試 10 次)
 - 主買區軌跡需 ≥ 1 日歷史；連續性 footer 需 ≥ 1 日歷史
 - FinMind tick data 需 sponsor 版 (有 token 即可)；失敗時自動 fallback 到 price-quartile 三階段 + net-based wash 判讀
+- **單一價位多 broker 同 vol coincidence** 在 G 段 cross-cell consistency 解之前是無解的：若該分點全部 cell 都缺乏 anchor (同 vol 多 candidates 而 cluster span 差不多)，centroid 無從建立 → 退回最大 vol candidate 當代表 (可能誤判)。這是公開資料 (BSR 沒分點 → tick mapping) 的根本上限
+
+### 未來改進 (TODO / wishlist)
+
+1. **分點行為 profile 跨檔聚合** — 同一 broker_id (e.g., 1480 高盛) 在 N 檔股票橫向看其行為一致性，建立 `broker_profile/{broker_id}.json` 持久檔案。可知該分點主要型態：定點主力 vs 散戶 vs algo vs 市場做市。當前每日分析孤立，不利累積長期 broker 知識。
+
+2. **G 段時序匹配的 self-correction** — 提供使用者「**自助校準介面**」(web UI add-on)：使用者輸入自己實際 trade 時間 → 工具存進 `chip_price_truth/{date}/{broker}/{price}.json` → 隔日演算法在計算 anchor 時把這些 known-truth point 當高權重 anchor。
+   現況：使用者只能口頭告訴我演算法錯了 → 我手動 reverse engineer 一次。理想：使用者點頁面輸入 → 工具下次自動更準。
+
+3. **Tick-level broker assignment via 多日累積 pattern** — 同一個 broker 通常有特定下單規模 + 時段偏好。多日 ticks 累積後，可以 cluster：哪些 ticks 屬於同一個 trader/algo？這需要 unsupervised learning (clustering on volume, time-of-day, follow-up pattern) — 大工程，但能突破 BSR 無 timestamps 的根本限制。
+
+4. **分點協同買進偵測 (broker chain coordination)** — 第一銀證在 6282 5/14 有 22 個分點同向買入 (合計 +180 張)，typical 主力借小分點群分散下單。可建立檢測：當同 broker prefix (e.g., 538*=第一銀，9800*=元大) 在同一檔多個分點同向總計超過閾值 → flag 為 coordinated。**已在 C 方案 D 點 backlog，今天還沒做**。
+
+5. **TPEx tick data 支援** — 目前 `TaiwanStockPriceTick` FinMind sponsor 含 TPEx (3491 等)，需驗證 ticks 結構是否一樣，並調整 build_tick_index 處理上櫃格式差異 (如果有)。
+
+6. **三階段分析跟 G 段 match_type 統一基底** — 三階段目前用 `price→time` weighted avg 來分配 row 到時段，跟新的 leading_block 邏輯不一致 (price→time 在 leading_block 看來會被拉偏)。應該讓三階段也用 G 段同樣的演算法，per-cell 確定時間後才 bucket。
+
+7. **wash candidates 信心度標籤** — 現在只判 ✅ 真洗盤 / ⚠ 追漲後出 / ⏱ 時序模糊，沒給 confidence。可加入：buy_match_type 跟 sell_match_type 兩邊都 `leading_block_consistent` → 高信心；任一邊 `weighted` → 中信心。
+
+8. **可指定多檔對照** — `/chip-price 2313+6282+3491` 同時查多檔，網頁顯示對比表 (e.g., 三檔的 高盛 today net 對比)。對「外資 同日反向 across 多檔」這種訊號有用。
+
+9. **歷史 tick data 持久化** — FinMind sponsor 每次抓 tick 都拉一次 (~3 秒)。可以在 18:00 cron backfill 時也 cache `tick_cache/{code}_{date}.json`，讓 web UI 查歷史日子瞬間返回 (現在歷史日 backfill 沒 cache tick)。
+
+10. **TLDR / executive summary section** — 報告 7 段內容資訊密度高，第一眼難消化。可加 section 0：「3 行判讀」(主力方向 / 量能信號 / wash 訊號)，給快速 decision-maker 用。剩 7 段詳細為 drill-down。
