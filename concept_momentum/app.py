@@ -356,10 +356,242 @@ def _render_report_html(data: dict) -> str:
     return "".join(parts)
 
 
+def _load_raw_bsr(code: str, date: str) -> list[dict]:
+    """Load the raw bsr_cache/{code}_{date}_prices.json (full per-(broker,
+    price) rows). Returns [] if missing."""
+    fp = os.path.join(REPO, "bsr_cache", f"{code}_{date}_prices.json")
+    if not os.path.exists(fp):
+        return []
+    try:
+        with open(fp) as f:
+            d = json.load(f)
+        return d.get("rows", [])
+    except Exception:
+        return []
+
+
+def _render_broker_drilldown(code: str, date: str, broker_query: str,
+                             ohlc: dict) -> str:
+    """Render a deep-dive section for one or more brokers matching
+    `broker_query` on stock `code` for `date`.
+
+    Match logic:
+      - exact broker_id (e.g. '5381')
+      - substring in broker_name (e.g. '員林' matches all branches with 員林)
+    """
+    import tw_chip_price
+    rows = _load_raw_bsr(code, date)
+    if not rows:
+        return (f'<section><h2>🔍 分點 "{_esc(broker_query)}" 深度</h2>'
+                f'<div class="empty">找不到 bsr_cache/{code}_{date}_prices.json，'
+                f'可能未 backfill。先按「即時抓取」會立刻 cache。</div></section>')
+
+    # Match brokers
+    q = broker_query.strip()
+    matched_ids: dict[str, dict] = {}
+    for r in rows:
+        if (r["broker_id"] == q
+                or q.lower() == r["broker_id"].lower()
+                or q in r["broker_name"]):
+            bid = r["broker_id"]
+            matched_ids.setdefault(bid, {
+                "broker_id": bid,
+                "broker_name": r["broker_name"],
+                "cells": [],
+            })
+            matched_ids[bid]["cells"].append({
+                "price": r["price"],
+                "buy": r["buy"],
+                "sell": r["sell"],
+            })
+    if not matched_ids:
+        return (f'<section><h2>🔍 分點 "{_esc(broker_query)}" 深度</h2>'
+                f'<div class="empty">找不到符合的分點。試「代號」(5381) 或「分行名稱」'
+                f'(員林、台南、信義 …)</div></section>')
+
+    # Build price→time map once (covers all matched brokers)
+    ptm = tw_chip_price.build_price_to_time_map(code, date)
+    day_low = ohlc.get("low", 0)
+    day_high = ohlc.get("high", 0)
+    rng = max(day_high - day_low, 0.01)
+
+    parts = [f'<section><h2>🔍 分點 "{_esc(broker_query)}" 深度 '
+              f'({len(matched_ids)} 個分點符合)</h2>']
+
+    # Group-level summary table if multiple branches matched
+    if len(matched_ids) > 1:
+        grouped_buy = sum(sum(c["buy"] for c in b["cells"])
+                          for b in matched_ids.values())
+        grouped_sell = sum(sum(c["sell"] for c in b["cells"])
+                           for b in matched_ids.values())
+        grouped_net = grouped_buy - grouped_sell
+        net_cls = "buy" if grouped_net > 0 else "sell"
+        parts.append('<h3>群組合計</h3>')
+        parts.append(
+            f'<p>共 {len(matched_ids)} 個分點，合計買 '
+            f'<span class="buy">+{_fmt_zhang(grouped_buy)}張</span> / 賣 '
+            f'<span class="sell">-{_fmt_zhang(grouped_sell)}張</span> / '
+            f'淨 <span class="{net_cls}">{"+" if grouped_net >= 0 else ""}'
+            f'{_fmt_zhang(grouped_net)}張</span></p>'
+        )
+
+    # Sort matched brokers by absolute net descending so big players first
+    sorted_brokers = sorted(
+        matched_ids.values(),
+        key=lambda b: -abs(sum(c["buy"] - c["sell"] for c in b["cells"])),
+    )
+
+    for b in sorted_brokers:
+        cells = b["cells"]
+        total_buy = sum(c["buy"] for c in cells)
+        total_sell = sum(c["sell"] for c in cells)
+        net = total_buy - total_sell
+        buy_value = sum(c["price"] * c["buy"] for c in cells)
+        sell_value = sum(c["price"] * c["sell"] for c in cells)
+        buy_avg = buy_value / total_buy if total_buy else 0
+        sell_avg = sell_value / total_sell if total_sell else 0
+        net_cls = "buy" if net > 0 else "sell"
+
+        # Adaptive bands
+        buy_band = tw_chip_price.adaptive_concentration_band(
+            cells, side="buy", day_low=day_low, day_high=day_high,
+            max_band_pct=0.25,
+        )
+        sell_band = tw_chip_price.adaptive_concentration_band(
+            cells, side="sell", day_low=day_low, day_high=day_high,
+            max_band_pct=0.25,
+        )
+
+        # Time estimates
+        buy_t = tw_chip_price.broker_time_estimate(cells, "buy", ptm) if ptm else None
+        sell_t = tw_chip_price.broker_time_estimate(cells, "sell", ptm) if ptm else None
+
+        # Wash score if both sides have activity
+        wash_html = ""
+        if total_buy > 0 and total_sell > 0:
+            wash_score = (sell_avg - buy_avg) / rng
+            time_pattern = ""
+            if buy_t is not None and sell_t is not None:
+                if buy_t - sell_t >= 30:
+                    time_pattern = "✅ 真洗盤低接 (先賣後買)"
+                elif sell_t - buy_t >= 30:
+                    time_pattern = "⚠ 追漲獲利出 (先買後賣)"
+                else:
+                    time_pattern = "⏱ 時序模糊"
+            sign = "+" if wash_score >= 0 else ""
+            wash_html = (
+                f'<p><b>🌀 高賣低買:</b> sell_avg ${sell_avg:.2f} − '
+                f'buy_avg ${buy_avg:.2f} = '
+                f'<b>{sign}${sell_avg - buy_avg:.2f}</b> '
+                f'(wash_score {wash_score:+.2f}); {time_pattern}</p>'
+            )
+
+        # Per-cell breakdown table
+        cell_rows = []
+        # Show all cells, sorted by total volume desc
+        sorted_cells = sorted(cells, key=lambda c: -(c["buy"] + c["sell"]))
+        for c in sorted_cells:
+            t = ptm.get(c["price"]) if ptm else None
+            t_str = tw_chip_price._minutes_to_hhmm(t) if t is not None else "?"
+            buy_html = (f'<span class="buy">+{_fmt_zhang(c["buy"])}</span>'
+                        if c["buy"] > 0 else "")
+            sell_html = (f'<span class="sell">-{_fmt_zhang(c["sell"])}</span>'
+                         if c["sell"] > 0 else "")
+            cell_rows.append(
+                f'<tr><td class="num">${c["price"]:.2f}</td>'
+                f'<td class="num">{buy_html}</td>'
+                f'<td class="num">{sell_html}</td>'
+                f'<td class="num small">~{t_str}</td></tr>'
+            )
+
+        # Band progression (cross-day)
+        prog_html = ""
+        if net != 0:
+            side = "buy" if net > 0 else "sell"
+            progression = tw_chip_price.broker_band_progression(
+                code, b["broker_id"], side=side, n_days=5,
+            )
+            past = [p for p in progression if p["date"] != date]
+            band_today = buy_band if side == "buy" else sell_band
+            if past or band_today:
+                arrows = []
+                for p in past:
+                    arrows.append(
+                        f'{p["date"][4:6]}/{p["date"][6:8]} '
+                        f'${p["low"]:.2f}~${p["high"]:.2f}'
+                    )
+                if band_today:
+                    arrows.append(
+                        f'{date[4:6]}/{date[6:8]} '
+                        f'${band_today["core_low"]:.2f}~'
+                        f'${band_today["core_high"]:.2f} (今)'
+                    )
+                if len(arrows) >= 2:
+                    lows = [p["low"] for p in past]
+                    if band_today:
+                        lows.append(band_today["core_low"])
+                    trend = ("📈 推升中" if lows[-1] > lows[0]
+                             else ("📉 下移" if lows[-1] < lows[0] else "➡ 盤整"))
+                    prog_html = (f'<p class="small"><b>跨日軌跡 ({trend}):</b> '
+                                 + ' → '.join(arrows) + '</p>')
+
+        # Render
+        parts.append(f'<h3>{_esc(b["broker_id"])} {_esc(b["broker_name"])}</h3>')
+        parts.append(
+            f'<p>淨 <span class="{net_cls}">{"+" if net >= 0 else ""}'
+            f'{_fmt_zhang(net)}張</span> '
+            f'(買 <span class="buy">+{_fmt_zhang(total_buy)}張</span> avg '
+            f'${buy_avg:.2f}'
+        )
+        if buy_t is not None:
+            parts.append(f' ~{tw_chip_price._minutes_to_hhmm(buy_t)}')
+        parts.append(
+            f' / 賣 <span class="sell">-{_fmt_zhang(total_sell)}張</span> avg '
+            f'${sell_avg:.2f}'
+        )
+        if sell_t is not None:
+            parts.append(f' ~{tw_chip_price._minutes_to_hhmm(sell_t)}')
+        parts.append(')</p>')
+
+        if buy_band and total_buy > 0:
+            parts.append(
+                f'<p><b>🎯 主買集中區:</b> ${buy_band["core_low"]:.2f}~'
+                f'${buy_band["core_high"]:.2f} '
+                f'(<span class="buy">+{_fmt_zhang(buy_band["core_volume"])}</span> 張, '
+                f'{buy_band["core_pct"]*100:.0f}% of buy)</p>'
+            )
+        if sell_band and total_sell > 0:
+            parts.append(
+                f'<p><b>🎯 主賣集中區:</b> ${sell_band["core_low"]:.2f}~'
+                f'${sell_band["core_high"]:.2f} '
+                f'(<span class="sell">-{_fmt_zhang(sell_band["core_volume"])}</span> 張, '
+                f'{sell_band["core_pct"]*100:.0f}% of sell)</p>'
+            )
+
+        if wash_html:
+            parts.append(wash_html)
+        if prog_html:
+            parts.append(prog_html)
+
+        # Per-cell table
+        parts.append(
+            '<table class="report-table"><thead><tr>'
+            '<th class="num">價位</th><th class="num">買 (張)</th>'
+            '<th class="num">賣 (張)</th><th class="num">~估算時間</th>'
+            '</tr></thead><tbody>'
+            + "".join(cell_rows) + '</tbody></table>'
+        )
+
+    parts.append('</section>')
+    return "".join(parts)
+
+
 def _render_chip_price_page(code: str | None = None,
                             data: dict | None = None,
                             source: str = "",
-                            error: str = "") -> str:
+                            error: str = "",
+                            broker_query: str = "",
+                            broker_html: str = "") -> str:
     """Render the chip-price form + optional result."""
     recent = _list_cached_history()[:30]
     recent_links = " &middot; ".join(
@@ -372,6 +604,7 @@ def _render_chip_price_page(code: str | None = None,
     if error:
         report_block = f'<div class="error">⚠ {html_lib.escape(error)}</div>'
     code_attr = html_lib.escape(code or "")
+    broker_attr = html_lib.escape(broker_query or "")
     source_block = (f'<div class="source">資料來源：{html_lib.escape(source)}</div>'
                     if source else "")
     return f"""<!DOCTYPE html>
@@ -458,14 +691,19 @@ def _render_chip_price_page(code: str | None = None,
   <label for="code">股票代號:</label>
   <input type="text" id="code" name="code" value="{code_attr}"
          placeholder="例: 2313" autofocus required>
+  <label for="broker">分點 (選填):</label>
+  <input type="text" id="broker" name="broker" value="{broker_attr}"
+         placeholder="例: 5381 或 員林" style="width:160px;">
   <button type="submit">查詢 (用快取)</button>
   <button type="submit" name="fresh" value="1" class="secondary">即時抓取 (5-15秒)</button>
 </form>
+<p class="small">💡 分點欄可輸入代號 (e.g. <code>5381</code>)、分行名稱 (e.g. <code>員林</code> = 所有 *員林 分行) 或銀行系名 (e.g. <code>第一</code> = 第一銀全系)</p>
 
 <div class="recent">📂 近期快取 (點擊直接看)：{recent_links}</div>
 
 {source_block}
 {report_block}
+{broker_html}
 </body>
 </html>"""
 
@@ -474,13 +712,23 @@ def _render_chip_price_page(code: str | None = None,
 def chip_price():
     code = (request.args.get("code") or "").strip()
     date = (request.args.get("date") or "").strip() or None
+    broker_query = (request.args.get("broker") or "").strip()
     force_fetch = request.args.get("fresh") == "1"
     if not code:
         return _render_chip_price_page()
     data, source = _load_or_run(code, date=date, force_fetch=force_fetch)
     if source.startswith("error:"):
-        return _render_chip_price_page(code=code, error=source[7:].strip())
-    return _render_chip_price_page(code=code, data=data, source=source)
+        return _render_chip_price_page(code=code, error=source[7:].strip(),
+                                        broker_query=broker_query)
+    broker_html = ""
+    if broker_query and data:
+        broker_html = _render_broker_drilldown(
+            code, data.get("date", date or ""), broker_query,
+            ohlc=data.get("ohlc", {}),
+        )
+    return _render_chip_price_page(code=code, data=data, source=source,
+                                    broker_query=broker_query,
+                                    broker_html=broker_html)
 
 
 if __name__ == "__main__":
