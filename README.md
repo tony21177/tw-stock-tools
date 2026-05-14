@@ -1193,7 +1193,16 @@ python3 -m patchright install chromium
 - 🔄 `window` — sliding window 多 ticks 和等於 cell vol
 - ≈ `weighted` — vol-weighted avg fallback
 
-**驗證**：第一員林 \$50.30 52張 → 11:36 ✓ / \$50.40 34張 → 11:36 ✓ (跟 ground truth 11:35:38 / 11:36:12 都 ±1 分鐘內)
+**驗證 3 個 ground truth case (2026-05-14)**：
+- 第一員林 \$50.30 52張 (50 張 single block + 2 cleanup) → ~11:36 ✓ (truth 11:35:38)
+- 第一員林 \$50.40 34張 (30 張 single block + 4 cleanup) → ~11:36 ✓ (truth 11:36:12)
+- 兆豐台南 \$50.60 37張 (30 張 main + 7 spread across 10:33-10:36) → ~10:33 ✓ (truth 10:32:50.502)
+
+**演算法原則 — cluster span 比 lead_vol 更能識別 broker**：
+- 真實 broker 主力 buy = lead block + 多個 cleanup small ticks 散布幾分鐘 (span 寬)
+- 別人剛好同 vol 單一筆 = isolated single tick (span 窄)
+- 當 2+ candidates 都 lead_pct >= 70% (都可疑)，**取 cluster_span_min DESC** 比 lead_vol DESC 準
+- 例：兆豐台南 5/14 \$50.60 37 張 — 候選 35張@10:28 (span 3s = 別人) vs 30張@10:33 (span 4min = 用戶) → 取 span 寬 ✓
 
 ### 滾動歷史 archive (chip_price_history)
 
