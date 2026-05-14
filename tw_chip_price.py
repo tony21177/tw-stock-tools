@@ -761,20 +761,28 @@ def _cell_candidates(cell_vol: int, tick_list: list[tuple[float, int]],
             "lead_pct": lead_v / cell_vol,
             "cluster_time": t_avg,
             "cluster_span_min": tick_list[right][0] - tick_list[left][0],
+            "tick_count": right - left + 1,
             "explained": tot_v / cell_vol,
         })
-    # Sort priority (ground-truth-validated 2026-05-14 against 兆豐台南
-    # 5/14 \$50.60 37張 case):
+    # Sort priority (ground-truth-validated 2026-05-14 across 4 cases):
     #
-    # When multiple candidates have lead_pct ≥ 70% (all plausible), prefer
-    # the candidate with WIDER cluster_span_min. Wide span = broker filled
-    # over many ticks with small cleanups → broker accumulation pattern.
-    # Narrow span = isolated single tick that happens to match cell vol →
-    # likely another broker's coincidence.
+    # When ≥2 candidates have lead_pct ≥ 70%, prefer wider cluster_span_min
+    # (broker accumulation pattern — lead + cleanup over time, vs another
+    # broker's isolated coincidental same-vol tick).
     #
-    # When all candidates have lead_pct < 70% (scattered cell with no
-    # dominant tick), revert to lead_vol DESC since span doesn't carry the
-    # same signal.
+    # 3 / 4 ground-truth cases pass:
+    #   ✅ 第一員林 \$50.30 52張 — 50張 span 14s wins over 51張 span 0s
+    #   ✅ 第一員林 \$50.40 34張 — 30張 span 35s wins
+    #   ✅ 兆豐台南 \$50.60 37張 — 30張 span 4 min wins over 35張 span 3s
+    #
+    # Known limitation:
+    #   ❌ 兆豐台南 \$50.20  8張 — user did 4張 + 4×1張 in 4 SECONDS (compact);
+    #      max single broker block = 4張 = 50% of cell (below 70%
+    #      threshold for high-confidence bucket), and even at 50% threshold
+    #      the span (4s) doesn't dominate other broker's 7張+1 span (7s).
+    #      → Algorithm cannot disambiguate when broker fills in micro-burst
+    #      that's indistinguishable from other brokers' similar bursts.
+    #      Surfaced as `is_scattered=True` in result. User sees alternatives.
     high_pct = [c for c in cands if c["lead_pct"] >= 0.7]
     low_pct = [c for c in cands if c["lead_pct"] < 0.7]
     high_pct.sort(key=lambda c: (-c["cluster_span_min"], -c["lead_vol"]))
