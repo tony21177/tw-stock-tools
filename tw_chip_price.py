@@ -763,12 +763,23 @@ def _cell_candidates(cell_vol: int, tick_list: list[tuple[float, int]],
             "cluster_span_min": tick_list[right][0] - tick_list[left][0],
             "explained": tot_v / cell_vol,
         })
-    # Primary sort by lead_vol desc, secondary by cluster_span_min DESC.
-    # Wider span = more cleanup ticks around the lead = more like a single
-    # broker's accumulation pattern. Isolated single ticks (span=0) are
-    # often other brokers' coincidental same-vol trades.
-    cands.sort(key=lambda c: (-c["lead_vol"], -c["cluster_span_min"]))
-    return cands
+    # Sort priority (ground-truth-validated 2026-05-14 against 兆豐台南
+    # 5/14 \$50.60 37張 case):
+    #
+    # When multiple candidates have lead_pct ≥ 70% (all plausible), prefer
+    # the candidate with WIDER cluster_span_min. Wide span = broker filled
+    # over many ticks with small cleanups → broker accumulation pattern.
+    # Narrow span = isolated single tick that happens to match cell vol →
+    # likely another broker's coincidence.
+    #
+    # When all candidates have lead_pct < 70% (scattered cell with no
+    # dominant tick), revert to lead_vol DESC since span doesn't carry the
+    # same signal.
+    high_pct = [c for c in cands if c["lead_pct"] >= 0.7]
+    low_pct = [c for c in cands if c["lead_pct"] < 0.7]
+    high_pct.sort(key=lambda c: (-c["cluster_span_min"], -c["lead_vol"]))
+    low_pct.sort(key=lambda c: (-c["lead_vol"], -c["cluster_span_min"]))
+    return high_pct + low_pct
 
 
 def match_broker_cells_consistent(
@@ -849,6 +860,28 @@ def match_broker_cells_consistent(
             if picked["lead_vol"] >= 0.85 * top["lead_vol"]:
                 # Cross-cell consistency selected a near-top candidate
                 pass
+        # Also surface up to 2 alternative candidates (different times from
+        # the primary pick) so the UI can show "OR ~XX:XX" when ambiguity is
+        # real. Each alt: {time_min, lead_vol, lead_pct, cluster_span_min}.
+        alts = []
+        for cd in cands:
+            if cd is picked:
+                continue
+            if abs(cd["cluster_time"] - picked["cluster_time"]) < 5:
+                # Same time window as picked — not a meaningful alternative
+                continue
+            alts.append({
+                "time_min": cd["cluster_time"],
+                "lead_vol": cd["lead_vol"],
+                "lead_pct": cd["lead_pct"],
+                "cluster_span_min": cd["cluster_span_min"],
+            })
+            if len(alts) >= 2:
+                break
+        # Detect "scattered" pattern: no candidate has lead_vol ≥ 50% of cell
+        # (broker likely did many small ticks, no dominant block)
+        max_lead_pct = max(c["lead_pct"] for c in cands) if cands else 0
+        is_scattered = max_lead_pct < 0.5
         results[price] = {
             "time_min": picked["cluster_time"],
             "match_type": ("leading_block_consistent"
@@ -858,6 +891,8 @@ def match_broker_cells_consistent(
             "lead_pct": picked["lead_pct"],
             "cluster_span_min": picked["cluster_span_min"],
             "n_candidates": len(cands),
+            "alternatives": alts,
+            "is_scattered": is_scattered,
         }
     return results
 

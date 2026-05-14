@@ -524,9 +524,6 @@ def _render_broker_drilldown(code: str, date: str, broker_query: str,
         # Show all cells, sorted by total volume desc
         sorted_cells = sorted(cells, key=lambda c: -(c["buy"] + c["sell"]))
         for c in sorted_cells:
-            # Per-cell match-based time (preferred) with confidence label;
-            # fall back to weighted-avg if no leading-block found.
-            # Buy + sell can each have a separate match.
             buy_match = buy_matches.get(c["price"]) if c["buy"] > 0 else None
             sell_match = sell_matches.get(c["price"]) if c["sell"] > 0 else None
             primary_match = buy_match or sell_match
@@ -541,7 +538,22 @@ def _render_broker_drilldown(code: str, date: str, broker_query: str,
                     "window": "🔄",
                     "weighted": "≈",
                 }.get(mt, "?")
-                t_html = f'~{t_str} <small>{confidence}</small>'
+                # Build alternative-candidates suffix
+                alts = primary_match.get("alternatives") or []
+                alt_html = ""
+                if alts:
+                    alt_parts = [
+                        f"~{tw_chip_price._minutes_to_hhmm(a['time_min'])} "
+                        f"(lead {a['lead_vol']}張)"
+                        for a in alts
+                    ]
+                    alt_html = (f'<br><small class="muted">OR '
+                                + " / ".join(alt_parts) + '</small>')
+                # Scattered flag
+                if primary_match.get("is_scattered"):
+                    alt_html += ('<br><small class="warn">⚠ scattered: '
+                                  '無 dominant tick，多筆小單估算誤差大</small>')
+                t_html = f'~{t_str} <small>{confidence}</small>{alt_html}'
             else:
                 t = ptm.get(c["price"]) if ptm else None
                 t_str = tw_chip_price._minutes_to_hhmm(t) if t is not None else "?"
