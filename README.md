@@ -1172,11 +1172,13 @@ python3 -m patchright install chromium
   - 解決「間歇大量」盲點：broker 可能間隔幾天才買、但單日量很大也能主控走勢
   - 出現天數 ≤ 40% × N 標 ⚡ 間歇大量
   - 排序：純按 abs(total_net) 降序（規模優先）
-  - **2026-05-15 更新**：window **includes today**（若今日 BSR 已公布）；視窗 label 顯示「近 N+1 日 (含今日 MM/DD)」或「近 N 日 (今日數據未公布)」
-- **Section C** 今日 Top 3 之 N+1 日累積指紋
-  - 每位今日 Top 3：顯示「今日量 + 前 N 日累積 = N+1 日累積 + 歷史最大日」
-  - 若今日 |量| / N+1 日累積 ≥ 60% → 標 burst (今佔大半)
+  - **2026-05-15 改用 bsr_cache 全資料**（800+ 分點/日，非只 top 5），window 預設 5 日 = 1 trading week
+  - Window 自動 include today (若今日 BSR 已公布)，視窗 label 顯示「近 5 日 (含今日 MM/DD)」或「近 N 日 (今日數據未公布)」
+- **Section C** 今日 Top 3 之 N 日累積指紋
+  - 每位今日 Top 3：顯示「今日量 + 前 N-1 日累積 = N 日累積 + 歷史最大日」
+  - 若今日 |量| / N 日累積 ≥ 60% → 標 burst (今佔大半)
   - 區分「穩定大戶」(burst 0) vs 「今日 burst 進場」(burst 1)
+  - 同樣讀 bsr_cache，能 catch chip_price_history top 5 漏掉的中量 broker
 
 **G. 精準時序匹配 — 跨 cell 一致性** (`match_broker_cells_consistent`, 2026-05-14 加入)
 

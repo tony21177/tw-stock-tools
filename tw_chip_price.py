@@ -1396,7 +1396,8 @@ def load_history(stock_code: str, days: int = HISTORY_KEEP_DAYS,
 
 
 def _aggregate_broker_history(history: list[dict]) -> dict[str, dict]:
-    """Aggregate per-broker net activity over the historical window.
+    """Aggregate per-broker net activity over the historical window
+    (fingerprint-based, top 5 only). Kept as fallback when bsr_cache missing.
 
     For each broker appearing in any day's `fingerprint.top_buyers` or
     `top_sellers`, sums net_shares across days and tracks days_appeared +
@@ -1427,6 +1428,65 @@ def _aggregate_broker_history(history: list[dict]) -> dict[str, dict]:
     return agg
 
 
+def _aggregate_broker_full_bsr(stock_code: str, dates: list[str]) -> dict[str, dict]:
+    """Aggregate per-broker net across `dates` from raw bsr_cache (all 800+
+    brokers per day, not just top 5). Replaces fingerprint-based aggregation
+    when bsr_cache is available — gives complete picture for 連續性 section.
+
+    Each bsr_cache/{stock_code}_{date}.json has {brokers: {bid: {name, buy, sell}}}
+    in 股 units. Returns same shape as _aggregate_broker_history.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    bsr_dir = os.path.join(here, "bsr_cache")
+    agg: dict[str, dict] = {}
+    for date in dates:
+        fp = os.path.join(bsr_dir, f"{stock_code}_{date}.json")
+        if not os.path.exists(fp):
+            continue
+        try:
+            with open(fp) as f:
+                d = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+        for bid, info in d.get("brokers", {}).items():
+            net = info.get("buy", 0) - info.get("sell", 0)
+            if net == 0:
+                continue
+            rec = agg.setdefault(bid, {
+                "broker_id": bid,
+                "broker_name": info.get("name", bid),
+                "total_net": 0,
+                "days_appeared": 0,
+                "max_day_net": 0,
+                "max_day_date": "",
+            })
+            rec["total_net"] += net
+            rec["days_appeared"] += 1
+            if abs(net) > abs(rec["max_day_net"]):
+                rec["max_day_net"] = net
+                rec["max_day_date"] = date
+    return agg
+
+
+def _list_bsr_cache_dates(stock_code: str, max_days: int = 30) -> list[str]:
+    """Return up to `max_days` most-recent bsr_cache dates for stock_code,
+    sorted desc (newest first). Excludes _prices.json files.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    bsr_dir = os.path.join(here, "bsr_cache")
+    import glob as _glob
+    files = _glob.glob(os.path.join(bsr_dir, f"{stock_code}_*.json"))
+    dates = []
+    for f in files:
+        name = os.path.basename(f).replace(f"{stock_code}_", "").replace(".json", "")
+        if "_" in name:  # skip _prices.json
+            continue
+        if len(name) == 8 and name.isdigit():
+            dates.append(name)
+    dates.sort(reverse=True)
+    return dates[:max_days]
+
+
 def _format_continuity(data: dict, days: int = 5) -> list[str]:
     """Return a 連續性 footer with three views of historical activity:
 
@@ -1436,22 +1496,37 @@ def _format_continuity(data: dict, days: int = 5) -> list[str]:
     3. Today's Top 3 N-day fingerprint (new) — for each of today's leaders,
        show their past N-day cumulative + biggest single-day, with `burst`
        tag if today alone is ≥60% of their full window activity
-    """
-    history = load_history(data["stock_code"], days=days + 1)
-    today_date = data.get("date", "")
-    history = [h for h in history if h.get("date") and h["date"] != today_date]
 
+    `days` is the TOTAL number of trading days in the window, including
+    today when BSR is published. So days=5 means 1 trading week (Mon-Fri).
+    """
+    stock_code = data["stock_code"]
+    today_date = data.get("date", "")
     today_buyers = data["fingerprint"]["top_buyers"][:3]
     today_sellers = data["fingerprint"]["top_sellers"][:3]
     today_has_data = bool(today_buyers or today_sellers)
-    if not history and not today_has_data:
+
+    # Pick the `days` most-recent trading days from bsr_cache (the canonical
+    # source — bsr_cache has more history than chip_price_history).
+    available_dates = _list_bsr_cache_dates(stock_code, max_days=days * 2)
+    if today_has_data and today_date and today_date not in available_dates:
+        available_dates = sorted([today_date] + available_dates, reverse=True)
+    window_dates = available_dates[:days]
+    history_dates = [d for d in window_dates if d != today_date]
+
+    # Also pull fingerprint history for Section A hit-rate (needs per-day Top 3)
+    history_fp = load_history(stock_code, days=days)
+    history_fp = [h for h in history_fp
+                  if h.get("date") and h["date"] in history_dates]
+
+    if not window_dates:
         return []
     today_buyer_ids = [b["broker_id"] for b in today_buyers]
     today_seller_ids = [s["broker_id"] for s in today_sellers]
 
     buyer_counts: dict[str, int] = {}
     seller_counts: dict[str, int] = {}
-    for h in history:
+    for h in history_fp:
         fp = h.get("fingerprint", {})
         past_buyers = [b["broker_id"] for b in fp.get("top_buyers", [])[:3]]
         past_sellers = [s["broker_id"] for s in fp.get("top_sellers", [])[:3]]
@@ -1465,7 +1540,7 @@ def _format_continuity(data: dict, days: int = 5) -> list[str]:
     name_for = {b["broker_id"]: b["broker_name"] for b in today_buyers}
     name_for.update({s["broker_id"]: s["broker_name"] for s in today_sellers})
 
-    n_history = len(history)
+    n_history = len(history_dates)
     lines = [f"【📅 近 {n_history} 個交易日連續性 (今日除外)】"]
 
     # === Section A: Top 3 hit count (existing) ===
@@ -1483,11 +1558,12 @@ def _format_continuity(data: dict, days: int = 5) -> list[str]:
         lines.append(f"  🔴 今日 Top 3 賣方歷史 Top 3 命中: {' / '.join(parts)}")
 
     # === Section B: N-day cumulative ranking (NEW) ===
-    # Include today's published data when available (user feedback 2026-05-15:
-    # 連續性要包含今天，only exclude today when BSR not yet published).
-    agg_window = history + ([data] if today_has_data else [])
-    n_window = len(agg_window)
-    agg = _aggregate_broker_history(agg_window)
+    # Read from bsr_cache (full per-broker, all 800+ per day) for richer
+    # cumulative ranking. Includes today when BSR is published (per user
+    # feedback 2026-05-15: 連續性要包含今天，only exclude today when BSR
+    # not yet published).
+    agg = _aggregate_broker_full_bsr(stock_code, window_dates)
+    n_window = len(window_dates)
     # Burst threshold: 出現天數 ≤ 40% of window (rounded down, min 1) =「間歇大量」
     intermittent_threshold = max(1, int(n_window * 0.4))
     buyers_ranked = sorted(
