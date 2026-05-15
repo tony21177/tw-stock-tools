@@ -1130,7 +1130,7 @@ python3 -m patchright install chromium
 3. **⏰ 三階段分析** — 早盤/盤中/尾盤各方主力 + 主賣方。**有 FinMind tick data 時用實際時間切分** (09:00-10:08 / 10:08-12:22 / 12:22-13:30)；無 tick 時 fallback 到價格 quartile heuristic
 4. **🎯 Top 5 買超分點價格指紋** — 每分點 avg、範圍、**adaptive 主買集中區** (自動選最緊密 70%-30% threshold，cap 25% of day range)、Top 3 買價、**📈 主買區軌跡** (跨日 band 移動：推升中/下移/盤整)
 5. **🎯 Top 5 賣超分點價格指紋** — 同上但賣方
-6. **🌀 高賣低買 — 同分點兩面操作 (洗盤低接)** — 偵測同分點當日 sell_avg > buy_avg 模式 (wash_score)，**有 tick data 時加 buy_time/sell_time 時序分類**：✅ 真洗盤低接 (先賣後買) / ⚠ 追漲獲利出 (先買後賣) / ⏱ 時序模糊
+6. **🌀 高賣低買 — 同分點兩面操作 (洗盤低接)** — 偵測同分點當日 sell_avg > buy_avg 模式 (wash_score)，**有 tick data 時加 buy_time/sell_time 時序分類**：✅ 真洗盤低接 (先賣後買) / ⚠ 追漲獲利出 (先買後賣) / ⏱ 時序模糊。**2026-05-15 補：每筆 wash 候選額外輸出主賣集中區 + 主買集中區 + Top 3 賣價 + Top 3 買價（與 Top 5 買超/賣超 section 對稱）**，方便對照同分點高賣 vs 低買的具體成交價分布。
 7. **📅 連續性** — 今日 Top 3 買賣方在近 N 日 Top 3 命中次數
 
 ### 核心分析 pattern (2026-05-13 完整版)

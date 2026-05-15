@@ -992,6 +992,7 @@ def broker_wash_candidates(rows: list[dict], day_low: float, day_high: float,
             "sell_avg": round(sell_avg, 2),
             "wash_score": wash_score,
             "price_gap": round(sell_avg - buy_avg, 2),
+            "cells": b["_cells"],
         }
         # Time-based classification — needs tick data
         if price_to_time:
@@ -1286,6 +1287,8 @@ def format_report(data: dict) -> str:
                 f"    → 高賣低買差 +${w['price_gap']:.2f} "
                 f"({pct_of_range:.0f}% of 全日範圍)，{net_str} {interpret}"
             )
+            _emit_broker_detail(w, "sell")
+            _emit_broker_detail(w, "buy")
 
     # Continuity footer — pull recent history (default 5 trading days)
     continuity = _format_continuity(data, days=5)
