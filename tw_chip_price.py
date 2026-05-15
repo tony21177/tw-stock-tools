@@ -1347,12 +1347,47 @@ def load_history(stock_code: str, days: int = HISTORY_KEEP_DAYS,
     return out
 
 
-def _format_continuity(data: dict, days: int = 5) -> list[str]:
-    """Return a 連續性 footer comparing today's top buyers/sellers to history.
+def _aggregate_broker_history(history: list[dict]) -> dict[str, dict]:
+    """Aggregate per-broker net activity over the historical window.
 
-    For each of today's Top 3 buyers and sellers, counts how many of the past
-    `days` trading days they appeared in that day's Top 3 (same side). Empty
-    list if no usable history.
+    For each broker appearing in any day's `fingerprint.top_buyers` or
+    `top_sellers`, sums net_shares across days and tracks days_appeared +
+    biggest single-day move. A broker who appeared infrequently but with
+    large size will rank high by total_net even with low days_appeared —
+    this captures the 「間歇式大量」main-controller pattern that pure
+    hit-count continuity misses.
+    """
+    agg: dict[str, dict] = {}
+    for h in history:
+        date = h.get("date", "")
+        fp = h.get("fingerprint", {})
+        for b in fp.get("top_buyers", []) + fp.get("top_sellers", []):
+            bid = b["broker_id"]
+            rec = agg.setdefault(bid, {
+                "broker_id": bid,
+                "broker_name": b["broker_name"],
+                "total_net": 0,
+                "days_appeared": 0,
+                "max_day_net": 0,
+                "max_day_date": "",
+            })
+            rec["total_net"] += b["net_shares"]
+            rec["days_appeared"] += 1
+            if abs(b["net_shares"]) > abs(rec["max_day_net"]):
+                rec["max_day_net"] = b["net_shares"]
+                rec["max_day_date"] = date
+    return agg
+
+
+def _format_continuity(data: dict, days: int = 5) -> list[str]:
+    """Return a 連續性 footer with three views of historical activity:
+
+    1. Top 3 hit-count (existing) — who consistently makes today's Top 3
+    2. N-day cumulative ranking (new) — top accumulators regardless of
+       consistency, with ⚡ marker for 間歇大量 (≤40% days but ranked top)
+    3. Today's Top 3 N-day fingerprint (new) — for each of today's leaders,
+       show their past N-day cumulative + biggest single-day, with `burst`
+       tag if today alone is ≥60% of their full window activity
     """
     history = load_history(data["stock_code"], days=days + 1)
     today_date = data.get("date", "")
@@ -1383,6 +1418,8 @@ def _format_continuity(data: dict, days: int = 5) -> list[str]:
 
     n_history = len(history)
     lines = [f"【📅 近 {n_history} 個交易日連續性 (今日除外)】"]
+
+    # === Section A: Top 3 hit count (existing) ===
     if today_buyer_ids:
         parts = [
             f"{name_for.get(bid, bid)} {buyer_counts.get(bid, 0)}/{n_history}"
@@ -1395,6 +1432,79 @@ def _format_continuity(data: dict, days: int = 5) -> list[str]:
             for sid in today_seller_ids
         ]
         lines.append(f"  🔴 今日 Top 3 賣方歷史 Top 3 命中: {' / '.join(parts)}")
+
+    # === Section B: N-day cumulative ranking (NEW) ===
+    agg = _aggregate_broker_history(history)
+    # Burst threshold: 出現天數 ≤ 40% of window (rounded down, min 1) =「間歇大量」
+    intermittent_threshold = max(1, int(n_history * 0.4))
+    buyers_ranked = sorted(
+        [r for r in agg.values() if r["total_net"] > 0],
+        key=lambda r: -r["total_net"],
+    )[:5]
+    sellers_ranked = sorted(
+        [r for r in agg.values() if r["total_net"] < 0],
+        key=lambda r: r["total_net"],
+    )[:5]
+    if buyers_ranked or sellers_ranked:
+        lines.append("")
+        lines.append(f"【💰 近 {n_history} 日累積淨買/賣 Top 5】(含間歇大量)")
+    def _signed_z(shares: int) -> str:
+        """Always sign-prefix 張 — handles negative naturally via format spec."""
+        return f"{int(shares / 1000):+,}"
+
+    if buyers_ranked:
+        lines.append("  🟢 累積買方 (不限今日 Top 3)")
+        for r in buyers_ranked:
+            tag = " ⚡ 間歇大量" if r["days_appeared"] <= intermittent_threshold else ""
+            md = r["max_day_date"]
+            md_short = f"{md[4:6]}/{md[6:8]}" if len(md) == 8 else md
+            lines.append(
+                f"    {r['broker_name']} {_signed_z(r['total_net'])}張  "
+                f"出現 {r['days_appeared']}/{n_history} 天  "
+                f"最大日 {md_short} {_signed_z(r['max_day_net'])}{tag}"
+            )
+    if sellers_ranked:
+        lines.append("  🔴 累積賣方 (不限今日 Top 3)")
+        for r in sellers_ranked:
+            tag = " ⚡ 間歇大量" if r["days_appeared"] <= intermittent_threshold else ""
+            md = r["max_day_date"]
+            md_short = f"{md[4:6]}/{md[6:8]}" if len(md) == 8 else md
+            lines.append(
+                f"    {r['broker_name']} {_signed_z(r['total_net'])}張  "
+                f"出現 {r['days_appeared']}/{n_history} 天  "
+                f"最大日 {md_short} {_signed_z(r['max_day_net'])}{tag}"
+            )
+
+    # === Section C: Today's Top 3 N-day fingerprint (NEW) ===
+    today_leaders = [(b, "buy") for b in today_buyers] + \
+                    [(s, "sell") for s in today_sellers]
+    if today_leaders:
+        lines.append("")
+        lines.append(f"【⚡ 今日 Top 3 之 {n_history} 日累積指紋】")
+        for b, side in today_leaders:
+            bid = b["broker_id"]
+            today_net = b["net_shares"]
+            emoji = "🟢" if side == "buy" else "🔴"
+            rec = agg.get(bid)
+            if rec is None:
+                lines.append(
+                    f"  {emoji} {b['broker_name']}: 今 {_signed_z(today_net)}張，"
+                    f"前 {n_history} 日未進 Top 5 → 新進場"
+                )
+            else:
+                full_total = rec["total_net"] + today_net
+                today_pct = (abs(today_net) / max(abs(full_total), 1)) * 100
+                burst = " ← burst (今佔大半)" if today_pct >= 60 else ""
+                md = rec["max_day_date"]
+                md_short = f"{md[4:6]}/{md[6:8]}" if len(md) == 8 else md
+                lines.append(
+                    f"  {emoji} {b['broker_name']}: 今 {_signed_z(today_net)}張 + "
+                    f"前 {rec['days_appeared']}/{n_history} 天 "
+                    f"{_signed_z(rec['total_net'])}張 "
+                    f"(歷史最大日 {md_short} "
+                    f"{_signed_z(rec['max_day_net'])}){burst}"
+                )
+
     return lines
 
 

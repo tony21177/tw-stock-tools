@@ -1131,7 +1131,7 @@ python3 -m patchright install chromium
 4. **🎯 Top 5 買超分點價格指紋** — 每分點 avg、範圍、**adaptive 主買集中區** (自動選最緊密 70%-30% threshold，cap 25% of day range)、Top 3 買價、**📈 主買區軌跡** (跨日 band 移動：推升中/下移/盤整)
 5. **🎯 Top 5 賣超分點價格指紋** — 同上但賣方
 6. **🌀 高賣低買 — 同分點兩面操作 (洗盤低接)** — 偵測同分點當日 sell_avg > buy_avg 模式 (wash_score)，**有 tick data 時加 buy_time/sell_time 時序分類**：✅ 真洗盤低接 (先賣後買) / ⚠ 追漲獲利出 (先買後賣) / ⏱ 時序模糊。**2026-05-15 補：每筆 wash 候選額外輸出主賣集中區 + 主買集中區 + Top 3 賣價 + Top 3 買價（與 Top 5 買超/賣超 section 對稱）**，方便對照同分點高賣 vs 低買的具體成交價分布。
-7. **📅 連續性** — 今日 Top 3 買賣方在近 N 日 Top 3 命中次數
+7. **📅 連續性 (三層 view)** — (A) 今日 Top 3 買賣方在近 N 日 Top 3 命中次數；(B) **2026-05-15 加：近 N 日累積淨買/賣 Top 5**（不限今日 Top 3，捕捉「間歇式大量」主控分點；出現天數 ≤ 40% N 標記 ⚡ 間歇大量）；(C) **2026-05-15 加：今日 Top 3 之 N 日累積指紋**（顯示今日量 + 前 N 日累積 + 歷史最大日；若今日量 ≥ 60% 總量標記 burst）
 
 ### 核心分析 pattern (2026-05-13 完整版)
 
@@ -1163,10 +1163,18 @@ python3 -m patchright install chromium
 - 比舊版「價格 quartile 當時間 proxy」可信，能偵測**同分點日內方向反轉**
 - e.g. 2313 5/13: 元大早盤 -5,251 → 尾盤 +439 (借勢洗盤)
 
-**F. 連續性 footer** (`_format_continuity`)
-- 今日 Top 3 買賣方在近 N 日歷史 Top 3 命中次數
-- 高命中 = 持續主導 (信號可信)
-- 0/N = broker 完全輪替（短線投機 / pattern reversal）
+**F. 連續性 footer** (`_format_continuity` + `_aggregate_broker_history`, 2026-05-15 重構)
+- **Section A** 今日 Top 3 買賣方在近 N 日歷史 Top 3 命中次數
+  - 高命中 = 持續主導 (信號可信)
+  - 0/N = broker 完全輪替（短線投機 / pattern reversal）
+- **Section B** 近 N 日累積淨買/賣 Top 5（不限今日 Top 3）
+  - 解決「間歇大量」盲點：broker 可能間隔幾天才買、但單日量很大也能主控走勢
+  - 出現天數 ≤ 40% × N 標 ⚡ 間歇大量
+  - 排序：純按 abs(total_net) 降序（規模優先）
+- **Section C** 今日 Top 3 之 N 日累積指紋
+  - 每位今日 Top 3：顯示「今日量 + 前 N 日累積 + 歷史最大日」
+  - 若今日 |量| / (今+前 N 日累積) ≥ 60% → 標 burst (今佔大半)
+  - 區分「穩定大戶」(burst 0) vs 「今日 burst 進場」(burst 1)
 
 **G. 精準時序匹配 — 跨 cell 一致性** (`match_broker_cells_consistent`, 2026-05-14 加入)
 
