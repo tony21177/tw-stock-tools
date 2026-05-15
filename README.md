@@ -1167,13 +1167,15 @@ python3 -m patchright install chromium
 - **Section A** 今日 Top 3 買賣方在近 N 日歷史 Top 3 命中次數
   - 高命中 = 持續主導 (信號可信)
   - 0/N = broker 完全輪替（短線投機 / pattern reversal）
+  - 設計上 **excludes today**（hit rate 對照基準）
 - **Section B** 近 N 日累積淨買/賣 Top 5（不限今日 Top 3）
   - 解決「間歇大量」盲點：broker 可能間隔幾天才買、但單日量很大也能主控走勢
   - 出現天數 ≤ 40% × N 標 ⚡ 間歇大量
   - 排序：純按 abs(total_net) 降序（規模優先）
-- **Section C** 今日 Top 3 之 N 日累積指紋
-  - 每位今日 Top 3：顯示「今日量 + 前 N 日累積 + 歷史最大日」
-  - 若今日 |量| / (今+前 N 日累積) ≥ 60% → 標 burst (今佔大半)
+  - **2026-05-15 更新**：window **includes today**（若今日 BSR 已公布）；視窗 label 顯示「近 N+1 日 (含今日 MM/DD)」或「近 N 日 (今日數據未公布)」
+- **Section C** 今日 Top 3 之 N+1 日累積指紋
+  - 每位今日 Top 3：顯示「今日量 + 前 N 日累積 = N+1 日累積 + 歷史最大日」
+  - 若今日 |量| / N+1 日累積 ≥ 60% → 標 burst (今佔大半)
   - 區分「穩定大戶」(burst 0) vs 「今日 burst 進場」(burst 1)
 
 **G. 精準時序匹配 — 跨 cell 一致性** (`match_broker_cells_consistent`, 2026-05-14 加入)

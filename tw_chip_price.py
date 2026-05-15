@@ -1440,11 +1440,12 @@ def _format_continuity(data: dict, days: int = 5) -> list[str]:
     history = load_history(data["stock_code"], days=days + 1)
     today_date = data.get("date", "")
     history = [h for h in history if h.get("date") and h["date"] != today_date]
-    if not history:
-        return []
 
     today_buyers = data["fingerprint"]["top_buyers"][:3]
     today_sellers = data["fingerprint"]["top_sellers"][:3]
+    today_has_data = bool(today_buyers or today_sellers)
+    if not history and not today_has_data:
+        return []
     today_buyer_ids = [b["broker_id"] for b in today_buyers]
     today_seller_ids = [s["broker_id"] for s in today_sellers]
 
@@ -1482,9 +1483,13 @@ def _format_continuity(data: dict, days: int = 5) -> list[str]:
         lines.append(f"  🔴 今日 Top 3 賣方歷史 Top 3 命中: {' / '.join(parts)}")
 
     # === Section B: N-day cumulative ranking (NEW) ===
-    agg = _aggregate_broker_history(history)
+    # Include today's published data when available (user feedback 2026-05-15:
+    # 連續性要包含今天，only exclude today when BSR not yet published).
+    agg_window = history + ([data] if today_has_data else [])
+    n_window = len(agg_window)
+    agg = _aggregate_broker_history(agg_window)
     # Burst threshold: 出現天數 ≤ 40% of window (rounded down, min 1) =「間歇大量」
-    intermittent_threshold = max(1, int(n_history * 0.4))
+    intermittent_threshold = max(1, int(n_window * 0.4))
     buyers_ranked = sorted(
         [r for r in agg.values() if r["total_net"] > 0],
         key=lambda r: -r["total_net"],
@@ -1493,9 +1498,12 @@ def _format_continuity(data: dict, days: int = 5) -> list[str]:
         [r for r in agg.values() if r["total_net"] < 0],
         key=lambda r: r["total_net"],
     )[:5]
+    window_label = (f"近 {n_window} 日 (含今日 {today_date[4:6]}/{today_date[6:8]})"
+                    if today_has_data
+                    else f"近 {n_history} 日 (今日數據未公布)")
     if buyers_ranked or sellers_ranked:
         lines.append("")
-        lines.append(f"【💰 近 {n_history} 日累積淨買/賣 Top 5】(含間歇大量)")
+        lines.append(f"【💰 {window_label} 累積淨買/賣 Top 5】(含間歇大量)")
     def _signed_z(shares: int) -> str:
         """Always sign-prefix 張 — handles negative naturally via format spec."""
         return f"{int(shares / 1000):+,}"
@@ -1508,7 +1516,7 @@ def _format_continuity(data: dict, days: int = 5) -> list[str]:
             md_short = f"{md[4:6]}/{md[6:8]}" if len(md) == 8 else md
             lines.append(
                 f"    {r['broker_name']} {_signed_z(r['total_net'])}張  "
-                f"出現 {r['days_appeared']}/{n_history} 天  "
+                f"出現 {r['days_appeared']}/{n_window} 天  "
                 f"最大日 {md_short} {_signed_z(r['max_day_net'])}{tag}"
             )
     if sellers_ranked:
@@ -1519,16 +1527,19 @@ def _format_continuity(data: dict, days: int = 5) -> list[str]:
             md_short = f"{md[4:6]}/{md[6:8]}" if len(md) == 8 else md
             lines.append(
                 f"    {r['broker_name']} {_signed_z(r['total_net'])}張  "
-                f"出現 {r['days_appeared']}/{n_history} 天  "
+                f"出現 {r['days_appeared']}/{n_window} 天  "
                 f"最大日 {md_short} {_signed_z(r['max_day_net'])}{tag}"
             )
 
     # === Section C: Today's Top 3 N-day fingerprint (NEW) ===
+    # agg now INCLUDES today (when published), so rec.total_net is the FULL
+    # window total. To still surface today vs prior days separately for
+    # readability, subtract today_net from rec.total_net to get past-only.
     today_leaders = [(b, "buy") for b in today_buyers] + \
                     [(s, "sell") for s in today_sellers]
     if today_leaders:
         lines.append("")
-        lines.append(f"【⚡ 今日 Top 3 之 {n_history} 日累積指紋】")
+        lines.append(f"【⚡ 今日 Top 3 之 {window_label} 累積指紋】")
         for b, side in today_leaders:
             bid = b["broker_id"]
             today_net = b["net_shares"]
@@ -1540,15 +1551,19 @@ def _format_continuity(data: dict, days: int = 5) -> list[str]:
                     f"前 {n_history} 日未進 Top 5 → 新進場"
                 )
             else:
-                full_total = rec["total_net"] + today_net
+                # Past-only (excluding today): subtract today's contribution
+                past_net = rec["total_net"] - (today_net if today_has_data else 0)
+                past_days = rec["days_appeared"] - (1 if today_has_data else 0)
+                full_total = rec["total_net"]
                 today_pct = (abs(today_net) / max(abs(full_total), 1)) * 100
                 burst = " ← burst (今佔大半)" if today_pct >= 60 else ""
                 md = rec["max_day_date"]
                 md_short = f"{md[4:6]}/{md[6:8]}" if len(md) == 8 else md
                 lines.append(
                     f"  {emoji} {b['broker_name']}: 今 {_signed_z(today_net)}張 + "
-                    f"前 {rec['days_appeared']}/{n_history} 天 "
-                    f"{_signed_z(rec['total_net'])}張 "
+                    f"前 {past_days}/{n_history} 天 "
+                    f"{_signed_z(past_net)}張 "
+                    f"= {n_window} 日累積 {_signed_z(full_total)}張 "
                     f"(歷史最大日 {md_short} "
                     f"{_signed_z(rec['max_day_net'])}){burst}"
                 )
