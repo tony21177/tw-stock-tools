@@ -799,7 +799,7 @@ def _render_chip_price_page(code: str | None = None,
 </style>
 </head>
 <body>
-<nav><a href="/">← 大盤 dashboard</a> <a href="/chip-price">籌碼價量分析</a></nav>
+<nav><a href="/">← 大盤 dashboard</a> <a href="/chip-price">📋 籌碼價量</a> <a href="/contract-liabilities">💰 合約負債</a> <a href="/inventory">📦 存貨</a></nav>
 <h1>📊 籌碼價量分析 (broker × price × time)</h1>
 
 <form method="get" action="/chip-price">
@@ -973,6 +973,7 @@ def _render_contract_liabilities_page(code: str = "", years: int = 3,
   <a href="/">← 大盤 dashboard</a>
   <a href="/chip-price">📋 籌碼價量</a>
   <a href="/contract-liabilities">💰 合約負債</a>
+  <a href="/inventory">📦 存貨</a>
 </nav>
 <h1>💰 合約負債歷史</h1>
 
@@ -1016,6 +1017,289 @@ def contract_liabilities():
     name = tw_contract_liabilities._zh_name(code)
     return _render_contract_liabilities_page(code=code, years=years,
                                               rows=rows, name=name)
+
+
+def _render_inventory_page(code: str = "", years: int = 5,
+                            rows: list[dict] | None = None,
+                            name: str = "", error: str = "") -> str:
+    """Web page: 存貨歷史 + 衍生指標 for a stock, with Chart.js charts."""
+    code_attr = html_lib.escape(code or "")
+    body = ""
+    if error:
+        body = f'<div class="error">⚠ {html_lib.escape(error)}</div>'
+    elif rows is not None and not rows:
+        code_esc = html_lib.escape(code)
+        body = (
+            '<div class="empty">'
+            f'<p><b>⚠ {code_esc} {html_lib.escape(name)} 抓不到存貨資料</b></p>'
+            '<p>可能股票代號錯誤、太新（&lt;1 季）或下市。FinMind '
+            'TaiwanStockBalanceSheet 找不到 Inventories 項目。</p>'
+            '</div>'
+        )
+    elif rows:
+        rows_html = []
+        labels, inv_vals, qoq_vals, yoy_vals = [], [], [], []
+        turnover_vals, dsi_vals, inv_rev_vals = [], [], []
+        for r in rows:
+            inv = r["inventory"]
+            qoq = r.get("qoq_pct")
+            yoy = r.get("yoy_pct")
+            to = r.get("turnover")
+            dsi = r.get("dsi_days")
+            ir = r.get("inv_rev_pct")
+            qoq_cls = ("pos" if qoq is not None and qoq > 0
+                       else ("neg" if qoq is not None and qoq < 0 else ""))
+            yoy_cls = ("pos" if yoy is not None and yoy > 0
+                       else ("neg" if yoy is not None and yoy < 0 else ""))
+            qoq_str = (f"{'+' if qoq >= 0 else ''}{qoq:.1f}%"
+                       if qoq is not None else "—")
+            yoy_str = (f"{'+' if yoy >= 0 else ''}{yoy:.1f}%"
+                       if yoy is not None else "—")
+            to_str = f"{to:.2f}" if to is not None else "—"
+            dsi_str = f"{dsi:.0f}" if dsi is not None else "—"
+            ir_str = f"{ir:.1f}%" if ir is not None else "—"
+            rows_html.append(
+                f'<tr>'
+                f'<td>{r["date"]}</td>'
+                f'<td class="num"><b>{inv / 1000:,.0f}</b></td>'
+                f'<td class="num {qoq_cls}">{qoq_str}</td>'
+                f'<td class="num {yoy_cls}">{yoy_str}</td>'
+                f'<td class="num">{to_str}</td>'
+                f'<td class="num">{dsi_str}</td>'
+                f'<td class="num">{ir_str}</td>'
+                f'</tr>'
+            )
+            labels.append(r["date"])
+            inv_vals.append(round(inv / 1000, 0))  # 千元
+            qoq_vals.append(round(qoq, 2) if qoq is not None else None)
+            yoy_vals.append(round(yoy, 2) if yoy is not None else None)
+            turnover_vals.append(round(to, 2) if to is not None else None)
+            dsi_vals.append(round(dsi, 0) if dsi is not None else None)
+            inv_rev_vals.append(round(ir, 2) if ir is not None else None)
+        cagr_str = ""
+        if len(rows) >= 2 and rows[0]["inventory"] > 0:
+            span_years = (
+                (datetime.strptime(rows[-1]["date"], "%Y-%m-%d")
+                 - datetime.strptime(rows[0]["date"], "%Y-%m-%d")).days
+                / 365.25
+            )
+            if span_years > 0:
+                cagr = ((rows[-1]["inventory"] / rows[0]["inventory"])
+                        ** (1 / span_years) - 1) * 100
+                cagr_cls = "pos" if cagr > 0 else "neg"
+                cagr_str = (f'<p>📈 存貨 CAGR: <span class="{cagr_cls}">'
+                             f'<b>{cagr:+.1f}%</b></span> '
+                             f'({rows[0]["date"]} → {rows[-1]["date"]})</p>')
+        chart_data = json.dumps({
+            "labels": labels, "inv": inv_vals,
+            "qoq": qoq_vals, "yoy": yoy_vals,
+            "turnover": turnover_vals, "dsi": dsi_vals,
+            "inv_rev": inv_rev_vals,
+        }, ensure_ascii=False)
+        body = f"""
+<section class="header-card">
+  <h2>{_esc(code)} {_esc(name)} 存貨歷史 (近 {years} 年 / {len(rows)} 季)</h2>
+  {cagr_str}
+</section>
+
+<section>
+  <h3>📈 存貨總額 + QoQ/YoY 變化率</h3>
+  <canvas id="inv-chart" height="120"></canvas>
+</section>
+
+<section>
+  <h3>⚙ 存貨週轉率 (年化) + DSI 存貨天數</h3>
+  <canvas id="eff-chart" height="120"></canvas>
+</section>
+
+<section>
+  <h3>📊 季度明細</h3>
+  <table class="report-table">
+    <thead><tr>
+      <th>季底</th>
+      <th class="num">存貨 (千元)</th>
+      <th class="num">QoQ%</th>
+      <th class="num">YoY%</th>
+      <th class="num">週轉率*</th>
+      <th class="num">DSI (天)</th>
+      <th class="num">存貨/季營收</th>
+    </tr></thead>
+    <tbody>{''.join(rows_html)}</tbody>
+  </table>
+  <p class="small">* 週轉率 = 年化 COGS / 平均存貨；DSI = 365/週轉率；
+     存貨/營收 = 期末存貨/該季營收。<br>
+     存貨 ↑ 通常是出貨壓力或拉貨；↓ 表示去化順暢。
+     週轉率 ↑ + DSI ↓ = 庫存效率提升 (景氣轉好)。</p>
+  <p class="small">⚠ 原料 / 在製品 / 半成品 / 成品 / 副產品 5 項拆分需 MOPS XBRL 解析
+     (這版先給總額 + 衍生指標)。</p>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+  const D = {chart_data};
+  const fmtThousand = v => v >= 1e6 ? (v/1e6).toFixed(1)+'B'
+                          : v >= 1e3 ? (v/1e3).toFixed(1)+'M'
+                          : v.toFixed(0);
+  new Chart(document.getElementById('inv-chart'), {{
+    type: 'bar',
+    data: {{
+      labels: D.labels,
+      datasets: [
+        {{ type:'bar', label:'存貨 (千元)', yAxisID:'y',
+           data: D.inv, backgroundColor:'rgba(0,102,204,0.4)',
+           borderColor:'rgba(0,102,204,1)', borderWidth:1, order:2 }},
+        {{ type:'line', label:'QoQ %', yAxisID:'y1',
+           data: D.qoq, borderColor:'#c30', backgroundColor:'#c30',
+           tension:0.2, fill:false, pointRadius:3, order:1 }},
+        {{ type:'line', label:'YoY %', yAxisID:'y1',
+           data: D.yoy, borderColor:'#060', backgroundColor:'#060',
+           borderDash:[4,4], tension:0.2, fill:false, pointRadius:3, order:0 }},
+      ]
+    }},
+    options: {{
+      responsive: true, interaction:{{ mode:'index', intersect:false }},
+      scales: {{
+        y: {{ position:'left',
+              ticks:{{ callback: v => fmtThousand(v) }},
+              title:{{ display:true, text:'存貨 (千元)' }} }},
+        y1: {{ position:'right',
+               ticks:{{ callback: v => v + '%' }},
+               grid:{{ drawOnChartArea:false }},
+               title:{{ display:true, text:'變化率 %' }} }}
+      }}
+    }}
+  }});
+  new Chart(document.getElementById('eff-chart'), {{
+    type: 'line',
+    data: {{
+      labels: D.labels,
+      datasets: [
+        {{ label:'存貨週轉率 (年化)', yAxisID:'y',
+           data: D.turnover, borderColor:'#0066cc',
+           backgroundColor:'rgba(0,102,204,0.1)', fill:true,
+           tension:0.2, pointRadius:3 }},
+        {{ label:'DSI 存貨天數', yAxisID:'y1',
+           data: D.dsi, borderColor:'#c30',
+           backgroundColor:'#c30',
+           tension:0.2, fill:false, pointRadius:3 }},
+        {{ label:'存貨/營收 %', yAxisID:'y1',
+           data: D.inv_rev, borderColor:'#060',
+           backgroundColor:'#060', borderDash:[4,4],
+           tension:0.2, fill:false, pointRadius:3 }},
+      ]
+    }},
+    options: {{
+      responsive: true, interaction:{{ mode:'index', intersect:false }},
+      scales: {{
+        y: {{ position:'left',
+              title:{{ display:true, text:'週轉率 (次/年)' }} }},
+        y1: {{ position:'right',
+               grid:{{ drawOnChartArea:false }},
+               title:{{ display:true, text:'天數 / %' }} }}
+      }}
+    }}
+  }});
+</script>"""
+    return f"""<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>存貨歷史 — 台股單檔</title>
+<style>
+  body {{ font-family: -apple-system, "Segoe UI", "Microsoft JhengHei",
+           sans-serif; max-width: 1100px; margin: 1em auto; padding: 0 1em;
+           background: #f7f7f9; color: #222; }}
+  h1 {{ font-size: 1.4em; margin: 0.5em 0; }}
+  form {{ display: flex; gap: 8px; align-items: center;
+          background: white; padding: 12px; border-radius: 6px;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 12px; }}
+  input[type=text], input[type=number] {{ font-size: 16px; padding: 8px 12px;
+                       border: 1px solid #ccc; border-radius: 4px; }}
+  input[type=text] {{ width: 120px; }}
+  input[type=number] {{ width: 60px; }}
+  button {{ font-size: 16px; padding: 8px 16px; cursor: pointer;
+            background: #0066cc; color: white; border: none;
+            border-radius: 4px; }}
+  button:hover {{ background: #0052a3; }}
+  nav a {{ margin-right: 12px; color: #0066cc; text-decoration: none; }}
+  .error {{ background: #fee; border: 1px solid #f99; padding: 12px;
+            border-radius: 4px; color: #c00; margin-bottom: 12px; }}
+  .empty {{ background: white; padding: 16px; border-radius: 6px;
+            color: #666; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+            margin-bottom: 12px; }}
+  section {{ background: white; padding: 12px 16px; border-radius: 6px;
+              margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }}
+  section.header-card h2 {{ margin: 0 0 6px 0; font-size: 1.3em; }}
+  section h3 {{ margin: 0 0 8px 0; font-size: 1.05em; color: #444; }}
+  table.report-table {{ width: 100%; border-collapse: collapse;
+                         font-size: 0.9em; }}
+  table.report-table th, table.report-table td {{ padding: 6px 10px;
+                                                    border-bottom: 1px solid #eee;
+                                                    text-align: left; }}
+  table.report-table th {{ background: #fafafa; font-weight: 600;
+                            color: #555; font-size: 0.9em; }}
+  table.report-table .num {{ text-align: right;
+                              font-variant-numeric: tabular-nums; }}
+  .pos {{ color: #c30; }}
+  .neg {{ color: #060; }}
+  .small, small {{ font-size: 0.85em; color: #666; }}
+  @media (max-width: 768px) {{
+    body {{ padding: 0 4px; margin: 0.5em auto; }}
+    section {{ overflow-x: auto; }}
+    table.report-table {{ font-size: 0.78em; }}
+    table.report-table th, table.report-table td {{ padding: 4px 5px; }}
+  }}
+</style>
+</head>
+<body>
+<nav>
+  <a href="/">← 大盤 dashboard</a>
+  <a href="/chip-price">📋 籌碼價量</a>
+  <a href="/contract-liabilities">💰 合約負債</a>
+  <a href="/inventory">📦 存貨</a>
+</nav>
+<h1>📦 存貨歷史 + 衍生指標</h1>
+
+<form method="get" action="/inventory">
+  <label for="code">股票代號:</label>
+  <input type="text" id="code" name="code" value="{code_attr}"
+         placeholder="例: 2330" autofocus required>
+  <label for="years">回看年數:</label>
+  <input type="number" id="years" name="years" value="{years}" min="1" max="10">
+  <button type="submit">查詢</button>
+</form>
+<p class="small">💡 存貨 ↑↓ 是出貨景氣 leading indicator。配合週轉率 + DSI 看效率。
+   範例：<a href="/inventory?code=2330">2330 台積電</a> ·
+   <a href="/inventory?code=2317">2317 鴻海</a> ·
+   <a href="/inventory?code=2454">2454 聯發科</a> ·
+   <a href="/inventory?code=3008">3008 大立光</a></p>
+
+{body}
+</body>
+</html>"""
+
+
+@app.route("/inventory")
+def inventory():
+    import tw_inventory
+    code = (request.args.get("code") or "").strip()
+    try:
+        years = int(request.args.get("years") or "5")
+        years = max(1, min(years, 10))
+    except ValueError:
+        years = 5
+    if not code:
+        return _render_inventory_page()
+    try:
+        rows = tw_inventory.fetch_inventory_series(code, years=years)
+        rows = tw_inventory.annotate(rows)
+    except Exception as e:
+        return _render_inventory_page(
+            code=code, years=years, error=f"{type(e).__name__}: {e}")
+    name = tw_inventory._zh_name(code)
+    return _render_inventory_page(code=code, years=years,
+                                   rows=rows, name=name)
 
 
 @app.route("/chip-price")

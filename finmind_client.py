@@ -113,6 +113,21 @@ def fetch_balance_sheet(stock_id: str, start_date: str, end_date: str,
     }, token)
 
 
+def fetch_financial_statements(stock_id: str, start_date: str, end_date: str,
+                                token: str) -> list[dict]:
+    """Fetch 損益表 line items (per quarter).
+
+    Returns rows with shape: {date, stock_id, type, value, origin_name}
+    Notable types: `Revenue` (營業收入), `CostOfGoodsSold` (營業成本),
+    `GrossProfit`, `OperatingIncome`, `IncomeBeforeTax`, etc.
+    """
+    return _call("TaiwanStockFinancialStatements", {
+        "data_id": stock_id,
+        "start_date": start_date,
+        "end_date": end_date,
+    }, token)
+
+
 def fetch_stock_price_tick(stock_id: str, date: str,
                            token: str) -> list[dict]:
     """Fetch tick-by-tick 成交資料 for one stock on one date.
