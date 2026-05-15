@@ -306,6 +306,34 @@ def _render_report_html(data: dict) -> str:
                       '<th class="num">高賣低買差</th><th class="num">淨</th>'
                       '<th>判定</th></tr></thead><tbody>')
         rng = max(day_high - day_low, 0.01)
+        def _wash_side_detail(cells: list, side: str) -> str:
+            """Render concentration band + Top 3 prices for one side of a
+            wash candidate, matching _fingerprint_table layout."""
+            if not cells:
+                return ""
+            sign = "+" if side == "buy" else "-"
+            side_cls = "buy" if side == "buy" else "sell"
+            band = tw_chip_price.adaptive_concentration_band(
+                cells, side=side, day_low=day_low, day_high=day_high,
+                max_band_pct=0.25,
+            )
+            top3 = tw_chip_price.broker_top_cells(cells, side=side, n=3)
+            out = ""
+            if band:
+                out += (
+                    f'<br><small>🎯 ${band["core_low"]:.2f}~${band["core_high"]:.2f} '
+                    f'<span class="{side_cls}">{sign}{_fmt_zhang(band["core_volume"])}</span>'
+                    f'張 ({band["core_pct"]*100:.0f}%)</small>'
+                )
+            if top3:
+                top3_str = " / ".join(
+                    f'${c["price"]:.2f} <span class="{side_cls}">'
+                    f'{sign}{_fmt_zhang(c[side])}</span>'
+                    for c in top3
+                )
+                out += f'<br><small>Top: {top3_str}</small>'
+            return out
+
         for w in wash:
             net = w["net_shares"]
             net_html = (f'<span class="buy">+{_fmt_zhang(net)}</span>'
@@ -313,12 +341,15 @@ def _render_report_html(data: dict) -> str:
                         else f'<span class="sell">{_fmt_zhang(net)}</span>')
             sell_t = w.get("sell_time_min")
             buy_t = w.get("buy_time_min")
+            cells_w = w.get("cells", [])
             sell_str = (f'{_fmt_zhang(w["sell_shares"])}張 @${w["sell_avg"]:.2f}'
                         + (f'<br><small>~{tw_chip_price._minutes_to_hhmm(sell_t)}</small>'
-                           if sell_t is not None else ""))
+                           if sell_t is not None else "")
+                        + _wash_side_detail(cells_w, "sell"))
             buy_str = (f'{_fmt_zhang(w["buy_shares"])}張 @${w["buy_avg"]:.2f}'
                        + (f'<br><small>~{tw_chip_price._minutes_to_hhmm(buy_t)}</small>'
-                          if buy_t is not None else ""))
+                          if buy_t is not None else "")
+                       + _wash_side_detail(cells_w, "buy"))
             pct = w["price_gap"] / rng * 100
             pat = w.get("time_pattern", "")
             if pat == "真洗盤低接":
