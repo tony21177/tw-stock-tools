@@ -565,10 +565,12 @@ def _render_broker_drilldown(code: str, date: str, broker_query: str,
                 confidence = {
                     "exact": "✅",
                     "exact_ambiguous": "≈",
+                    "exact_ambiguous_multi_cluster": "❓",
                     "leading_block": "🎯",
                     "leading_block_consistent": "🎯+",
                     "window": "🔄",
                     "weighted": "≈",
+                    "weighted_multi_cluster": "❓",
                 }.get(mt, "?")
                 # Build alternative-candidates suffix
                 alts = primary_match.get("alternatives") or []
@@ -581,6 +583,19 @@ def _render_broker_drilldown(code: str, date: str, broker_query: str,
                     ]
                     alt_html = (f'<br><small class="muted">OR '
                                 + " / ".join(alt_parts) + '</small>')
+                # Multi-cluster surfacing (Pattern D — 1-3張 + 熱門價)
+                if mt in ("weighted_multi_cluster",
+                          "exact_ambiguous_multi_cluster"):
+                    cl = primary_match.get("clusters") or []
+                    if cl:
+                        rng_parts = [
+                            f"~{tw_chip_price._minutes_to_hhmm(x['first_min'])}"
+                            f"–{tw_chip_price._minutes_to_hhmm(x['last_min'])} "
+                            f"({x['tick_count']} ticks, {x['vol']}張)"
+                            for x in cl
+                        ]
+                        alt_html += ('<br><small class="warn">⚠ 多 cluster (你的單在其中一個):<br>'
+                                      + ' / '.join(rng_parts) + '</small>')
                 # Scattered flag
                 if primary_match.get("is_scattered"):
                     alt_html += ('<br><small class="warn">⚠ scattered: '

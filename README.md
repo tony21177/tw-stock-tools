@@ -1201,14 +1201,18 @@ python3 -m patchright install chromium
 - 🔄 `window` — sliding window 多 ticks 和等於 cell vol
 - ≈ `weighted` — vol-weighted avg fallback
 
-**4 個 ground truth case 驗證 (2026-05-14)**：
+**8 個 ground truth case 驗證 (2026-05-14 ~ 2026-05-15)**：
 
-| # | Cell | 用戶實際 | 演算法 | 狀態 |
-|---|---|---|---|---|
-| 1 | 第一員林 \$50.30 52張 | 50張 block @ 11:35:38 + 2 cleanup | ~11:36 | ✅ |
-| 2 | 第一員林 \$50.40 34張 | 30張 block @ 11:36:12 + 4 cleanup | ~11:36 | ✅ |
-| 3 | 兆豐台南 \$50.60 37張 | 30張 main @ 10:32:50 + spread to 10:36 | ~10:33 | ✅ |
-| 4 | 兆豐台南 \$50.20  8張 | 4張 + 4×1張 burst @ 13:16:20-24 (4 sec) | ~11:58 (alt 13:14 ≈ truth) | ❌ |
+| # | Stock | Cell | 用戶實際 | 演算法 | 狀態 |
+|---|---|---|---|---|---|
+| 1 | 3491 | 第一員林 \$50.30 52張 | 50張 block @ 11:35:38 + 2 cleanup | ~11:36 | ✅ |
+| 2 | 3491 | 第一員林 \$50.40 34張 | 30張 block @ 11:36:12 + 4 cleanup | ~11:36 | ✅ |
+| 3 | 3491 | 兆豐台南 \$50.60 37張 | 30張 main @ 10:32:50 + spread to 10:36 | ~10:33 | ✅ |
+| 4 | 3491 | 兆豐台南 \$50.20  8張 | 4張 + 4×1張 burst @ 13:16:20-24 (4 sec) | ~11:58 (alt 13:14 ≈ truth) | ❌ |
+| 5 | 2316 | 兆豐台南 \$137.50 17張 | 17張 全 in 集合競價 09:03:44.396 | ~09:03 | ✅ |
+| 6 | 2316 | 兆豐台南 \$137.00 4張 | 4張 全 in 集合競價 09:03:44.396 | ~09:03 (primary) | ✅ |
+| 7 | 2316 | 兆豐台南 \$136.00 15張 | 15張 集合競價 09:05:51.373 | ~09:02 (primary) | ⚠ 偏早 3 分 |
+| 8 | 2316 | 兆豐台南 \$132.50 1張 | 1張 限價單 12:18:53.054 | ~10:47 ≈ | ❌ 差 91 分 |
 
 **演算法原則 (從 case 1-3 推出)**：
 - 真實 broker 主力 buy = lead block + cleanup small ticks 散布幾分鐘 (span 寬)
@@ -1216,18 +1220,27 @@ python3 -m patchright install chromium
 - 當 2+ candidates 都 lead_pct >= 70% (都可疑)，**取 cluster_span_min DESC** 比 lead_vol DESC 準
 - 例：兆豐台南 5/14 \$50.60 37 張 — 候選 35張@10:28 (span 3s = 別人) vs 30張@10:33 (span 4min = 用戶) → 取 span 寬 ✓
 
-**Case 4 揭露的根本限制 — 兩種對立的 broker 填單 pattern**：
+**Case 4 + 8 揭露的根本限制 — 三種 broker 填單 pattern**：
 
 | Pattern | 結構 | Span | 識別性 |
 |---|---|---|---|
 | **A. 擴散填單** | lead block + cleanup 散在分鐘級 (case 1-3) | 寬 (10s-4min) | ✓ 用 span DESC 區分 |
 | **B. 密集 burst** | lead block + cleanup 全在秒級 (case 4) | 窄 (3-10s) | ❌ 跟其他 broker 短 burst 無法區分 |
+| **C. 集合競價** | 開盤前隊列 / 5-sec 撮合，所有單同一 ms 成交 (case 5-7) | 0 秒 | ✓ 一次大 tick anchor — 演算法表現完美 |
 
-**同一個 broker 可能 cell A 用 Pattern A 填、cell B 用 Pattern B 填**（兆豐台南就是這樣：\$50.60 用 A，\$50.20 用 B）。對 Pattern B 公開資料無解 — TWSE 沒提供 broker→tick mapping，無法區分用戶 4+4×1 vs 別人 7+1 (兩者 span 都短)。
+**Case 8 揭露 Pattern D — 「小張數 + 熱門價多 cluster」場景**：
+- 1 張 限價單 @ \$132.50，但全日該價成交 121 ticks
+- 121 ticks 分布在 09:07~09:09 (早盤殺低 65 ticks) + 12:18~12:44 (盤中 56 ticks) 兩個 cluster
+- 演算法找不到 lead block (張數太小)，fallback 到 121 tick 加權平均 ~10:47
+- 結果落在兩 cluster 中間「真空帶」，91 分鐘誤差，且無法靠 alternatives 修正（多 cluster 不在 alternatives 範圍）
+- **本質**：1-3 張小單在 100+ tick 熱門價無法 anchor，公開資料無解
+
+**同一個 broker 可能 cell A 用 Pattern A 填、cell B 用 Pattern B/D 填**（兆豐台南 5/14 \$50.60 用 A，\$50.20 用 B；5/15 \$137.5 用 C，\$132.5 用 D）。對 Pattern B/D 公開資料無解 — TWSE 沒提供 broker→tick mapping。
 
 **對使用者的影響 / 補償**：
 - 工具自動產生 `alternatives` (top 2 不同時間 candidates) 顯示在 UI
 - Case 4 例: primary ~11:58 ❌，alt ~13:14 ✓ (跟 truth 13:16 只差 2 分)
+- Case 8 例: primary ~10:47 ≈ — 多 cluster 場景已加上「multi_cluster」標記 + 各 cluster 時段顯示，使用者可從自己 trade 記憶選對 cluster
 - 使用者用 alternatives + 自己 trade 記憶可以**手動修正** algorithm 的猜測
 
 ### 滾動歷史 archive (chip_price_history)

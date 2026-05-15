@@ -555,8 +555,29 @@ def match_cell_to_ticks(price: float, shares_zhang: int,
         if len(exact_matches) == 1:
             return {"time_min": exact_matches[0], "match_type": "exact"}
         if len(exact_matches) > 1:
+            # Detect multi-cluster across the candidate timestamps so user can
+            # pick the right one. Reuses cluster gap threshold from Strategy 4.
+            cluster_gap_min = 15
+            sorted_matches = sorted(exact_matches)
+            mc_clusters: list[list[float]] = [[sorted_matches[0]]]
+            for t in sorted_matches[1:]:
+                if t - mc_clusters[-1][-1] > cluster_gap_min:
+                    mc_clusters.append([])
+                mc_clusters[-1].append(t)
+            t_avg = sum(exact_matches) / len(exact_matches)
+            if len(mc_clusters) >= 2:
+                return {
+                    "time_min": t_avg,
+                    "match_type": "exact_ambiguous_multi_cluster",
+                    "candidate_count": len(exact_matches),
+                    "clusters": [
+                        {"first_min": c[0], "last_min": c[-1],
+                         "tick_count": len(c), "vol": len(c) * shares_zhang}
+                        for c in mc_clusters
+                    ],
+                }
             return {
-                "time_min": sum(exact_matches) / len(exact_matches),
+                "time_min": t_avg,
                 "match_type": "exact_ambiguous",
                 "candidate_count": len(exact_matches),
             }
@@ -584,11 +605,38 @@ def match_cell_to_ticks(price: float, shares_zhang: int,
         del best["span"]
         return best
 
-    # Strategy 4: vol-weighted avg fallback
+    # Strategy 4: vol-weighted avg fallback (+ multi-cluster detection)
     tot_v = sum(v for _, v in tick_list)
     if tot_v == 0:
         return None
     t_avg = sum(t * v for t, v in tick_list) / tot_v
+
+    # Detect multiple time-clusters (gap >= 15 min between consecutive ticks).
+    # Small cells (1-3張) in a hot price with 2+ clusters → point estimate
+    # lands in dead-zone between clusters and misleads. Better to surface
+    # cluster ranges so user can pick the right one from their own memory.
+    cluster_gap_min = 15
+    clusters: list[list] = [[tick_list[0]]]
+    for i in range(1, len(tick_list)):
+        if tick_list[i][0] - tick_list[i - 1][0] > cluster_gap_min:
+            clusters.append([])
+        clusters[-1].append(tick_list[i])
+    if len(clusters) >= 2 and shares_zhang <= 5:
+        # Only surface clusters for tiny cells where they actually help
+        cluster_info = []
+        for c in clusters:
+            c_vol = sum(v for _, v in c)
+            cluster_info.append({
+                "first_min": c[0][0],
+                "last_min": c[-1][0],
+                "vol": c_vol,
+                "tick_count": len(c),
+            })
+        return {
+            "time_min": t_avg,
+            "match_type": "weighted_multi_cluster",
+            "clusters": cluster_info,
+        }
     return {"time_min": t_avg, "match_type": "weighted"}
 
 
