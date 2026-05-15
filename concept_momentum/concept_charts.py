@@ -416,6 +416,24 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
 <h1>台股概念動能監控</h1>
 <div class="meta">報告日期: {target_date} | 評分: 40% 廣度 + 20% 量能 + 20% RS + 20% 持續天數</div>
 
+<div class="lookup-bar" style="background:white;padding:14px 18px;border-radius:10px;margin-bottom:18px;box-shadow:0 2px 8px rgba(0,0,0,0.06);">
+  <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;">
+    <span style="font-weight:600;font-size:15px;">🔍 單檔快速查詢:</span>
+    <form action="/chip-price" method="get" style="display:flex;gap:4px;">
+      <input type="text" name="code" placeholder="股號" required style="width:80px;padding:6px 8px;font-size:14px;border:1px solid #ccc;border-radius:4px;">
+      <button type="submit" style="padding:6px 12px;background:#0066cc;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;">📋 籌碼價量</button>
+    </form>
+    <form action="/contract-liabilities" method="get" style="display:flex;gap:4px;">
+      <input type="text" name="code" placeholder="股號" required style="width:80px;padding:6px 8px;font-size:14px;border:1px solid #ccc;border-radius:4px;">
+      <button type="submit" style="padding:6px 12px;background:#0066cc;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;">💰 合約負債</button>
+    </form>
+    <form action="/inventory" method="get" style="display:flex;gap:4px;">
+      <input type="text" name="code" placeholder="股號" required style="width:80px;padding:6px 8px;font-size:14px;border:1px solid #ccc;border-radius:4px;">
+      <button type="submit" style="padding:6px 12px;background:#0066cc;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;">📦 存貨</button>
+    </form>
+  </div>
+</div>
+
 <div class="tabs">
   <div class="tab active" onclick="showTab('breadth')">📊 大盤寬度</div>
   <div class="tab" onclick="showTab('broker')">🎯 主力雷達</div>
@@ -427,6 +445,7 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
   <div class="tab" onclick="showTab('full')">完整排行</div>
   <a class="tab" href="/chip-price" style="text-decoration:none;color:inherit;">📋 籌碼價量查詢</a>
   <a class="tab" href="/contract-liabilities" style="text-decoration:none;color:inherit;">💰 合約負債</a>
+  <a class="tab" href="/inventory" style="text-decoration:none;color:inherit;">📦 存貨</a>
 </div>
 
 <div id="tab-breadth" class="tab-content active chart-wrap">
