@@ -531,9 +531,12 @@ def _render_broker_drilldown(code: str, date: str, broker_query: str,
         if sell_t is None and total_sell > 0 and ptm:
             sell_t = tw_chip_price.broker_time_estimate(cells, "sell", ptm)
 
-        # Wash score if both sides have activity
+        # Wash score if both sides have activity — require ≥ 1 張 each side
+        # to avoid 零股 (odd-lot, <1000股) trades triggering misleading
+        # "高賣低買" verdicts (e.g. 11 股 buy + 3,000 股 sell isn't wash, it's
+        # a 1-side sell with an unrelated retail odd-lot buy).
         wash_html = ""
-        if total_buy > 0 and total_sell > 0:
+        if total_buy >= 1000 and total_sell >= 1000:
             wash_score = (sell_avg - buy_avg) / rng
             time_pattern = ""
             if buy_t is not None and sell_t is not None:

@@ -979,7 +979,7 @@ def broker_time_estimate(cells: list[dict], side: str,
 
 
 def broker_wash_candidates(rows: list[dict], day_low: float, day_high: float,
-                           top_n: int = 5, min_each_side: int = 100,
+                           top_n: int = 5, min_each_side: int = 1000,
                            min_wash_score: float = 0.05,
                            price_to_time: dict | None = None) -> list[dict]:
     """Detect 同分點 高賣低買 (sold high then bought low same day) — looks
