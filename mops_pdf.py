@@ -45,13 +45,13 @@ FORM_URL = "https://doc.twse.com.tw/server-java/t57sb01"
 # Standardized category → 中文 patterns (longest first to avoid prefix collisions)
 CATEGORY_PATTERNS = [
     ("merchandise", ["商品存貨", "商品"]),
-    ("raw_materials", ["原物料", "原料"]),
+    ("raw_materials", ["原物料", "原料", "材料"]),
     ("work_in_progress", ["在製品"]),
     ("semi_finished", ["半成品"]),
     ("finished_goods", ["製成品", "成品"]),
     ("byproducts", ["副產品"]),
-    ("materials_supplies", ["物料及零件", "物料零件", "物料"]),
-    ("in_transit", ["在途存貨", "在途品"]),
+    ("materials_supplies", ["物料及零件", "物料零件", "物料", "消耗品", "雜項"]),
+    ("in_transit", ["在途存貨", "在途品", "在途"]),
     ("writedowns", ["備抵存貨跌價損失", "備抵跌價損失", "備抵損失"]),
 ]
 
@@ -171,32 +171,59 @@ def parse_inventory_breakdown(pdf_path: str) -> dict:
     except ImportError:
         raise RuntimeError("pdfplumber not installed: pip install pdfplumber")
 
+    import unicodedata
     out = {"dates": [], "categories": {}, "totals": []}
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
             text = page.extract_text() or ""
+            # NFKC normalization — MOPS PDFs sometimes use CJK Compatibility
+            # Ideograph variants (e.g. U+F98E for 年, U+F9BE for 料) which
+            # break 中文 regexes. NFKC folds them to canonical forms.
+            text = unicodedata.normalize("NFKC", text)
             # Normalize: pdfplumber sometimes renders 中文 with extra spaces
             # between chars (e.g. "製 成 品"). Strip those for keyword search
             # but keep original text for amount extraction (numbers' commas
             # depend on the exact spacing).
-            text_compact = re.sub(r"(?<=[一-鿿])\s+(?=[一-鿿])", "", text)
+            text_compact = re.sub(r"(?<=[一-鿿豈-﫿])\s+(?=[一-鿿豈-﫿])", "", text)
             # pdfplumber sometimes merges the date-header line with the
             # first data row (e.g. "...年3月31日製成品 $ ...") — split.
-            text_compact = re.sub(r"(\d+年\d+月\d+日)\s*([一-鿿])",
+            text_compact = re.sub(r"(\d+年\d+月\d+日)\s*([一-鿿豈-﫿])",
                                    r"\1\n\2", text_compact)
             if not any(k in text_compact for k in
                        ["原料", "在製品", "製成品", "原物料", "存貨明細"]):
                 continue
-            # Find the section heading using compact text
-            idx = -1
-            for marker in ["、存貨\n", "存貨明細", "十二、存貨", "十二、存 貨"]:
-                idx = text_compact.find(marker)
-                if idx >= 0:
+            # Find the section heading using compact text. MOPS reports use
+            # varied numbering: "十二、存貨" / "(四)存貨" / "六、存貨" etc.
+            # Try matching any of these patterns.
+            # Headings vary: "十二、存貨" / "(四)存貨" / "六、存貨" / "(十二)存貨"
+            heading_re = re.compile(
+                r"(?:[一二三四五六七八九十]{1,3}、|\([一二三四五六七八九十]{1,3}\)\s?)"
+                r"[一-鿿豈-﫿]*存貨"
+            )
+            # Find ALL heading matches and pick one that actually has data
+            # (date pattern within first 300 chars after heading). 年報 has
+            # 存貨 mentioned in accounting policies first (no data) then in
+            # notes later (with data).
+            m_heading = None
+            for cand in heading_re.finditer(text_compact):
+                tail = text_compact[cand.start():cand.start() + 400]
+                # Require BOTH a date AND an inventory category keyword
+                # right after the heading — rules out 存貨會計政策 sections
+                has_date = re.search(
+                    r"\d{2,3}年\s*\d{1,2}月\s*\d{1,2}日", tail)
+                has_cat = any(k in tail for k in
+                              ["原料", "材料", "在製品", "製成品", "商品"])
+                if has_date and has_cat:
+                    m_heading = cand
                     break
-            if idx < 0:
-                # No clean header; back up to first inventory keyword
+            if not m_heading:
+                m_heading = heading_re.search(text_compact)
+            if m_heading:
+                idx = m_heading.start()
+            else:
+                # Fallback: find first inventory keyword and back up
                 positions = [text_compact.find(k)
-                             for k in ("原料", "在製品", "製成品")
+                             for k in ("原料", "在製品", "製成品", "材料")
                              if text_compact.find(k) >= 0]
                 if not positions:
                     continue
@@ -210,19 +237,33 @@ def parse_inventory_breakdown(pdf_path: str) -> dict:
             if cap:
                 section = section[:200 + cap.start()]
 
-            # Extract column-header dates (YYY年M月D日 or similar)
+            # Extract column-header dates — limited to the first line(s)
+            # after the heading. Look at section[:200] only to avoid picking
+            # up dates from other notes that follow the inventory table.
+            # Stage in local var; only commit to out if categories also
+            # parse — avoids carrying dates from a 假性 heading (e.g. 年報
+            # accounting-policy section) when the real table is later.
             dates_found = re.findall(r"(\d{2,3})年\s*(\d{1,2})月\s*(\d{1,2})日",
-                                     section[:500])
-            if dates_found and not out["dates"]:
-                for y, m, d in dates_found[:3]:
-                    # ROC → Western
-                    western_year = int(y) + 1911 if int(y) < 200 else int(y)
-                    out["dates"].append(
-                        f"{western_year}-{int(m):02d}-{int(d):02d}")
+                                     section[:200])
+            # Q4 年報 has 2 cols, Q1-Q3 季報 has 3 cols. Cap at 3.
+            staged_dates = []
+            seen = set()
+            for y, m, d in dates_found:
+                western_year = int(y) + 1911 if int(y) < 200 else int(y)
+                date = f"{western_year}-{int(m):02d}-{int(d):02d}"
+                if date in seen:
+                    continue
+                seen.add(date)
+                staged_dates.append(date)
+                if len(staged_dates) >= 3:
+                    break
 
             # Number of date columns drives parsing (Q4 年報 = 2 cols, Q1-Q3
-            # 季報 = 3 cols).
-            ncols = len(out["dates"]) or 3
+            # 季報 = 3 cols). Use staged dates from this section, not
+            # whatever was carried over.
+            ncols = len(staged_dates) or 3
+            staged_cats: dict = {}
+            staged_total: list = []
             # Build regex with ncols amount groups. Each amount: optional $,
             # optional parens for negatives, then 1+ digits with commas.
             amt = r"\$?\s*\(?\s*([\d,]+)\s*\)?"
@@ -238,18 +279,23 @@ def parse_inventory_breakdown(pdf_path: str) -> dict:
                 amounts = [int(m.group(i + 2).replace(",", ""))
                            for i in range(ncols)]
                 if not label or "計" in label:
-                    if not out["totals"]:
-                        out["totals"] = amounts
-                    continue
+                    if not staged_total:
+                        staged_total = amounts
+                    # 合計 marks end of inventory table; stop here to avoid
+                    # picking up items from subsequent sections.
+                    break
                 key = _classify(label)
-                if key in out["categories"]:
-                    existing = out["categories"][key]["amounts"]
-                    out["categories"][key]["amounts"] = [
+                if key in staged_cats:
+                    existing = staged_cats[key]["amounts"]
+                    staged_cats[key]["amounts"] = [
                         existing[i] + amounts[i] for i in range(ncols)]
                 else:
-                    out["categories"][key] = {
-                        "label": label, "amounts": amounts}
-            if out["categories"]:
+                    staged_cats[key] = {"label": label, "amounts": amounts}
+            # Commit staged → out only if we actually parsed categories
+            if staged_cats:
+                out["dates"] = staged_dates
+                out["categories"] = staged_cats
+                out["totals"] = staged_total
                 break
 
     # If no totals parsed, compute as sum of categories
