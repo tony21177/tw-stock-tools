@@ -1050,11 +1050,13 @@ def _breakdown_section_html(series: dict | None) -> str:
     for key, label, color in cat_order:
         if any(series[d].get(key, 0) > 0 for d in dates):
             used_cats.append((key, label, color))
-    # Also catch any "other:" keys (uncategorized) for transparency
+    # Also catch any "other:" keys (uncategorized) for transparency.
+    # Exclude *_label suffix entries (those carry the raw 中文 string).
     other_keys = set()
     for d in dates:
-        for k in series[d]:
-            if k.startswith("other:") and series[d].get(k, 0) > 0:
+        for k, v in series[d].items():
+            if k.startswith("other:") and not k.endswith("_label") \
+                    and isinstance(v, (int, float)) and v > 0:
                 other_keys.add(k)
     for k in sorted(other_keys):
         label = k.split(":", 1)[1][:8]
