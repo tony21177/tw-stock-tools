@@ -189,6 +189,9 @@ def parse_inventory_breakdown(pdf_path: str) -> dict:
             # first data row (e.g. "...年3月31日製成品 $ ...") — split.
             text_compact = re.sub(r"(\d+年\d+月\d+日)\s*([一-鿿豈-﫿])",
                                    r"\1\n\2", text_compact)
+            text_compact = re.sub(
+                r"(\d{2,4}[./-]\d{1,2}[./-]\d{1,2})\s*([一-鿿豈-﫿])",
+                r"\1\n\2", text_compact)
             if not any(k in text_compact for k in
                        ["原料", "在製品", "製成品", "原物料", "存貨明細"]):
                 continue
@@ -204,13 +207,18 @@ def parse_inventory_breakdown(pdf_path: str) -> dict:
             # (date pattern within first 300 chars after heading). 年報 has
             # 存貨 mentioned in accounting policies first (no data) then in
             # notes later (with data).
+            # Date patterns: "114年3月31日" / "114.3.31" / "2025/3/31" /
+            # "2025-3-31". Allow ROC (2-3 digit) or Western (4 digit) year.
+            date_pat = (
+                r"(?:\d{2,4}年\s*\d{1,2}月\s*\d{1,2}日"
+                r"|\d{2,4}[./-]\d{1,2}[./-]\d{1,2})"
+            )
             m_heading = None
             for cand in heading_re.finditer(text_compact):
                 tail = text_compact[cand.start():cand.start() + 400]
                 # Require BOTH a date AND an inventory category keyword
                 # right after the heading — rules out 存貨會計政策 sections
-                has_date = re.search(
-                    r"\d{2,3}年\s*\d{1,2}月\s*\d{1,2}日", tail)
+                has_date = re.search(date_pat, tail)
                 has_cat = any(k in tail for k in
                               ["原料", "材料", "在製品", "製成品", "商品"])
                 if has_date and has_cat:
@@ -240,17 +248,24 @@ def parse_inventory_breakdown(pdf_path: str) -> dict:
             # Extract column-header dates — limited to the first line(s)
             # after the heading. Look at section[:200] only to avoid picking
             # up dates from other notes that follow the inventory table.
-            # Stage in local var; only commit to out if categories also
-            # parse — avoids carrying dates from a 假性 heading (e.g. 年報
-            # accounting-policy section) when the real table is later.
-            dates_found = re.findall(r"(\d{2,3})年\s*(\d{1,2})月\s*(\d{1,2})日",
-                                     section[:200])
+            # Match both 114年3月31日 (Chinese) and 114.3.31 / 2025-3-31 /
+            # 2025/3/31 (numeric separator) formats.
+            dates_iter = re.finditer(
+                r"(?:(\d{2,4})年\s*(\d{1,2})月\s*(\d{1,2})日"
+                r"|(\d{2,4})[./-](\d{1,2})[./-](\d{1,2}))",
+                section[:200],
+            )
             # Q4 年報 has 2 cols, Q1-Q3 季報 has 3 cols. Cap at 3.
             staged_dates = []
             seen = set()
-            for y, m, d in dates_found:
-                western_year = int(y) + 1911 if int(y) < 200 else int(y)
-                date = f"{western_year}-{int(m):02d}-{int(d):02d}"
+            for m in dates_iter:
+                if m.group(1):  # Chinese form
+                    y, mo, d = m.group(1), m.group(2), m.group(3)
+                else:           # Numeric form
+                    y, mo, d = m.group(4), m.group(5), m.group(6)
+                yi = int(y)
+                western_year = yi + 1911 if yi < 200 else yi
+                date = f"{western_year}-{int(mo):02d}-{int(d):02d}"
                 if date in seen:
                     continue
                 seen.add(date)

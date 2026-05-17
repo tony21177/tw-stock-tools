@@ -1019,6 +1019,127 @@ def contract_liabilities():
                                               rows=rows, name=name)
 
 
+def _breakdown_commentary(series: dict) -> str:
+    """Generate accounting/industry expert commentary on inventory breakdown.
+
+    Looks at YoY growth for each category in the latest quarter and applies
+    rule-of-thumb interpretation. Each category has known signal semantics:
+
+    - 原料 ↑: 備料增加，預期 1-2 季後產能上升 (leading indicator)
+    - 在製品 ↑: 訂單在生產，1-3 個月後轉營收 (strongest near-term signal)
+    - 製成品 ↑: 出貨壓力 / 客戶 push-out / 庫存堆積風險 (lagging, 警訊)
+    - 在途存貨 ↑: 物流時間長 / 大批採購中
+    - 物料及零件 / 消耗品: 跟原料同步觀察
+    - 商品: 通路 / 純代工才看
+    """
+    dates = sorted(series.keys())
+    if len(dates) < 5:
+        return ""  # Need ≥5 quarters for meaningful YoY
+    latest = series[dates[-1]]
+    yoy = series[dates[-5]] if len(dates) >= 5 else None
+    prev_q = series[dates[-2]] if len(dates) >= 2 else None
+    if not yoy:
+        return ""
+
+    cat_meta = {
+        "raw_materials": ("原料",
+            ("備料增加 → 預期未來 1-2 季產能放大",
+             "備料下降 → 預期訂單轉冷 / 庫存去化中")),
+        "work_in_progress": ("在製品",
+            ("在製產能滿載 → 1-3 個月內轉認列營收，**最強 leading indicator**",
+             "在製下降 → 訂單轉淡 / 完工出貨")),
+        "finished_goods": ("製成品",
+            ("⚠ 製成品堆積 → 出貨壓力或客戶 push-out (warning signal)",
+             "製成品下降 → 出貨順暢")),
+        "in_transit": ("在途存貨",
+            ("物流增加 / 大批採購中",
+             "在途下降 / 集中收貨")),
+        "materials_supplies": ("物料及零件 / 消耗品",
+            ("輔料備料同步增加",
+             "輔料消化")),
+        "merchandise": ("商品",
+            ("通路品擴大",
+             "通路品減少")),
+        "semi_finished": ("半成品",
+            ("中間製程庫存增加",
+             "中間製程消耗")),
+        "byproducts": ("副產品", ("副產品累積", "副產品下降")),
+    }
+
+    items = []
+    for key, (label, (up_msg, down_msg)) in cat_meta.items():
+        v_latest = latest.get(key, 0)
+        v_yoy = yoy.get(key, 0)
+        v_prev = prev_q.get(key, 0) if prev_q else 0
+        if v_latest == 0 and v_yoy == 0:
+            continue
+        yoy_pct = ((v_latest - v_yoy) / v_yoy * 100) if v_yoy > 0 else None
+        qoq_pct = ((v_latest - v_prev) / v_prev * 100) if v_prev > 0 else None
+        msg = up_msg if yoy_pct is not None and yoy_pct > 0 else down_msg
+        yoy_str = (f'<span class="{"pos" if yoy_pct >= 0 else "neg"}">'
+                   f'{"+" if yoy_pct >= 0 else ""}{yoy_pct:.0f}%</span>'
+                   if yoy_pct is not None else "—")
+        qoq_str = (f'<span class="{"pos" if qoq_pct >= 0 else "neg"}">'
+                   f'{"+" if qoq_pct >= 0 else ""}{qoq_pct:.0f}%</span>'
+                   if qoq_pct is not None else "—")
+        items.append(
+            f'<li><b>{label}</b> {v_latest / 1000:,.0f} 千元 '
+            f'(YoY {yoy_str}, QoQ {qoq_str}) — {msg}</li>'
+        )
+
+    # Overall total trend
+    tot_latest = latest.get("_total", 0)
+    tot_yoy = yoy.get("_total", 0)
+    tot_yoy_pct = ((tot_latest - tot_yoy) / tot_yoy * 100) if tot_yoy > 0 else None
+    # Strongest signals
+    headline = ""
+    fg = latest.get("finished_goods", 0)
+    fg_yoy = yoy.get("finished_goods", 0)
+    fg_yoy_pct = ((fg - fg_yoy) / fg_yoy * 100) if fg_yoy > 0 else 0
+    wip = latest.get("work_in_progress", 0)
+    wip_yoy = yoy.get("work_in_progress", 0)
+    wip_yoy_pct = ((wip - wip_yoy) / wip_yoy * 100) if wip_yoy > 0 else 0
+    raw = latest.get("raw_materials", 0)
+    raw_yoy = yoy.get("raw_materials", 0)
+    raw_yoy_pct = ((raw - raw_yoy) / raw_yoy * 100) if raw_yoy > 0 else 0
+    if wip_yoy_pct > 20 and raw_yoy_pct > 20 and fg_yoy_pct < 15:
+        headline = "🟢 **強訊號：產能拉貨**" \
+                   "（原料+在製大幅增加但製成品控制 → 客戶要貨積極，1-3 季內營收動能）"
+    elif fg_yoy_pct > 25 and wip_yoy_pct < 10:
+        headline = "🔴 **警訊：庫存堆積**" \
+                   "（製成品大幅增加但在製品停滯 → 客戶 push-out / 出貨遲緩，毛利壓力）"
+    elif wip_yoy_pct > 30:
+        headline = "🟢 **強訊號：在製暴增**" \
+                   f"（在製品 YoY +{wip_yoy_pct:.0f}% → 預期未來 1-3 季營收大幅增長）"
+    elif tot_yoy_pct and tot_yoy_pct < -15:
+        headline = "🟡 **去化中**（整體存貨 YoY 大降 → 出貨好但要看新訂單能不能補上）"
+    elif tot_yoy_pct and tot_yoy_pct > 30:
+        headline = "🟡 **存貨快速擴大**（整體 YoY 大增，要分辨是好的備料還是堆積）"
+    else:
+        headline = "→ 存貨結構平穩，無明顯訊號"
+
+    return f"""
+<section>
+  <h3>💡 會計 + 產業視角解讀</h3>
+  <p><b>整體存貨 YoY:</b>
+     <span class="{"pos" if tot_yoy_pct and tot_yoy_pct >= 0 else "neg"}">
+     {("+" if tot_yoy_pct >= 0 else "") + f"{tot_yoy_pct:.1f}%" if tot_yoy_pct is not None else "—"}</span>
+     ({dates[-5][:7]} → {dates[-1][:7]})</p>
+  <p style="font-size:1.05em; margin:8px 0;">{headline}</p>
+  <h4 style="margin-top:14px; font-size:0.95em;">逐項解讀：</h4>
+  <ul class="commentary-list" style="line-height:1.7;">
+    {''.join(items)}
+  </ul>
+  <p class="small" style="margin-top:10px;">
+    解讀邏輯：原料↑=備料 (1-2 季 leading) / 在製品↑=訂單在線 (1-3 月最強 leading) /
+    製成品↑=⚠ 出貨壓力 (lagging warning) / 在途↑=物流增加。
+    產業差異：純代工 (e.g. 2330/2317) 看在製品; PCB/組裝 (e.g. 2313) 看製成品堆積;
+    電源/工業 (e.g. 6282) 看原料 vs 製成品比例。
+  </p>
+</section>
+"""
+
+
 def _breakdown_section_html(series: dict | None) -> str:
     """Render the optional 5-item inventory breakdown (stacked bar chart +
     table). Used by _render_inventory_page when ?breakdown=1 was provided.
@@ -1092,6 +1213,7 @@ def _breakdown_section_html(series: dict | None) -> str:
     th_cats = ''.join(
         f'<th class="num">{label} (千元)</th>' for _, label, _ in used_cats)
 
+    commentary = _breakdown_commentary(series)
     return f"""
 <section>
   <h3>📦 拆分明細 (從 MOPS 財報 PDF 解析，{len(dates)} 個季底)</h3>
@@ -1108,6 +1230,7 @@ def _breakdown_section_html(series: dict | None) -> str:
      不同公司揭露科目不同（半導體：原料/在製品/製成品/物料及零件；
      傳產：原料/在製品/成品/商品 etc）。</p>
 </section>
+{commentary}
 <script>
   (function() {{
     const D = {chart_data};
