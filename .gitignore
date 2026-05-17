@@ -40,3 +40,4 @@ screener_cache/
 limitup_cache/
 dormant_cache/
 second_wave_cache/
+pdf_cache/*.pdf

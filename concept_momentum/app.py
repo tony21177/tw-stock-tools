@@ -1019,9 +1019,120 @@ def contract_liabilities():
                                               rows=rows, name=name)
 
 
+def _breakdown_section_html(series: dict | None) -> str:
+    """Render the optional 5-item inventory breakdown (stacked bar chart +
+    table). Used by _render_inventory_page when ?breakdown=1 was provided.
+    Returns '' if no series given.
+    """
+    if not series:
+        return ""
+    if "_error" in series:
+        return (f'<div class="error">⚠ 拆分載入失敗: '
+                f'{html_lib.escape(series["_error"])}</div>')
+    # Standardized category order + zh labels (for display + chart legend)
+    cat_order = [
+        ("raw_materials", "原料", "#3b82f6"),
+        ("work_in_progress", "在製品", "#10b981"),
+        ("semi_finished", "半成品", "#f59e0b"),
+        ("finished_goods", "製成品", "#ef4444"),
+        ("byproducts", "副產品", "#8b5cf6"),
+        ("merchandise", "商品", "#ec4899"),
+        ("materials_supplies", "物料及零件", "#6b7280"),
+        ("in_transit", "在途存貨", "#14b8a6"),
+    ]
+    dates = sorted(series.keys())
+    if not dates:
+        return ('<section><h3>📦 拆分明細</h3>'
+                '<p class="empty">未取得拆分資料 (公司可能 IFRSs 申報沒拆 / '
+                '或 MOPS 下載失敗)。</p></section>')
+    # Find which categories actually appear (non-zero)
+    used_cats = []
+    for key, label, color in cat_order:
+        if any(series[d].get(key, 0) > 0 for d in dates):
+            used_cats.append((key, label, color))
+    # Also catch any "other:" keys (uncategorized) for transparency
+    other_keys = set()
+    for d in dates:
+        for k in series[d]:
+            if k.startswith("other:") and series[d].get(k, 0) > 0:
+                other_keys.add(k)
+    for k in sorted(other_keys):
+        label = k.split(":", 1)[1][:8]
+        used_cats.append((k, label, "#a3a3a3"))
+
+    # Build chart datasets
+    datasets = []
+    for key, label, color in used_cats:
+        vals = [round(series[d].get(key, 0) / 1000, 0) for d in dates]
+        datasets.append({
+            "label": label, "data": vals,
+            "backgroundColor": color, "borderColor": color,
+            "borderWidth": 1, "stack": "stack1",
+        })
+    chart_data = json.dumps({
+        "labels": dates, "datasets": datasets,
+    }, ensure_ascii=False)
+
+    # Table rows
+    table_rows = []
+    for d in dates:
+        e = series[d]
+        cells = [f'<td>{d}</td>']
+        for key, label, _ in used_cats:
+            v = e.get(key, 0)
+            cls = "num" if v else "num muted"
+            cells.append(f'<td class="{cls}">{v / 1000:,.0f}</td>' if v
+                          else '<td class="num muted">—</td>')
+        total = e.get("_total", 0)
+        cells.append(f'<td class="num"><b>{total / 1000:,.0f}</b></td>')
+        table_rows.append('<tr>' + ''.join(cells) + '</tr>')
+
+    th_cats = ''.join(
+        f'<th class="num">{label} (千元)</th>' for _, label, _ in used_cats)
+
+    return f"""
+<section>
+  <h3>📦 拆分明細 (從 MOPS 財報 PDF 解析，{len(dates)} 個季底)</h3>
+  <canvas id="breakdown-chart" height="140"></canvas>
+  <table class="report-table" style="margin-top:12px;">
+    <thead><tr>
+      <th>季底</th>
+      {th_cats}
+      <th class="num">合計</th>
+    </tr></thead>
+    <tbody>{''.join(table_rows)}</tbody>
+  </table>
+  <p class="small">資料源：公開資訊觀測站 IFRSs 合併財報 (附註十二 / 存貨明細)。
+     不同公司揭露科目不同（半導體：原料/在製品/製成品/物料及零件；
+     傳產：原料/在製品/成品/商品 etc）。</p>
+</section>
+<script>
+  (function() {{
+    const D = {chart_data};
+    new Chart(document.getElementById('breakdown-chart'), {{
+      type: 'bar',
+      data: D,
+      options: {{
+        responsive: true,
+        interaction: {{ mode:'index', intersect:false }},
+        scales: {{
+          x: {{ stacked: true }},
+          y: {{ stacked: true,
+                ticks: {{ callback: v => v >= 1e6 ? (v/1e6).toFixed(1)+'B'
+                                          : v >= 1e3 ? (v/1e3).toFixed(0)+'M'
+                                          : v }},
+                title: {{ display:true, text:'存貨 (千元)' }} }}
+        }}
+      }}
+    }});
+  }})();
+</script>"""
+
+
 def _render_inventory_page(code: str = "", years: int = 5,
                             rows: list[dict] | None = None,
-                            name: str = "", error: str = "") -> str:
+                            name: str = "", error: str = "",
+                            breakdown_series: dict | None = None) -> str:
     """Web page: 存貨歷史 + 衍生指標 for a stock, with Chart.js charts."""
     code_attr = html_lib.escape(code or "")
     body = ""
@@ -1130,9 +1241,10 @@ def _render_inventory_page(code: str = "", years: int = 5,
      存貨/營收 = 期末存貨/該季營收。<br>
      存貨 ↑ 通常是出貨壓力或拉貨；↓ 表示去化順暢。
      週轉率 ↑ + DSI ↓ = 庫存效率提升 (景氣轉好)。</p>
-  <p class="small">⚠ 原料 / 在製品 / 半成品 / 成品 / 副產品 5 項拆分需 MOPS XBRL 解析
-     (這版先給總額 + 衍生指標)。</p>
+  <p class="small">原料 / 在製品 / 半成品 / 成品 / 副產品 等項目拆分：
+     <a href="?code={code_attr}&years={years}&breakdown=1">點此載入拆分明細 (從 MOPS 財報 PDF 解析，第一次約需 30 秒下載)</a></p>
 </section>
+{_breakdown_section_html(breakdown_series)}
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
@@ -1284,6 +1396,7 @@ def _render_inventory_page(code: str = "", years: int = 5,
 def inventory():
     import tw_inventory
     code = (request.args.get("code") or "").strip()
+    breakdown = request.args.get("breakdown") == "1"
     try:
         years = int(request.args.get("years") or "5")
         years = max(1, min(years, 10))
@@ -1298,8 +1411,17 @@ def inventory():
         return _render_inventory_page(
             code=code, years=years, error=f"{type(e).__name__}: {e}")
     name = tw_inventory._zh_name(code)
+    breakdown_series = None
+    if breakdown and rows:
+        try:
+            import mops_pdf
+            breakdown_series = mops_pdf.fetch_breakdown_series(
+                code, years=years)
+        except Exception as e:
+            breakdown_series = {"_error": f"{type(e).__name__}: {e}"}
     return _render_inventory_page(code=code, years=years,
-                                   rows=rows, name=name)
+                                   rows=rows, name=name,
+                                   breakdown_series=breakdown_series)
 
 
 @app.route("/chip-price")

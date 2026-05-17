@@ -15,7 +15,7 @@
 
 ---
 
-## 📦 全部工具清單 (十六項)
+## 📦 全部工具清單 (十七項)
 
 1. **借券雷達** — 借券議借異常監控（盤後 16:00 排程） → `tw_lending_monitor.py --mode lending`
 2. **空頭撤退** — 借券賣出餘額大幅減少監控（盤後 21:30 排程） → `tw_lending_monitor.py --mode sbl`
@@ -33,6 +33,7 @@
 14. **日內籌碼×價格** — 當日 BSR broker × price 二維分析（CLI / Skill）→ `tw_chip_price.py`
 15. **合約負債歷史** — 單檔近 N 年每季合約負債 + QoQ/YoY/CAGR（CLI + 網頁）→ `tw_contract_liabilities.py` · `/contract-liabilities`
 16. **存貨歷史 + 衍生指標** — 單檔近 N 年每季存貨 + 週轉率/DSI/存貨營收比 + 圖表（CLI + 網頁，2026-05-15 加）→ `tw_inventory.py` · `/inventory`
+17. **存貨 5 項拆分** — 從 MOPS 財報 PDF 解析原料/在製品/半成品/製成品/副產品/物料拆分，疊圖顯示（2026-05-17 加）→ `mops_pdf.py` · `/inventory?breakdown=1`
 
 所有工具放在 `~/project/tw_stock_tools/`，cron 設定每天排程推送到 Telegram 群組。
 概念動能子模組詳見 `concept_momentum/README.md`。
