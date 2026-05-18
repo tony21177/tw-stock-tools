@@ -257,12 +257,21 @@ def _build_ignition_history_html(target_date: str,
             peak = max(f[1] for f in e["follow"])
             last_s = e["follow"][-1][1]
             multiplier = peak / e["today"] if e["today"] > 0 else 0
-            if last_s == 0 and peak <= e["today"] * 1.2:
-                follow_str = f'<span style="color:#c30">❌ 假 (高點 {peak:.0f} 後墜回 0)</span>'
+            n_days = len(e["follow"])
+            if peak == 0:
+                follow_str = (f'<span style="color:#c30">❌ 假 '
+                              f'(後 {n_days} 日 score 全 0，徹底失溫)</span>')
+            elif last_s == 0 and peak <= e["today"] * 1.2:
+                follow_str = (f'<span style="color:#c30">❌ 假 '
+                              f'(後 {n_days} 日最高僅 {peak:.0f}, '
+                              f'最終回 0)</span>')
             elif multiplier >= 2.0:
-                follow_str = f'<span style="color:#0a7e0a">✅ 真 (高點 {peak:.0f}, ×{multiplier:.1f})</span>'
+                follow_str = (f'<span style="color:#0a7e0a">✅ 真 '
+                              f'(後 {n_days} 日高點 {peak:.0f}, '
+                              f'×{multiplier:.1f})</span>')
             else:
-                follow_str = f'高點 {peak:.0f} (×{multiplier:.1f})'
+                follow_str = (f'後 {n_days} 日高點 {peak:.0f} '
+                              f'(×{multiplier:.1f}), 最終 {last_s:.0f}')
         leaders = " / ".join(
             f"{L.get('code', '')} {L.get('name', '')[:6]}" for L in e["leaders"])
         rows.append(
