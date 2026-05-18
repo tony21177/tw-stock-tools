@@ -266,12 +266,19 @@ def _build_ignition_history_html(target_date: str,
                               f'(後 {n_days} 日最高僅 {peak:.0f}, '
                               f'最終回 0)</span>')
             elif multiplier >= 2.0:
-                follow_str = (f'<span style="color:#0a7e0a">✅ 真 '
-                              f'(後 {n_days} 日高點 {peak:.0f}, '
-                              f'×{multiplier:.1f})</span>')
+                follow_str = (f'<span style="color:#0a7e0a" '
+                              f'title="倍率 = 後 5 日高點 / 點火日 score'
+                              f' = {peak:.1f} / {e["today"]:.1f} = '
+                              f'{multiplier:.2f}">'
+                              f'✅ 真 (後 {n_days} 日高點 {peak:.0f}, '
+                              f'倍率 ×{multiplier:.1f})</span>')
             else:
-                follow_str = (f'後 {n_days} 日高點 {peak:.0f} '
-                              f'(×{multiplier:.1f}), 最終 {last_s:.0f}')
+                follow_str = (f'<span title="倍率 = 後 5 日高點 / 點火日 score'
+                              f' = {peak:.1f} / {e["today"]:.1f} = '
+                              f'{multiplier:.2f}">'
+                              f'後 {n_days} 日高點 {peak:.0f} '
+                              f'(倍率 ×{multiplier:.1f}), 最終 {last_s:.0f}'
+                              f'</span>')
         leaders = " / ".join(
             f"{L.get('code', '')} {L.get('name', '')[:6]}" for L in e["leaders"])
         rows.append(
@@ -311,13 +318,21 @@ def _build_ignition_history_html(target_date: str,
         '</tr></thead><tbody>' + ''.join(rows) + '</tbody></table>'
         '<p class="meta" style="margin-top:14px; line-height:1.7;">'
         '<b>「後 5 日 score 追蹤」欄位說明：</b><br>'
-        '✅ <b>真</b> = 點火後 5 個交易日內 score 至少一天攀升到 點火日 × 2 以上 '
-        '(代表族群真正延燒)。範例：重電 4/28 點火 19 → 後 5 日高點 73, ×3.8。<br>'
-        '❌ <b>假 (徹底失溫)</b> = 點火後 5 日 score 全部歸 0 (隔天就完全失去動能)。'
-        '範例：折疊螢幕 5/7 噴 40 → 5/8 後全是 0。<br>'
-        '❌ <b>假 (最終回 0)</b> = 後續曾微幅延續但最終仍回 0。<br>'
-        '<i>後 N 日高點 X (×Y), 最終 Z</i> = 倍率不足 2.0 的中性結果，仍在持續，未明確認定真假。<br>'
-        '（待觀察）= 點火日太接近今天，後續交易日數據還沒累積夠 (5 個交易日才能判讀)。'
+        '<b>📐 倍率定義：</b>'
+        '<span style="background:#fff4e6;padding:2px 6px;border-radius:4px;">'
+        '<b>倍率 = 後 5 日 score 高點 ÷ 點火日 score</b>'
+        '</span> '
+        '（衡量族群延燒幅度，倍率越高代表族群越熱）<br>'
+        '<b>範例計算：</b>綠能 5/4 點火日 score 13.5，後 5 日最高爬到 50 → '
+        '倍率 = 50 ÷ 13.5 = ×3.7 → 判定為真點火<br><br>'
+        '✅ <b>真 (倍率 ≥ 2.0)</b> = 後續高點至少是點火日 score 的 2 倍以上 '
+        '(代表族群真正延燒，非單日噴出)。<br>'
+        '&nbsp;&nbsp;&nbsp;範例：重電 4/28 點火 19 → 後 5 日高點 73, 倍率 = 73÷19 = ×3.8<br>'
+        '❌ <b>假 (徹底失溫)</b> = 後 5 日 score 全部歸 0 (隔天就完全失去動能)<br>'
+        '&nbsp;&nbsp;&nbsp;範例：折疊螢幕 5/7 噴 40 → 5/8 起全是 0<br>'
+        '❌ <b>假 (最終回 0)</b> = 中途曾微幅延續但最終回 0<br>'
+        '<i>後 N 日高點 X (倍率 ×Y), 最終 Z</i> = 倍率不足 2.0 的中性結果，仍在持續但延燒力道不足，未明確認定真假<br>'
+        '<b>（待觀察）</b> = 點火日太接近今天，後續交易日數據還沒累積夠 (需 5 個交易日才能判讀)'
         '</p>'
     )
 
