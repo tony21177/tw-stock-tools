@@ -296,14 +296,14 @@ def _render_report_html(data: dict) -> str:
         data.get("fingerprint", {}).get("top_sellers", []), "sell"))
     parts.append('</section>')
 
-    # ── Section 6: 🌀 高賣低買 ────────────────────────────────────────────
+    # ── Section 6: 🌀 同分點兩面操作 — 高賣低買 OR 低賣高買 ────────────────
     wash = data.get("wash_candidates", [])
     if wash:
-        parts.append('<section><h2>🌀 高賣低買 — 同分點兩面操作 '
-                      '(洗盤低接型態)</h2>')
+        parts.append('<section><h2>🌀 同分點兩面操作 '
+                      '(高賣低買 / 低賣高買 型態)</h2>')
         parts.append('<table class="report-table wash-table"><thead><tr>'
-                      '<th>分點</th><th>賣</th><th>買</th>'
-                      '<th class="num">高賣低買差</th><th class="num">淨</th>'
+                      '<th>分點</th><th>類型</th><th>賣</th><th>買</th>'
+                      '<th class="num">買賣價差</th><th class="num">淨</th>'
                       '<th>判定</th></tr></thead><tbody>')
         rng = max(day_high - day_low, 0.01)
         def _wash_side_detail(cells: list, side: str) -> str:
@@ -350,23 +350,41 @@ def _render_report_html(data: dict) -> str:
                        + (f'<br><small>~{tw_chip_price._minutes_to_hhmm(buy_t)}</small>'
                           if buy_t is not None else "")
                        + _wash_side_detail(cells_w, "buy"))
-            pct = w["price_gap"] / rng * 100
+            gap = w["price_gap"]
+            pct = abs(gap) / rng * 100
             pat = w.get("time_pattern", "")
+            wash_type = w.get("wash_type",
+                              "高賣低買" if gap > 0 else "低賣高買")
             if pat == "真洗盤低接":
-                verdict = '<span class="ok">✅ 真洗盤低接</span><br><small>先賣高、後買低</small>'
+                verdict = '<span class="ok">✅ 真洗盤低接</span><br><small>先賣高、後買低 (主力低接)</small>'
             elif pat == "追漲獲利出":
-                verdict = '<span class="warn">⚠ 追漲獲利出</span><br><small>先買低、後賣高</small>'
+                verdict = '<span class="warn">⚠ 追漲獲利出</span><br><small>先買低、後賣高 (短線獲利)</small>'
+            elif pat == "認錯買回":
+                verdict = '<span class="warn">⚠ 認錯買回</span><br><small>先賣低、後追高 (認賠補回或翻多)</small>'
+            elif pat == "殺低出貨":
+                verdict = '<span class="warn" style="color:#c30">❌ 殺低出貨</span><br><small>先買高、後殺低 (恐慌賣)</small>'
             elif pat == "時序模糊":
                 verdict = '<span class="muted">⏱ 時序模糊</span><br><small>買賣時間相近</small>'
-            else:
-                verdict = ('看似空、實際多<br><small>(淨賣但低接更多籌碼)</small>'
+            elif wash_type == "高賣低買":
+                verdict = ('看似空、實際多<br><small>(淨賣但低接累積)</small>'
                            if net < 0
-                           else '同分點兩面操作<br><small>(確實淨買)</small>')
+                           else '高賣低買<br><small>(同分點兩面，淨買)</small>')
+            else:  # 低賣高買
+                verdict = ('低賣高買<br><small>(賣低後追高 — 認錯買回)</small>'
+                           if net > 0
+                           else '低賣高買<br><small>(淨賣，殺低出貨)</small>')
+            type_cls = "buy" if wash_type == "高賣低買" else "warn"
+            type_color = "#c30" if wash_type == "低賣高買" else "#0a7e0a"
+            gap_sign = "+" if gap > 0 else ""
+            gap_label = "高賣低買差" if gap > 0 else "低賣高買差"
             parts.append(
                 f'<tr><td>{_esc(w["broker_id"])}<br>{_esc(w["broker_name"])}</td>'
+                f'<td><span style="color:{type_color};font-weight:600">'
+                f'{wash_type}</span></td>'
                 f'<td class="sell">{sell_str}</td>'
                 f'<td class="buy">{buy_str}</td>'
-                f'<td class="num">+${w["price_gap"]:.2f}<br><small>({pct:.0f}% 全日)</small></td>'
+                f'<td class="num">{gap_label}<br>{gap_sign}${gap:.2f}'
+                f'<br><small>({pct:.0f}% 全日)</small></td>'
                 f'<td class="num">{net_html} 張</td>'
                 f'<td>{verdict}</td></tr>'
             )
@@ -538,17 +556,30 @@ def _render_broker_drilldown(code: str, date: str, broker_query: str,
         wash_html = ""
         if total_buy >= 1000 and total_sell >= 1000:
             wash_score = (sell_avg - buy_avg) / rng
+            wash_type = "高賣低買" if wash_score > 0 else "低賣高買"
             time_pattern = ""
             if buy_t is not None and sell_t is not None:
-                if buy_t - sell_t >= 30:
-                    time_pattern = "✅ 真洗盤低接 (先賣後買)"
-                elif sell_t - buy_t >= 30:
-                    time_pattern = "⚠ 追漲獲利出 (先買後賣)"
-                else:
-                    time_pattern = "⏱ 時序模糊"
+                sell_first = buy_t - sell_t >= 30
+                buy_first = sell_t - buy_t >= 30
+                if wash_type == "高賣低買":
+                    if sell_first:
+                        time_pattern = "✅ 真洗盤低接 (先賣高、後買低)"
+                    elif buy_first:
+                        time_pattern = "⚠ 追漲獲利出 (先買低、後賣高)"
+                    else:
+                        time_pattern = "⏱ 時序模糊"
+                else:  # 低賣高買
+                    if sell_first:
+                        time_pattern = ("⚠ 認錯買回 (先賣低、後追高 — "
+                                        "認賠補回或翻多)")
+                    elif buy_first:
+                        time_pattern = ("❌ 殺低出貨 (先買高、後殺低 — "
+                                        "恐慌賣)")
+                    else:
+                        time_pattern = "⏱ 時序模糊"
             sign = "+" if wash_score >= 0 else ""
             wash_html = (
-                f'<p><b>🌀 高賣低買:</b> sell_avg ${sell_avg:.2f} − '
+                f'<p><b>🌀 {wash_type}:</b> sell_avg ${sell_avg:.2f} − '
                 f'buy_avg ${buy_avg:.2f} = '
                 f'<b>{sign}${sell_avg - buy_avg:.2f}</b> '
                 f'(wash_score {wash_score:+.2f}); {time_pattern}</p>'

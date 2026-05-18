@@ -1028,8 +1028,13 @@ def broker_wash_candidates(rows: list[dict], day_low: float, day_high: float,
         buy_avg = b["_buy_value"] / b["buy_shares"]
         sell_avg = b["_sell_value"] / b["sell_shares"]
         wash_score = (sell_avg - buy_avg) / day_range
-        if wash_score < min_wash_score:
+        # Two-sided detection:
+        #   wash_score > 0  →「高賣低買」(sell_avg > buy_avg) — 看似空但低接累積
+        #   wash_score < 0  →「低賣高買」(sell_avg < buy_avg) — 認錯買回 / 慘賠加碼
+        # Either side with |wash_score| >= min_wash_score is interesting.
+        if abs(wash_score) < min_wash_score:
             continue
+        wash_type = "高賣低買" if wash_score > 0 else "低賣高買"
         cand = {
             "broker_id": b["broker_id"],
             "broker_name": b["broker_name"],
@@ -1039,10 +1044,17 @@ def broker_wash_candidates(rows: list[dict], day_low: float, day_high: float,
             "buy_avg": round(buy_avg, 2),
             "sell_avg": round(sell_avg, 2),
             "wash_score": wash_score,
-            "price_gap": round(sell_avg - buy_avg, 2),
+            "price_gap": round(sell_avg - buy_avg, 2),  # +ve = 高賣低買
+            "wash_type": wash_type,
             "cells": b["_cells"],
         }
-        # Time-based classification — needs tick data
+        # Time-based classification — needs tick data. Interpretation
+        # depends on BOTH wash_type and time direction:
+        #
+        #   高賣低買 + 先賣後買 = ✅ 真洗盤低接 (bullish, smart-money entry)
+        #   高賣低買 + 先買後賣 = ⚠ 追漲獲利出 (bearish, profit-take)
+        #   低賣高買 + 先賣後買 = ⚠ 認錯買回 (bearish→bullish flip cost)
+        #   低賣高買 + 先買後賣 = ❌ 殺低出貨 (bearish, panic exit)
         if price_to_time:
             buy_t = broker_time_estimate(b["_cells"], "buy", price_to_time)
             sell_t = broker_time_estimate(b["_cells"], "sell", price_to_time)
@@ -1050,15 +1062,27 @@ def broker_wash_candidates(rows: list[dict], day_low: float, day_high: float,
                 cand["buy_time_min"] = round(buy_t, 1)
                 cand["sell_time_min"] = round(sell_t, 1)
                 # ≥ 30 min difference = clear direction; else 模糊
-                if buy_t - sell_t >= 30:
-                    cand["time_pattern"] = "真洗盤低接"  # bought LATER than sold
-                elif sell_t - buy_t >= 30:
-                    cand["time_pattern"] = "追漲獲利出"  # sold LATER than bought
-                else:
-                    cand["time_pattern"] = "時序模糊"
+                sell_first = buy_t - sell_t >= 30
+                buy_first = sell_t - buy_t >= 30
+                if wash_type == "高賣低買":
+                    if sell_first:
+                        cand["time_pattern"] = "真洗盤低接"
+                    elif buy_first:
+                        cand["time_pattern"] = "追漲獲利出"
+                    else:
+                        cand["time_pattern"] = "時序模糊"
+                else:  # 低賣高買
+                    if sell_first:
+                        cand["time_pattern"] = "認錯買回"
+                    elif buy_first:
+                        cand["time_pattern"] = "殺低出貨"
+                    else:
+                        cand["time_pattern"] = "時序模糊"
         candidates.append(cand)
+    # Sort by absolute spread × log(min volume) — both wash patterns equally
+    # interesting; pick the largest in either direction.
     candidates.sort(
-        key=lambda c: -c["wash_score"] * math.log(
+        key=lambda c: -abs(c["wash_score"]) * math.log(
             min(c["buy_shares"], c["sell_shares"]) + 1
         )
     )
@@ -1294,45 +1318,61 @@ def format_report(data: dict) -> str:
             )
             _emit_broker_detail(b, "sell")
 
-    # Wash candidates — 高賣低買 same-day pattern (淨賣超但實際低接收貨)
+    # Wash candidates — 同分點 buy/sell avg price gap (兩個 pattern):
+    #   - 高賣低買 (wash_score>0): sell_avg > buy_avg = 看似空但低接累積
+    #   - 低賣高買 (wash_score<0): sell_avg < buy_avg = 認錯買回 / 殺低出貨
     wash = data.get("wash_candidates", [])
     if wash:
         rng = max(ohlc["high"] - ohlc["low"], 0.01)
         lines.append("")
-        lines.append("【🌀 高賣低買 — 同分點兩面操作 (洗盤低接型態)】")
+        lines.append("【🌀 同分點兩面操作 — 高賣低買 OR 低賣高買】")
         for w in wash:
             net = w["net_shares"]
             net_str = (f"淨買 +{_fmt_zhang(net)}張" if net > 0
                        else f"淨賣 {_fmt_zhang(net)}張")
-            pct_of_range = w["price_gap"] / rng * 100
+            gap = w["price_gap"]
+            pct_of_range = abs(gap) / rng * 100
             pat = w.get("time_pattern", "")
-            # Choose interpretation based on time pattern (preferred) or net (fallback)
+            wash_type = w.get("wash_type",
+                              "高賣低買" if gap > 0 else "低賣高買")
+            # Interpretation depends on (wash_type, time_pattern)
             if pat == "真洗盤低接":
-                interpret = "← ✅ 真洗盤低接 (確認順序: 先賣高、後買低)"
+                interpret = "← ✅ 真洗盤低接 (先賣高、後買低 — 主力低接)"
             elif pat == "追漲獲利出":
-                interpret = "← ⚠ 追漲獲利出 (順序: 先買低、後賣高 — 非洗盤)"
+                interpret = "← ⚠ 追漲獲利出 (先買低、後賣高 — 短線獲利了結)"
+            elif pat == "認錯買回":
+                interpret = "← ⚠ 認錯買回 (先賣低、後追高 — 補回認賠或翻多)"
+            elif pat == "殺低出貨":
+                interpret = "← ❌ 殺低出貨 (先買高、後殺低 — 恐慌 / 認賠賣)"
             elif pat == "時序模糊":
-                interpret = "← ⏱ 時序模糊 (買賣時間相近，無法區分)"
+                interpret = "← ⏱ 時序模糊 (買賣時間相近，無法區分順序)"
             else:
-                interpret = (
-                    "← 看似空、實際多 (淨賣但低接更多籌碼)"
-                    if net < 0
-                    else "← 同分點兩面操作，但確實淨買"
-                )
+                # No tick data — fall back to wash_type heuristic
+                if wash_type == "高賣低買":
+                    interpret = ("← 高賣低買 (淨賣但低接累積, 看似空、實際多)"
+                                 if net < 0
+                                 else "← 高賣低買 (確實淨買)")
+                else:
+                    interpret = ("← 低賣高買 (賣低後高接, 認錯買回 / 翻多代價)"
+                                 if net > 0
+                                 else "← 低賣高買 (淨賣，殺低出貨)")
             buy_t = w.get("buy_time_min")
             sell_t = w.get("sell_time_min")
             time_str = ""
             if buy_t is not None and sell_t is not None:
                 time_str = (f" / 賣 ~{_minutes_to_hhmm(sell_t)} "
                               f"/ 買 ~{_minutes_to_hhmm(buy_t)}")
+            # Gap label: 高賣低買 → "+X.XX"; 低賣高買 → "-X.XX"
+            gap_label = "高賣低買差" if gap > 0 else "低賣高買差"
+            gap_sign = "+" if gap > 0 else ""
             lines.append(
-                f"  {w['broker_id']} {w['broker_name']}: "
+                f"  {w['broker_id']} {w['broker_name']} [{wash_type}]: "
                 f"賣 {_fmt_zhang(w['sell_shares'])}張 (avg ${w['sell_avg']:.2f}) "
                 f"/ 買 {_fmt_zhang(w['buy_shares'])}張 (avg ${w['buy_avg']:.2f})"
                 f"{time_str}"
             )
             lines.append(
-                f"    → 高賣低買差 +${w['price_gap']:.2f} "
+                f"    → {gap_label} {gap_sign}${gap:.2f} "
                 f"({pct_of_range:.0f}% of 全日範圍)，{net_str} {interpret}"
             )
             _emit_broker_detail(w, "sell")
