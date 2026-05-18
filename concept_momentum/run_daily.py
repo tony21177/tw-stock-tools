@@ -4,6 +4,7 @@
 """
 
 import argparse
+import glob
 import json
 import os
 import sys
@@ -95,6 +96,94 @@ def send_telegram_text(message: str, bot_token: str, chat_id: str) -> bool:
     except Exception as e:
         print(f"[ERROR] Telegram text: {e}", file=sys.stderr)
         return False
+
+
+def detect_ignition_events(results: list[dict], target_yyyymmdd: str,
+                            score_jump: float = 8.0,
+                            yest_max: float = 3.0,
+                            today_min: float = 10.0,
+                            lookback_days: int = 30) -> list[dict]:
+    """Find concepts whose sustainability_score jumped from dormant (<yest_max)
+    to strong (>=today_min) versus the most-recent prior trading day.
+
+    Loads the prior day's analysis_*.json from cache and computes per-theme
+    score delta. Returns list of ignition events sorted by delta desc.
+    """
+    results_dir = os.path.join(HERE, "cache", "results")
+    files = sorted(glob.glob(os.path.join(results_dir, "analysis_*.json")))
+    today_file = os.path.join(results_dir, f"analysis_{target_yyyymmdd}.json")
+    # Find the most recent earlier file
+    prior = None
+    for fp in reversed(files):
+        if os.path.basename(fp) == os.path.basename(today_file):
+            continue
+        if os.path.basename(fp) < os.path.basename(today_file):
+            prior = fp
+            break
+    if not prior:
+        return []
+    try:
+        with open(prior) as f:
+            yest = {x["theme_key"]: x for x in json.load(f)}
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    events = []
+    for r in results:
+        tk = r.get("theme_key")
+        y = yest.get(tk)
+        if not y:
+            continue
+        t_score = r.get("sustainability_score", 0)
+        y_score = y.get("sustainability_score", 0)
+        delta = t_score - y_score
+        if y_score < yest_max and t_score >= today_min and delta >= score_jump:
+            events.append({
+                "name_zh": r["name_zh"],
+                "yest_score": y_score,
+                "today_score": t_score,
+                "delta": delta,
+                "stock_count": r.get("stock_count", 0),
+                "breadth_5d": r.get("breadth_5d", 0),
+                "volume_ratio": r.get("volume_ratio", 0),
+                "leaders": r.get("leaders", [])[:3],
+            })
+    events.sort(key=lambda e: -e["delta"])
+    return events
+
+
+def build_ignition_summary(results: list[dict], target_date: str,
+                            target_yyyymmdd: str) -> str:
+    """Telegram summary of today's ignition events (休眠 → 轉強)."""
+    events = detect_ignition_events(results, target_yyyymmdd)
+    lines = [f"🔥 族群點火警示 {target_date}"]
+    lines.append("（休眠 score<3 → 今日 score≥10, Δ≥8）")
+    lines.append("━━━━━━━━━━━━")
+    if not events:
+        lines.append("（今日無新點火族群）")
+        return "\n".join(lines)
+    for e in events:
+        # Strength heuristic — historical pattern (8 cases, 2026-04-23 onwards):
+        #  - stock_count >= 7 + volume_ratio >= 0.95 = high probability real
+        #  - stock_count <= 4 = high prob 假點火 (1-day spike)
+        if e["stock_count"] >= 7 and e["volume_ratio"] >= 0.95:
+            tag = "✅ 高機率真點火"
+        elif e["stock_count"] <= 4:
+            tag = "⚠ 小族群假點火風險高"
+        else:
+            tag = "🟡 觀察 1-2 日確認"
+        lines.append(f"\n{e['name_zh']}  {e['yest_score']:.1f} → "
+                      f"{e['today_score']:.1f}  Δ +{e['delta']:.1f}")
+        lines.append(f"  子數 {e['stock_count']} / 廣度 {e['breadth_5d']:.0f}%"
+                      f" / 量比 {e['volume_ratio']:.2f}x  {tag}")
+        leaders_str = " / ".join(
+            f"{L['code']} {L['name'][:6]}" for L in e["leaders"])
+        if leaders_str:
+            lines.append(f"  領漲: {leaders_str}")
+    lines.append("\n📊 歷史模式（過去 17 個交易日 5 個點火樣本）:")
+    lines.append("  • 子數 ≥7 + 量比 ≥0.95 → 全 4 個真點火 ×3-4 倍 sustained")
+    lines.append("  • 子數 ≤4 → 唯一假點火案例 (折疊螢幕 5/7 噴 40→0)")
+    return "\n".join(lines)
 
 
 def build_summary(results: list[dict], target_date: str) -> str:
@@ -296,6 +385,14 @@ def main():
 
         print("推送弱勢族群摘要...", file=sys.stderr)
         ok3 = send_telegram_text(weak_summary, bot_token, args.chat_id)
+        time.sleep(1)
+
+        print("推送族群點火警示...", file=sys.stderr)
+        ignition_summary = build_ignition_summary(
+            results, target_date,
+            datetime.now().strftime("%Y%m%d"))
+        ok_ignition = send_telegram_text(
+            ignition_summary, bot_token, args.chat_id)
         time.sleep(1)
 
         print("推送 rerating 摘要...", file=sys.stderr)

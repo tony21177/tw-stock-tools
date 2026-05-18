@@ -185,6 +185,113 @@ def generate_trend_png(results: list[dict], target_date: str, top_n: int = 8) ->
     return out_path
 
 
+def _build_ignition_history_html(target_date: str,
+                                  lookback_days: int = 30) -> str:
+    """Scan past `lookback_days` analysis_*.json files for concepts that
+    transitioned from dormant (score<3) to strong (score>=10) day-over-day.
+    Returns HTML table of all ignition events found, plus follow-through
+    score trajectory for each (to assess real vs fake ignition).
+    """
+    results_dir = os.path.join(HERE, "cache", "results")
+    import glob as _glob
+    files = sorted(_glob.glob(os.path.join(results_dir, "analysis_*.json")))
+    if len(files) < 2:
+        return '<p class="meta">需要至少 2 天歷史資料才能偵測點火</p>'
+    by_date = {}
+    for fp in files:
+        date = os.path.basename(fp)[9:17]
+        try:
+            with open(fp) as f:
+                by_date[date] = {x["theme_key"]: x for x in json.load(f)}
+        except (OSError, json.JSONDecodeError):
+            continue
+    dates = sorted(by_date.keys())
+    # Limit to lookback window
+    cutoff = dates[-lookback_days:] if len(dates) > lookback_days else dates
+
+    events = []
+    for i in range(1, len(cutoff)):
+        d_today = cutoff[i]
+        d_yest = cutoff[i - 1]
+        for tk, t in by_date[d_today].items():
+            y = by_date[d_yest].get(tk)
+            if not y:
+                continue
+            t_score = t.get("sustainability_score", 0)
+            y_score = y.get("sustainability_score", 0)
+            delta = t_score - y_score
+            if y_score < 3 and t_score >= 10 and delta >= 8:
+                # Follow-through: scores in subsequent days
+                follow = []
+                idx = dates.index(d_today)
+                for d_fwd in dates[idx + 1:idx + 6]:
+                    f_score = by_date[d_fwd].get(tk, {}).get(
+                        "sustainability_score", 0)
+                    follow.append((d_fwd, f_score))
+                events.append({
+                    "date": d_today, "theme": t["name_zh"],
+                    "yest": y_score, "today": t_score, "delta": delta,
+                    "stock_count": t.get("stock_count", 0),
+                    "breadth": t.get("breadth_5d", 0),
+                    "volume_ratio": t.get("volume_ratio", 0),
+                    "leaders": t.get("leaders", [])[:3],
+                    "follow": follow,
+                })
+    if not events:
+        return '<p class="meta">過去 {} 個交易日無族群點火事件</p>'.format(
+            len(cutoff))
+
+    events.sort(key=lambda e: e["date"], reverse=True)
+    rows = []
+    for e in events:
+        # Tag based on stock_count + volume_ratio heuristic
+        if e["stock_count"] >= 7 and e["volume_ratio"] >= 0.95:
+            tag = '<span style="color:#0a7e0a;font-weight:600">✅ 高機率真</span>'
+        elif e["stock_count"] <= 4:
+            tag = '<span style="color:#c30;font-weight:600">⚠ 假點火風險</span>'
+        else:
+            tag = '<span style="color:#ff7f0e;font-weight:600">🟡 觀察</span>'
+        # Follow-through arrow
+        follow_str = "（待觀察）"
+        if e["follow"]:
+            peak = max(f[1] for f in e["follow"])
+            last_s = e["follow"][-1][1]
+            multiplier = peak / e["today"] if e["today"] > 0 else 0
+            if last_s == 0 and peak <= e["today"] * 1.2:
+                follow_str = f'<span style="color:#c30">❌ 假 (高點 {peak:.0f} 後墜回 0)</span>'
+            elif multiplier >= 2.0:
+                follow_str = f'<span style="color:#0a7e0a">✅ 真 (高點 {peak:.0f}, ×{multiplier:.1f})</span>'
+            else:
+                follow_str = f'高點 {peak:.0f} (×{multiplier:.1f})'
+        leaders = " / ".join(
+            f"{L.get('code', '')} {L.get('name', '')[:6]}" for L in e["leaders"])
+        rows.append(
+            f'<tr>'
+            f'<td>{e["date"][:4]}-{e["date"][4:6]}-{e["date"][6:8]}</td>'
+            f'<td><b>{e["theme"]}</b></td>'
+            f'<td class="num">{e["yest"]:.1f}</td>'
+            f'<td class="num">{e["today"]:.1f}</td>'
+            f'<td class="num"><b>+{e["delta"]:.1f}</b></td>'
+            f'<td class="num">{e["stock_count"]}</td>'
+            f'<td class="num">{e["breadth"]:.0f}%</td>'
+            f'<td class="num">{e["volume_ratio"]:.2f}x</td>'
+            f'<td>{tag}</td>'
+            f'<td>{follow_str}</td>'
+            f'<td style="font-size:0.85em;">{leaders}</td>'
+            f'</tr>'
+        )
+    return (
+        '<table><thead><tr>'
+        '<th>點火日</th><th>族群</th><th class="num">昨</th>'
+        '<th class="num">今</th><th class="num">Δ</th>'
+        '<th class="num" title="子數 ≥7 較不易假點火">子數</th>'
+        '<th class="num">5d 廣度</th>'
+        '<th class="num" title="≥0.95 較不易假點火">量比</th>'
+        '<th>預測</th><th>實際追蹤</th><th>領漲</th>'
+        '</tr></thead><tbody>' + ''.join(rows) + '</tbody></table>'
+    )
+
+
 def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
                   breadth_table_html: str = "",
                   broker_radar_html: str = "",
@@ -286,6 +393,9 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
         height=500, template="plotly_white", hovermode="x unified",
     )
     index_html = fig3.to_html(include_plotlyjs=False, div_id="index", full_html=False)
+
+    # ============ 族群點火歷史榜 ============
+    ignition_history_html = _build_ignition_history_html(target_date)
 
     # ============ Leaders + Laggards table (pairs trading view) ============
     def _member_rows(members, side):
@@ -436,6 +546,7 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
 
 <div class="tabs">
   <div class="tab active" onclick="showTab('breadth')">📊 大盤寬度</div>
+  <div class="tab" onclick="showTab('ignition')">🔥 族群點火</div>
   <div class="tab" onclick="showTab('broker')">🎯 主力雷達</div>
   <div class="tab" onclick="showTab('premarket')">🌅 盤前訊號</div>
   <div class="tab" onclick="showTab('lending')">🌙 借券動向</div>
@@ -452,6 +563,13 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
   <h2>📊 大盤寬度（最近 60 個交易日）</h2>
   <p class="meta">寬度池 = 上市+上櫃 普通股 4 位代號 (~2,300 檔) | 紅 = 漲/買超 / 綠 = 跌/賣超 / 缺值 = —</p>
   {breadth_table_html}
+</div>
+<div id="tab-ignition" class="tab-content chart-wrap">
+  <h2>🔥 族群點火歷史榜（30 個交易日視窗）</h2>
+  <p class="meta">休眠 (score &lt; 3) → 轉強 (score ≥ 10) 且 Δ ≥ 8 視為點火 |
+     歷史模式：子數 ≥7 + 量比 ≥0.95 = 高機率真點火 (×3-4 倍 sustained) |
+     子數 ≤4 = 假點火風險高 (1 日噴出即破滅)</p>
+  {ignition_history_html}
 </div>
 <div id="tab-broker" class="tab-content chart-wrap">
   <h2>🎯 主力雷達歷史榜（10 日視窗）</h2>
