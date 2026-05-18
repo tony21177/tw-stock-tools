@@ -559,8 +559,15 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
   .row-leader:hover {{ background: #ffe0e0; }}
   .row-laggard:hover {{ background: #d4f4dc; }}
   .meta {{ color: #666; font-size: 14px; margin-bottom: 20px; }}
-  .tabs {{ display: flex; gap: 8px; margin-bottom: 16px; }}
-  .tab {{ padding: 10px 20px; background: #e0e0e0; border-radius: 8px 8px 0 0; cursor: pointer; user-select: none; }}
+  .tabs {{ display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 16px; align-items: stretch; }}
+  .tab-group {{ display: flex; flex-direction: column; gap: 2px; padding: 4px 8px 4px 8px; border-left: 3px solid; border-radius: 4px; background: #fafafa; }}
+  .tab-group.g-concept {{ border-left-color: #d62728; }}
+  .tab-group.g-flow {{ border-left-color: #ff7f0e; }}
+  .tab-group.g-stock {{ border-left-color: #1f77b4; }}
+  .tab-group-label {{ font-size: 11px; color: #666; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; padding: 2px 0; }}
+  .tab-group-items {{ display: flex; gap: 4px; flex-wrap: wrap; }}
+  .tab {{ padding: 8px 14px; background: #e0e0e0; border-radius: 6px; cursor: pointer; user-select: none; font-size: 14px; transition: background 0.15s; }}
+  .tab:hover {{ background: #c8c8c8; }}
   .tab.active {{ background: #1d1d1f; color: white; }}
   .tab-content {{ display: none; }}
   .tab-content.active {{ display: block; }}
@@ -590,18 +597,33 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
 </div>
 
 <div class="tabs">
-  <div class="tab active" onclick="showTab('breadth')">📊 大盤寬度</div>
-  <div class="tab" onclick="showTab('ignition')">🔥 族群點火</div>
-  <div class="tab" onclick="showTab('broker')">🎯 主力雷達</div>
-  <div class="tab" onclick="showTab('premarket')">🌅 盤前訊號</div>
-  <div class="tab" onclick="showTab('lending')">🌙 借券動向</div>
-  <div class="tab" onclick="showTab('snap')">🔥 今日快照</div>
-  <div class="tab" onclick="showTab('trend')">📈 3 個月趨勢</div>
-  <div class="tab" onclick="showTab('leaders')">強勢族群領漲股</div>
-  <div class="tab" onclick="showTab('full')">完整排行</div>
-  <a class="tab" href="/chip-price" style="text-decoration:none;color:inherit;">📋 籌碼價量查詢</a>
-  <a class="tab" href="/contract-liabilities" style="text-decoration:none;color:inherit;">💰 合約負債</a>
-  <a class="tab" href="/inventory" style="text-decoration:none;color:inherit;">📦 存貨</a>
+  <div class="tab-group g-concept" title="族群動能子模組 (concept_momentum/run_daily.py, 每日 17:00 cron)">
+    <div class="tab-group-label">族群動能 · 17:00 cron</div>
+    <div class="tab-group-items">
+      <div class="tab active" onclick="showTab('breadth')">📊 大盤寬度</div>
+      <div class="tab" onclick="showTab('ignition')">🔥 族群點火</div>
+      <div class="tab" onclick="showTab('snap')">🔥 今日快照</div>
+      <div class="tab" onclick="showTab('trend')">📈 3 個月趨勢</div>
+      <div class="tab" onclick="showTab('leaders')">強勢族群領漲股</div>
+      <div class="tab" onclick="showTab('full')">完整排行</div>
+    </div>
+  </div>
+  <div class="tab-group g-flow" title="盤前 / 盤後資金流向監控 (各自有獨立 cron)">
+    <div class="tab-group-label">資金/動向監控 · 各 cron</div>
+    <div class="tab-group-items">
+      <div class="tab" onclick="showTab('broker')">🎯 主力雷達 (18:00)</div>
+      <div class="tab" onclick="showTab('premarket')">🌅 盤前訊號 (07:30/07:40)</div>
+      <div class="tab" onclick="showTab('lending')">🌙 借券動向 (16:00/21:30)</div>
+    </div>
+  </div>
+  <div class="tab-group g-stock" title="單檔查詢工具 (即時抓取, 非 cron)">
+    <div class="tab-group-label">單檔查詢 · 即時</div>
+    <div class="tab-group-items">
+      <a class="tab" href="/chip-price" style="text-decoration:none;color:inherit;">📋 籌碼價量</a>
+      <a class="tab" href="/contract-liabilities" style="text-decoration:none;color:inherit;">💰 合約負債</a>
+      <a class="tab" href="/inventory" style="text-decoration:none;color:inherit;">📦 存貨</a>
+    </div>
+  </div>
 </div>
 
 <div id="tab-breadth" class="tab-content active chart-wrap">
