@@ -1508,6 +1508,68 @@ def _aggregate_broker_full_bsr(stock_code: str, dates: list[str]) -> dict[str, d
     return agg
 
 
+def _compute_broker_cost_basis(stock_code: str, dates: list[str]) -> dict[str, dict]:
+    """For each broker active on `stock_code` over `dates`, compute
+    volume-weighted average buy price + sell price using per-price BSR cells
+    (bsr_cache/{code}_{date}_prices.json).
+
+    Returns dict {broker_id: {avg_buy_price, avg_sell_price, days_with_data,
+                              total_buy_shares, total_sell_shares}}.
+
+    Only includes days where _prices.json is cached locally. May undercover
+    historical window if BSR per-price data wasn't fetched on some days.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    bsr_dir = os.path.join(here, "bsr_cache")
+    agg: dict[str, dict] = {}
+    days_with_data = 0
+    for date in dates:
+        fp = os.path.join(bsr_dir, f"{stock_code}_{date}_prices.json")
+        if not os.path.exists(fp):
+            continue
+        try:
+            with open(fp) as f:
+                d = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+        days_with_data += 1
+        for r in d.get("rows", []):
+            bid = r["broker_id"]
+            price = r["price"]
+            buy = r.get("buy", 0)
+            sell = r.get("sell", 0)
+            if buy == 0 and sell == 0:
+                continue
+            rec = agg.setdefault(bid, {
+                "broker_id": bid,
+                "broker_name": r.get("broker_name", bid),
+                "buy_value": 0.0,  # Σ(price × buy)
+                "buy_shares": 0,
+                "sell_value": 0.0,
+                "sell_shares": 0,
+            })
+            rec["buy_value"] += price * buy
+            rec["buy_shares"] += buy
+            rec["sell_value"] += price * sell
+            rec["sell_shares"] += sell
+    out = {}
+    for bid, rec in agg.items():
+        avg_buy = (rec["buy_value"] / rec["buy_shares"]
+                   if rec["buy_shares"] > 0 else None)
+        avg_sell = (rec["sell_value"] / rec["sell_shares"]
+                    if rec["sell_shares"] > 0 else None)
+        out[bid] = {
+            "broker_id": bid,
+            "broker_name": rec["broker_name"],
+            "avg_buy_price": round(avg_buy, 2) if avg_buy else None,
+            "avg_sell_price": round(avg_sell, 2) if avg_sell else None,
+            "total_buy_shares": rec["buy_shares"],
+            "total_sell_shares": rec["sell_shares"],
+        }
+    out["_days_with_data"] = days_with_data
+    return out
+
+
 def _list_bsr_cache_dates(stock_code: str, max_days: int = 30) -> list[str]:
     """Return up to `max_days` most-recent bsr_cache dates for stock_code,
     sorted desc (newest first). Excludes _prices.json files.
@@ -1604,6 +1666,17 @@ def _format_continuity(data: dict, days: int = 5) -> list[str]:
     # not yet published).
     agg = _aggregate_broker_full_bsr(stock_code, window_dates)
     n_window = len(window_dates)
+
+    # === Compute 1-month VWAP cost basis per broker (uses _prices.json) ===
+    # Wider window than 5-day continuity (target 20 trading days = 1 month).
+    # User-requested 2026-05-19: 連續性要加分點近一個月的持有成本。
+    month_dates_pool = _list_bsr_cache_dates(stock_code, max_days=30)
+    if today_has_data and today_date and today_date not in month_dates_pool:
+        month_dates_pool = sorted(
+            [today_date] + month_dates_pool, reverse=True)
+    cost_dates = month_dates_pool[:20]
+    cost_basis = _compute_broker_cost_basis(stock_code, cost_dates)
+    cb_days = cost_basis.pop("_days_with_data", 0)
     # Burst threshold: 出現天數 ≤ 40% of window (rounded down, min 1) =「間歇大量」
     intermittent_threshold = max(1, int(n_window * 0.4))
     buyers_ranked = sorted(
@@ -1624,6 +1697,19 @@ def _format_continuity(data: dict, days: int = 5) -> list[str]:
         """Always sign-prefix 張 — handles negative naturally via format spec."""
         return f"{int(shares / 1000):+,}"
 
+    def _cb_str(broker_id: str, side: str) -> str:
+        """Format 1-month cost basis suffix. side='buy' for accumulators
+        (show avg buy price), side='sell' for distributors."""
+        cb = cost_basis.get(broker_id)
+        if not cb:
+            return ""
+        price = (cb.get("avg_buy_price") if side == "buy"
+                 else cb.get("avg_sell_price"))
+        if price is None:
+            return ""
+        label = "均買成本" if side == "buy" else "均賣價"
+        return f"  ({cb_days}日 {label} ${price:.2f})"
+
     if buyers_ranked:
         lines.append("  🟢 累積買方 (不限今日 Top 3)")
         for r in buyers_ranked:
@@ -1634,6 +1720,7 @@ def _format_continuity(data: dict, days: int = 5) -> list[str]:
                 f"    {r['broker_name']} {_signed_z(r['total_net'])}張  "
                 f"出現 {r['days_appeared']}/{n_window} 天  "
                 f"最大日 {md_short} {_signed_z(r['max_day_net'])}{tag}"
+                f"{_cb_str(r['broker_id'], 'buy')}"
             )
     if sellers_ranked:
         lines.append("  🔴 累積賣方 (不限今日 Top 3)")
@@ -1645,6 +1732,7 @@ def _format_continuity(data: dict, days: int = 5) -> list[str]:
                 f"    {r['broker_name']} {_signed_z(r['total_net'])}張  "
                 f"出現 {r['days_appeared']}/{n_window} 天  "
                 f"最大日 {md_short} {_signed_z(r['max_day_net'])}{tag}"
+                f"{_cb_str(r['broker_id'], 'sell')}"
             )
 
     # === Section C: Today's Top 3 N-day fingerprint (NEW) ===
@@ -1675,6 +1763,7 @@ def _format_continuity(data: dict, days: int = 5) -> list[str]:
                 burst = " ← burst (今佔大半)" if today_pct >= 60 else ""
                 md = rec["max_day_date"]
                 md_short = f"{md[4:6]}/{md[6:8]}" if len(md) == 8 else md
+                cb_suffix = _cb_str(bid, side)
                 lines.append(
                     f"  {emoji} {b['broker_name']}: 今 {_signed_z(today_net)}張 + "
                     f"前 {past_days}/{n_history} 天 "
@@ -1682,6 +1771,7 @@ def _format_continuity(data: dict, days: int = 5) -> list[str]:
                     f"= {n_window} 日累積 {_signed_z(full_total)}張 "
                     f"(歷史最大日 {md_short} "
                     f"{_signed_z(rec['max_day_net'])}){burst}"
+                    f"{cb_suffix}"
                 )
 
     return lines
