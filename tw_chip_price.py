@@ -1480,15 +1480,36 @@ def _aggregate_broker_full_bsr(stock_code: str, dates: list[str]) -> dict[str, d
     bsr_dir = os.path.join(here, "bsr_cache")
     agg: dict[str, dict] = {}
     for date in dates:
-        fp = os.path.join(bsr_dir, f"{stock_code}_{date}.json")
-        if not os.path.exists(fp):
+        fp_plain = os.path.join(bsr_dir, f"{stock_code}_{date}.json")
+        fp_prices = os.path.join(bsr_dir, f"{stock_code}_{date}_prices.json")
+        brokers_today: dict[str, dict] = {}
+        if os.path.exists(fp_plain):
+            try:
+                with open(fp_plain) as f:
+                    d = json.load(f)
+                brokers_today = d.get("brokers", {})
+            except (json.JSONDecodeError, OSError):
+                pass
+        if not brokers_today and os.path.exists(fp_prices):
+            # Fallback: aggregate from per-price rows (chip-price-only cache).
+            # Less efficient but unblocks 連續性 for stocks the broker_monitor
+            # cron hasn't covered.
+            try:
+                with open(fp_prices) as f:
+                    d = json.load(f)
+                for r in d.get("rows", []):
+                    bid = r["broker_id"]
+                    rec = brokers_today.setdefault(bid, {
+                        "name": r.get("broker_name", bid),
+                        "buy": 0, "sell": 0,
+                    })
+                    rec["buy"] += r.get("buy", 0)
+                    rec["sell"] += r.get("sell", 0)
+            except (json.JSONDecodeError, OSError):
+                continue
+        if not brokers_today:
             continue
-        try:
-            with open(fp) as f:
-                d = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            continue
-        for bid, info in d.get("brokers", {}).items():
+        for bid, info in brokers_today.items():
             net = info.get("buy", 0) - info.get("sell", 0)
             if net == 0:
                 continue
@@ -1572,21 +1593,22 @@ def _compute_broker_cost_basis(stock_code: str, dates: list[str]) -> dict[str, d
 
 def _list_bsr_cache_dates(stock_code: str, max_days: int = 30) -> list[str]:
     """Return up to `max_days` most-recent bsr_cache dates for stock_code,
-    sorted desc (newest first). Excludes _prices.json files.
+    sorted desc (newest first). Includes dates with either plain
+    `{code}_{date}.json` OR `{code}_{date}_prices.json` cache file —
+    _aggregate_broker_full_bsr handles both.
     """
     here = os.path.dirname(os.path.abspath(__file__))
     bsr_dir = os.path.join(here, "bsr_cache")
     import glob as _glob
     files = _glob.glob(os.path.join(bsr_dir, f"{stock_code}_*.json"))
-    dates = []
+    dates: set[str] = set()
     for f in files:
-        name = os.path.basename(f).replace(f"{stock_code}_", "").replace(".json", "")
-        if "_" in name:  # skip _prices.json
-            continue
+        name = os.path.basename(f).replace(f"{stock_code}_", "")
+        name = name.replace("_prices.json", "").replace(".json", "")
         if len(name) == 8 and name.isdigit():
-            dates.append(name)
-    dates.sort(reverse=True)
-    return dates[:max_days]
+            dates.add(name)
+    sorted_dates = sorted(dates, reverse=True)
+    return sorted_dates[:max_days]
 
 
 def _format_continuity(data: dict, days: int = 5) -> list[str]:
@@ -1750,9 +1772,11 @@ def _format_continuity(data: dict, days: int = 5) -> list[str]:
             emoji = "🟢" if side == "buy" else "🔴"
             rec = agg.get(bid)
             if rec is None:
+                cb_suffix = _cb_str(bid, side)
                 lines.append(
                     f"  {emoji} {b['broker_name']}: 今 {_signed_z(today_net)}張，"
                     f"前 {n_history} 日未進 Top 5 → 新進場"
+                    f"{cb_suffix}"
                 )
             else:
                 # Past-only (excluding today): subtract today's contribution
