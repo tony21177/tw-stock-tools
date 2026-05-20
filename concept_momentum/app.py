@@ -624,6 +624,7 @@ def _render_broker_drilldown(code: str, date: str, broker_query: str,
             # ── 結論分析 (pattern conclusion) ──
             stage_count = {"早盤": 0, "盤中": 0, "尾盤": 0}
             stage_strong = {"早盤": 0, "盤中": 0, "尾盤": 0}
+            stage_volume = {"早盤": 0, "盤中": 0, "尾盤": 0}  # accum |net|
             trend_stage: dict = {}  # {trend: [list of dominant stages]}
             total_buy_all = 0
             total_sell_all = 0
@@ -642,12 +643,18 @@ def _render_broker_drilldown(code: str, date: str, broker_query: str,
                 stage_count[dom_stage] += 1
                 if dom_pct >= 60:
                     stage_strong[dom_stage] += 1
+                # Accumulate net volume per stage across all days (for
+                # tie-breaking + better tracking of "where real volume happens")
+                for name, sb, ss in stages:
+                    stage_volume[name] += abs(sb - ss)
                 trend_stage.setdefault(row["trend"], []).append(dom_stage)
                 total_buy_all += row["total_buy_zhang"]
                 total_sell_all += row["total_sell_zhang"]
             n_days = len(timing)
-            # Most common dominant stage
-            sorted_stages = sorted(stage_count.items(), key=lambda x: -x[1])
+            # Most common dominant stage; tie-break by total |net| volume
+            # (more volume in stage X = more "real" pattern there).
+            sorted_stages = sorted(stage_count.items(),
+                                   key=lambda x: (-x[1], -stage_volume[x[0]]))
             top_stage, top_cnt = sorted_stages[0]
             top_strong = stage_strong[top_stage]
             # Net direction
@@ -702,7 +709,12 @@ def _render_broker_drilldown(code: str, date: str, broker_query: str,
             label_key = None
             label_short = ""
             label_long = ""
-            if top_strong >= n_days * 0.5:
+            # Pattern threshold: top_stage 強勢佔 ≥40% 天數視為明確 pattern。
+            # 過去用 50% 太嚴 — 7 日中 3 強勢日 (3/7=43%) 在邏輯上已足夠
+            # (其他 4 日散布在另兩個 stage), 但被判 "多時段混合". 加上
+            # tie-break by stage_volume 後, 弱勢日的尾盤狂買 pattern 仍會
+            # 被辨識出來而非被早盤 noise 蓋過.
+            if top_strong >= n_days * 0.4:
                 if top_stage == "尾盤" and net_total > 0:
                     label_key = "尾盤低接型"
                     label_short = ('🎯 <b>尾盤低接型</b> — 偏好弱勢時或盤後便宜價接刀，'
