@@ -614,6 +614,111 @@ def _render_broker_drilldown(code: str, date: str, broker_query: str,
                 '佔比 ≥60% 才視為「明確 pattern」(加粗顯示)。'
                 '⚠ OHLC 來自 FinMind，沒抓到的日期會空白。</p>'
             )
+            # ── 結論分析 (pattern conclusion) ──
+            stage_count = {"早盤": 0, "盤中": 0, "尾盤": 0}
+            stage_strong = {"早盤": 0, "盤中": 0, "尾盤": 0}
+            trend_stage: dict = {}  # {trend: [list of dominant stages]}
+            total_buy_all = 0
+            total_sell_all = 0
+            for row in timing:
+                stages = [
+                    ("早盤", row["early_buy"], row["early_sell"]),
+                    ("盤中", row["mid_buy"], row["mid_sell"]),
+                    ("尾盤", row["late_buy"], row["late_sell"]),
+                ]
+                nets = [abs(b - s) for _, b, s in stages]
+                if sum(nets) == 0:
+                    continue
+                max_idx = nets.index(max(nets))
+                dom_stage = ["早盤", "盤中", "尾盤"][max_idx]
+                dom_pct = max(nets) / sum(nets) * 100
+                stage_count[dom_stage] += 1
+                if dom_pct >= 60:
+                    stage_strong[dom_stage] += 1
+                trend_stage.setdefault(row["trend"], []).append(dom_stage)
+                total_buy_all += row["total_buy_zhang"]
+                total_sell_all += row["total_sell_zhang"]
+            n_days = len(timing)
+            # Most common dominant stage
+            sorted_stages = sorted(stage_count.items(), key=lambda x: -x[1])
+            top_stage, top_cnt = sorted_stages[0]
+            top_strong = stage_strong[top_stage]
+            # Net direction
+            net_total = total_buy_all - total_sell_all
+            direction = ("**淨買方**" if net_total > total_sell_all
+                         else "**淨賣方**" if net_total < -total_buy_all * 0.2
+                         else "雙向 (買賣相近)")
+            # Behavior on 開高走低 days
+            ohk_lo_stages = trend_stage.get("開高走低", [])
+            ohk_hi_stages = trend_stage.get("開低走高", [])
+            mid_stages = trend_stage.get("中性", [])
+            ohk_lo_late_pct = (ohk_lo_stages.count("尾盤") /
+                                len(ohk_lo_stages) * 100
+                                if ohk_lo_stages else 0)
+            conclusion_parts = []
+            conclusion_parts.append(
+                f'<li><b>主要時段:</b> {top_stage} 主場 {top_cnt}/{n_days} 天'
+                f' (明確 pattern {top_strong}/{n_days} 天，佔比≥60%)。'
+                f'其他: 早盤 {stage_count["早盤"]} / 盤中 {stage_count["盤中"]}'
+                f' / 尾盤 {stage_count["尾盤"]}</li>'
+            )
+            if ohk_lo_stages:
+                ohk_summary = (
+                    f"開高走低 ({len(ohk_lo_stages)} 天) "
+                    + " / ".join(ohk_lo_stages)
+                )
+                if ohk_lo_late_pct >= 60:
+                    note = (f' → ⭐ <b>弱勢日尾盤接刀 pattern</b> '
+                            f'({ohk_lo_late_pct:.0f}%)')
+                else:
+                    note = ''
+                conclusion_parts.append(
+                    f'<li><b>開高走低時:</b> {ohk_summary}{note}</li>'
+                )
+            if ohk_hi_stages:
+                conclusion_parts.append(
+                    f'<li><b>開低走高時:</b> {len(ohk_hi_stages)} 天 '
+                    + " / ".join(ohk_hi_stages) + '</li>'
+                )
+            if mid_stages:
+                conclusion_parts.append(
+                    f'<li><b>中性盤:</b> {len(mid_stages)} 天 '
+                    + " / ".join(mid_stages) + '</li>'
+                )
+            conclusion_parts.append(
+                f'<li><b>{n_days} 日累計:</b> 買 +{total_buy_all} / '
+                f'賣 -{total_sell_all} 張 = '
+                f'淨 {"+" if net_total >= 0 else ""}{net_total} 張 '
+                f'({direction})</li>'
+            )
+            # Behavior label
+            label = ""
+            if top_strong >= n_days * 0.5:
+                if top_stage == "尾盤" and net_total > 0:
+                    label = ('🎯 <b>尾盤低接型</b> — 偏好弱勢時或盤後便宜價接刀'
+                             '，可能是法人/大戶分批 swing 部位')
+                elif top_stage == "尾盤" and net_total < 0:
+                    label = ('⚠ <b>尾盤倒貨型</b> — 在收盤前出貨，'
+                             '可能是短線投機客 day-trade 結算')
+                elif top_stage == "早盤" and net_total > 0:
+                    label = ('🚀 <b>早盤追擊型</b> — 開盤就積極建倉，可能是動能策略')
+                elif top_stage == "早盤" and net_total < 0:
+                    label = ('📉 <b>早盤出貨型</b> — 開盤立刻倒貨')
+                elif top_stage == "盤中":
+                    label = (f'⚖ <b>盤中{("布局" if net_total > 0 else "出貨")}型</b>')
+            else:
+                label = ('🔀 <b>多時段混合操作</b> — '
+                         f'{top_stage} 略多但無明確 pattern (佔比 < 60%)')
+            if label:
+                conclusion_parts.append(f'<li>{label}</li>')
+
+            parts.append(
+                '<div style="background:#f8f9fa;padding:12px 16px;'
+                'border-left:4px solid #0066cc;border-radius:4px;margin-top:8px">'
+                f'<b>📊 {n_days} 日 pattern 結論：</b>'
+                '<ul style="margin:8px 0 0 0;line-height:1.7;">'
+                + ''.join(conclusion_parts) + '</ul></div>'
+            )
             parts.append('</section>')
 
     for b in sorted_brokers:
