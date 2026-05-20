@@ -1130,6 +1130,149 @@ def adaptive_concentration_band(cells: list[dict], side: str,
     return band
 
 
+def broker_timing_pattern(stock_code: str, broker_id: str,
+                           n_days: int = 6) -> list[dict]:
+    """For a single broker, return their intraday timing distribution
+    (early/mid/late stage buy/sell breakdown) over the past n_days.
+
+    Returns list of {date, ohlc, trend, total_buy, total_sell,
+                     early_buy/sell, mid_buy/sell, late_buy/sell, source}
+    sorted by date asc. `trend` ∈ {'開高走低', '開低走高', '中性'}.
+
+    Used by /chip-price?broker=X drilldown to surface "this broker always
+    buys at end-of-day after a sell-off" type patterns. Requires:
+    - bsr_cache/{stock_code}_{date}_prices.json (per-broker-per-price cells)
+    - tick data (build_price_to_time_map) for time bucketing
+
+    Stage boundaries (TWSE intraday session, minutes from 09:00):
+      early: 0-68 (~09:00-10:08)
+      mid:   68-202 (~10:08-12:22)
+      late:  202+   (~12:22-13:30)
+    """
+    import urllib.parse as _up
+    import urllib.request as _ur
+    here = os.path.dirname(os.path.abspath(__file__))
+    bsr_dir = os.path.join(here, "bsr_cache")
+    dates = _list_bsr_cache_dates(stock_code, max_days=n_days * 2)
+    if not dates:
+        return []
+    dates = sorted(dates, reverse=True)[:n_days]
+    dates.reverse()  # chronological order
+
+    # Fetch OHLC for the date range from FinMind in one batch
+    token = ""
+    try:
+        out = subprocess.run(
+            ["crontab", "-l"], capture_output=True, text=True, timeout=5
+        ).stdout
+        for line in out.splitlines():
+            if "FINMIND_TOKEN=" in line:
+                token = line.split("FINMIND_TOKEN=")[1].split()[0]
+                break
+    except Exception:
+        pass
+    ohlc_map: dict[str, dict] = {}
+    if token:
+        try:
+            start = f"{dates[0][:4]}-{dates[0][4:6]}-{dates[0][6:8]}"
+            end = f"{dates[-1][:4]}-{dates[-1][4:6]}-{dates[-1][6:8]}"
+            url = (
+                "https://api.finmindtrade.com/api/v4/data?"
+                + _up.urlencode({
+                    "dataset": "TaiwanStockPrice",
+                    "data_id": stock_code,
+                    "start_date": start,
+                    "end_date": end,
+                    "token": token,
+                })
+            )
+            with _ur.urlopen(url, timeout=20) as r:
+                pdata = json.loads(r.read())
+            for p in pdata.get("data", []):
+                d = p["date"].replace("-", "")
+                ohlc_map[d] = {
+                    "open": p.get("open", 0),
+                    "high": p.get("max", 0),
+                    "low": p.get("min", 0),
+                    "close": p.get("close", 0),
+                }
+        except Exception:
+            pass
+
+    rows = []
+    for date in dates:
+        prices_path = os.path.join(
+            bsr_dir, f"{stock_code}_{date}_prices.json")
+        if not os.path.exists(prices_path):
+            continue
+        try:
+            with open(prices_path) as f:
+                bsr = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        cells = [r for r in bsr.get("rows", [])
+                 if r["broker_id"] == broker_id]
+        if not cells:
+            continue
+        total_buy = sum(c["buy"] for c in cells) // 1000
+        total_sell = sum(c["sell"] for c in cells) // 1000
+
+        # Get price-to-time map
+        ptm = None
+        try:
+            ptm = build_price_to_time_map(stock_code, date)
+        except Exception:
+            ptm = None
+        e_buy = e_sell = m_buy = m_sell = l_buy = l_sell = 0
+        if ptm:
+            for c in cells:
+                tm = ptm.get(c["price"])
+                if tm is None:
+                    continue
+                buy_z = c["buy"] // 1000
+                sell_z = c["sell"] // 1000
+                if tm < 68:
+                    e_buy += buy_z
+                    e_sell += sell_z
+                elif tm < 202:
+                    m_buy += buy_z
+                    m_sell += sell_z
+                else:
+                    l_buy += buy_z
+                    l_sell += sell_z
+
+        ohlc = ohlc_map.get(date, {})
+        op = ohlc.get("open", 0)
+        hi = ohlc.get("high", 0)
+        lo = ohlc.get("low", 0)
+        cl = ohlc.get("close", 0)
+        if op and hi and lo and cl and hi > lo:
+            span = hi - lo
+            # 開高走低: open within top 10% AND close within bottom 30%
+            if op >= hi - span * 0.10 and cl <= lo + span * 0.30:
+                trend = "開高走低"
+            elif op <= lo + span * 0.10 and cl >= hi - span * 0.30:
+                trend = "開低走高"
+            else:
+                pct_chg = (cl - op) / op * 100
+                trend = "中性"
+        else:
+            trend = "?"
+
+        rows.append({
+            "date": date,
+            "ohlc": ohlc,
+            "trend": trend,
+            "total_buy_zhang": total_buy,
+            "total_sell_zhang": total_sell,
+            "early_buy": e_buy, "early_sell": e_sell,
+            "mid_buy": m_buy, "mid_sell": m_sell,
+            "late_buy": l_buy, "late_sell": l_sell,
+            "has_tick": ptm is not None,
+        })
+    return rows
+
+
 def broker_band_progression(stock_code: str, broker_id: str,
                             side: str = "buy", n_days: int = 4,
                             threshold: float = 0.7) -> list[dict]:

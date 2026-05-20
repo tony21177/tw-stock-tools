@@ -504,6 +504,118 @@ def _render_broker_drilldown(code: str, date: str, broker_query: str,
         key=lambda b: -abs(sum(c["buy"] - c["sell"] for c in b["cells"])),
     )
 
+    # 📅 Multi-day timing pattern (per matched broker) — surfaces "always
+    # buys late after sell-off" / "always sells early into morning rally"
+    # type patterns. Only run when there are ≤3 matched brokers (else table
+    # gets huge); for single-broker queries this is most useful.
+    if len(sorted_brokers) <= 3:
+        for b in sorted_brokers:
+            timing = tw_chip_price.broker_timing_pattern(
+                code, b["broker_id"], n_days=8)
+            if not timing:
+                continue
+            parts.append(
+                f'<section><h3>📅 {_esc(b["broker_id"])} '
+                f'{_esc(b["broker_name"])} 近 {len(timing)} 日時段 pattern</h3>'
+                f'<p class="meta">每日 OHLC 走勢 + 該分點當日買賣時段分布 '
+                f'(早盤 09:00-10:08 / 盤中 10:08-12:22 / 尾盤 12:22-13:30)</p>'
+            )
+            parts.append(
+                '<table class="report-table"><thead><tr>'
+                '<th>日期</th><th class="num">OHLC</th><th>走勢</th>'
+                '<th class="num">當日買/賣</th>'
+                '<th>早盤</th><th>盤中</th><th>尾盤</th>'
+                '<th>主場時段</th>'
+                '</tr></thead><tbody>'
+            )
+            for row in timing:
+                d = row["date"]
+                d_short = f"{d[4:6]}/{d[6:8]}"
+                ohlc = row["ohlc"]
+                if ohlc:
+                    ohlc_str = (f"O{ohlc['open']:.0f}/H{ohlc['high']:.0f}/"
+                                f"L{ohlc['low']:.0f}/C{ohlc['close']:.0f}")
+                    pct = ((ohlc["close"] - ohlc["open"]) / ohlc["open"]
+                           * 100 if ohlc["open"] else 0)
+                    pct_cls = "pos" if pct > 0 else "neg"
+                    pct_str = (f'<br><span class="{pct_cls}">'
+                               f'{"+" if pct >= 0 else ""}{pct:.1f}%</span>')
+                else:
+                    ohlc_str = "—"
+                    pct_str = ""
+                trend = row["trend"]
+                trend_color = ("#c30" if trend == "開高走低"
+                               else "#0a7e0a" if trend == "開低走高"
+                               else "#666")
+                trend_html = (f'<span style="color:{trend_color};'
+                              f'font-weight:600">{trend}</span>')
+
+                total_buy = row["total_buy_zhang"]
+                total_sell = row["total_sell_zhang"]
+                total_str = (
+                    f'<span class="buy">+{total_buy}</span> / '
+                    f'<span class="sell">-{total_sell}</span> 張'
+                )
+
+                # Stage cells: show net only (buy - sell per stage)
+                stages = [
+                    ("早盤", row["early_buy"], row["early_sell"]),
+                    ("盤中", row["mid_buy"], row["mid_sell"]),
+                    ("尾盤", row["late_buy"], row["late_sell"]),
+                ]
+                stage_htmls = []
+                # Determine dominant stage by net abs activity (only for
+                # 該日 net signal — to highlight pattern)
+                net_per_stage = [abs(b - s) for _, b, s in stages]
+                max_stage_idx = (net_per_stage.index(max(net_per_stage))
+                                 if max(net_per_stage) > 0 else -1)
+                for i, (name, sb, ss) in enumerate(stages):
+                    if sb == 0 and ss == 0:
+                        stage_htmls.append('<td class="muted">—</td>')
+                        continue
+                    snet = sb - ss
+                    bg = (' style="background:#fff4e0"' if i == max_stage_idx
+                          else '')
+                    cell = ""
+                    if sb:
+                        cell += f'<span class="buy">+{sb}</span>'
+                    if ss:
+                        if cell:
+                            cell += " / "
+                        cell += f'<span class="sell">-{ss}</span>'
+                    stage_htmls.append(f'<td{bg}>{cell}</td>')
+
+                stages_named = ["早盤", "盤中", "尾盤"]
+                dominant = (stages_named[max_stage_idx]
+                            if max_stage_idx >= 0 else "—")
+                # Bold dominant if it covers ≥60% of day's net
+                dom_pct = 0
+                if sum(net_per_stage) > 0:
+                    dom_pct = (max(net_per_stage) / sum(net_per_stage)
+                               * 100)
+                dom_html = (f"<b>{dominant}</b>" if dom_pct >= 60
+                            else dominant)
+                if dom_pct >= 60:
+                    dom_html += (f' <small>({dom_pct:.0f}%)</small>')
+
+                parts.append(
+                    f'<tr>'
+                    f'<td>{d_short}</td>'
+                    f'<td class="num small">{ohlc_str}{pct_str}</td>'
+                    f'<td>{trend_html}</td>'
+                    f'<td class="num">{total_str}</td>'
+                    + "".join(stage_htmls)
+                    + f'<td>{dom_html}</td>'
+                    f'</tr>'
+                )
+            parts.append('</tbody></table>')
+            parts.append(
+                '<p class="small">📌 主場時段 = 該日 (買-賣) 絕對值最大的時段。'
+                '佔比 ≥60% 才視為「明確 pattern」(加粗顯示)。'
+                '⚠ OHLC 來自 FinMind，沒抓到的日期會空白。</p>'
+            )
+            parts.append('</section>')
+
     for b in sorted_brokers:
         cells = b["cells"]
         total_buy = sum(c["buy"] for c in cells)
