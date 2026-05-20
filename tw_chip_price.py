@@ -1033,9 +1033,18 @@ def broker_wash_candidates(rows: list[dict], day_low: float, day_high: float,
     for b in per_broker.values():
         if b["buy_shares"] < min_each_side or b["sell_shares"] < min_each_side:
             continue
-        # Require max(buy, sell) ≥ 1% of day total volume — filters tiny
+        # Require both sides ≥ 1% of day total volume — filters tiny
         # cross-trades in high-volume stocks that are 100% noise.
-        if vol_threshold > 0 and max(b["buy_shares"], b["sell_shares"]) < vol_threshold:
+        # Also require min/max ratio ≥ 10% so 214買/1賣 type lopsided
+        # one-sided trades don't qualify as "wash" (commit 2026-05-20 v2).
+        if vol_threshold > 0:
+            if max(b["buy_shares"], b["sell_shares"]) < vol_threshold:
+                continue
+            if min(b["buy_shares"], b["sell_shares"]) < vol_threshold:
+                continue
+        ratio = (min(b["buy_shares"], b["sell_shares"]) /
+                 max(b["buy_shares"], b["sell_shares"]))
+        if ratio < 0.10:
             continue
         buy_avg = b["_buy_value"] / b["buy_shares"]
         sell_avg = b["_sell_value"] / b["sell_shares"]

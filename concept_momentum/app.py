@@ -298,16 +298,23 @@ def _render_report_html(data: dict) -> str:
 
     # ── Section 6: 🌀 同分點兩面操作 — 高賣低買 OR 低賣高買 ────────────────
     wash = data.get("wash_candidates", [])
-    # Defensive runtime filter: enforce 1% of day volume threshold even on
-    # legacy cached wash_candidates (generated before 2026-05-20 filter fix).
+    # Defensive runtime filter (commit d1fab38 + 2026-05-20 v2 強化):
+    # (a) max side ≥ 1% × day vol  (filter noise micro-trades)
+    # (b) min side ≥ 1% × day vol  (filter lopsided e.g. 214 買 / 1 賣)
+    # (c) min/max ratio ≥ 10%  (genuine two-sided activity, not one-side dominant)
     day_total_vol = data.get("total_buy_shares", 0)
     if wash and day_total_vol > 0:
         vol_thresh = day_total_vol * 0.01
-        wash = [
-            w for w in wash
-            if max(w.get("buy_shares", 0), w.get("sell_shares", 0))
-            >= vol_thresh
-        ]
+        def _is_genuine_wash(w):
+            b = w.get("buy_shares", 0)
+            s = w.get("sell_shares", 0)
+            if max(b, s) < vol_thresh:
+                return False
+            if min(b, s) < vol_thresh:
+                return False  # lopsided: one side too small relative to day
+            ratio = min(b, s) / max(b, s) if max(b, s) > 0 else 0
+            return ratio >= 0.10
+        wash = [w for w in wash if _is_genuine_wash(w)]
     if wash:
         parts.append('<section><h2>🌀 同分點兩面操作 '
                       '(高賣低買 / 低賣高買 型態)</h2>')
@@ -880,12 +887,24 @@ def _render_broker_drilldown(code: str, date: str, broker_query: str,
         if sell_t is None and total_sell > 0 and ptm:
             sell_t = tw_chip_price.broker_time_estimate(cells, "sell", ptm)
 
-        # Wash score if both sides have activity — require ≥ 1 張 each side
-        # to avoid 零股 (odd-lot, <1000股) trades triggering misleading
-        # "高賣低買" verdicts (e.g. 11 股 buy + 3,000 股 sell isn't wash, it's
-        # a 1-side sell with an unrelated retail odd-lot buy).
+        # Wash score requires meaningful two-sided activity. Past noise
+        # cases that triggered misleading "真洗盤低接":
+        # (1) 11 股 buy + 3,000 股 sell — 零股 + 大單，不是 wash (commit 99de3e4)
+        # (2) 214 張 buy + 1 張 sell — 大買 + 1 張小賣，不是 wash
+        # Three thresholds applied:
+        #   a. each side ≥ 1 張 (1000股) — exclude 零股
+        #   b. each side ≥ 1% × day total volume — exclude noise (commit d1fab38)
+        #   c. min(buy, sell) / max(buy, sell) ≥ 10% — exclude lopsided one-sided
         wash_html = ""
-        if total_buy >= 1000 and total_sell >= 1000:
+        day_vol = sum(r.get("buy", 0) for r in rows)
+        side_ratio = (min(total_buy, total_sell) / max(total_buy, total_sell)
+                      if max(total_buy, total_sell) > 0 else 0)
+        passes_threshold = (
+            total_buy >= 1000 and total_sell >= 1000 and
+            (day_vol == 0 or min(total_buy, total_sell) >= day_vol * 0.01) and
+            side_ratio >= 0.10
+        )
+        if passes_threshold:
             wash_score = (sell_avg - buy_avg) / rng
             wash_type = "高賣低買" if wash_score > 0 else "低賣高買"
             time_pattern = ""
