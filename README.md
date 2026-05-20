@@ -15,7 +15,7 @@
 
 ---
 
-## 📦 全部工具清單 (十七項)
+## 📦 全部工具清單 (十九項)
 
 1. **借券雷達** — 借券議借異常監控（盤後 16:00 排程） → `tw_lending_monitor.py --mode lending`
 2. **空頭撤退** — 借券賣出餘額大幅減少監控（盤後 21:30 排程） → `tw_lending_monitor.py --mode sbl`
@@ -31,9 +31,11 @@
 12. **沉睡巨人** — 曾 5 倍、跌 ≥30%、沉睡 ≥5y、量縮整理（CLI）→ `tw_dormant_giants.py`
 13. **強勢股第二波** — 強勢漲 → 急殺 → 反彈啟動（盤前 07:40 cron）→ `tw_second_wave.py`
 14. **日內籌碼×價格** — 當日 BSR broker × price 二維分析（CLI / Skill）→ `tw_chip_price.py`
-15. **合約負債歷史** — 單檔近 N 年每季合約負債 + QoQ/YoY/CAGR（CLI + 網頁）→ `tw_contract_liabilities.py` · `/contract-liabilities`
+15. **合約負債歷史** — 單檔近 N 年每季合約負債 + QoQ/YoY/CAGR（CLI + 網頁；FinMind 缺資料時 fallback MOPS 季報 PDF 附註，2026-05-20 加 fallback）→ `tw_contract_liabilities.py` · `mops_pdf.py` · `/contract-liabilities?pdf=1`
 16. **存貨歷史 + 衍生指標** — 單檔近 N 年每季存貨 + 週轉率/DSI/存貨營收比 + 圖表（CLI + 網頁，2026-05-15 加）→ `tw_inventory.py` · `/inventory`
 17. **存貨 5 項拆分** — 從 MOPS 財報 PDF 解析原料/在製品/半成品/製成品/副產品/物料拆分，疊圖顯示（2026-05-17 加）→ `mops_pdf.py` · `/inventory?breakdown=1`
+18. **族群點火警示** — 偵測族群評分「休眠 → 轉強」事件（昨 <3 → 今 ≥10, Δ ≥8），自動標真假機率 + 5 日後續追蹤倍率（concept_momentum 17:00 cron + dashboard 🔥 族群點火 tab，2026-05-18 加）→ `concept_momentum/run_daily.py` · `/`
+19. **分點 N 日時段 pattern** — 給定 (股號, 分點)，自動算過去 N 日該分點在早/中/尾盤的買賣分布 + 配對 OHLC 走勢 + 6 種行為標籤（尾盤低接 / 早盤追擊 / etc）+ 可展開的專有名詞詳細解讀（2026-05-20 加）→ `broker_timing_pattern()` in `tw_chip_price.py` · `/chip-price?code=X&broker=Y`
 
 所有工具放在 `~/project/tw_stock_tools/`，cron 設定每天排程推送到 Telegram 群組。
 概念動能子模組詳見 `concept_momentum/README.md`。
@@ -1150,10 +1152,20 @@ python3 -m patchright install chromium
 - 推升中 = 主力連日加碼且接受更高成本
 - 下移 = 平均成本下降，常見於 averaging-down 或 chase 反向動能
 
-**C. 同分點兩面操作 / 高賣低買** (`broker_wash_candidates`)
-- 對兩邊都 ≥ 100 張的分點計算 `wash_score = (sell_avg - buy_avg) / day_range`
-- 正值 = 賣價高於買價 = 同分點内部 spread
-- **重點：淨賣超但 wash_score > 0 = 看似空、實際多** (洗盤低接)
+**C. 同分點兩面操作 / 高賣低買 + 低賣高買** (`broker_wash_candidates`, 2026-05-20 強化)
+- `wash_score = (sell_avg - buy_avg) / day_range`
+  - `> 0`: 高賣低買 (sell_avg > buy_avg) — 看似空但低接累積
+  - `< 0`: 低賣高買 (sell_avg < buy_avg) — 認錯買回 / 慘賠加碼 (2026-05-20 加)
+- **三層過濾防止 noise / lopsided 假 wash**：
+  1. 兩邊都 ≥ 1 張 (1000股, 排除零股)
+  2. 兩邊都 ≥ 1% × 當日總量 (排除單側 noise)
+  3. min/max ratio ≥ 10% (排除 214買/1賣 這種一邊極小的偽 wash)
+- **4 quadrant 時序判讀** (有 tick data 時):
+  - 高賣低買 + 先賣後買 = ✅ 真洗盤低接 (bullish 主力低接)
+  - 高賣低買 + 先買後賣 = ⚠ 追漲獲利出 (bearish 短線獲利)
+  - 低賣高買 + 先賣後買 = ⚠ 認錯買回 (補回認賠或翻多)
+  - 低賣高買 + 先買後賣 = ❌ 殺低出貨 (恐慌賣)
+- 每筆 wash 候選額外輸出主賣集中區 + 主買集中區 + Top 3 賣價 + Top 3 買價
 
 **D. 時序方向判定** (`build_price_to_time_map` + tick data)
 - 用 FinMind `TaiwanStockPriceTick` (sponsor) 抓毫秒級 ticks
@@ -1182,6 +1194,23 @@ python3 -m patchright install chromium
   - 若今日 |量| / N 日累積 ≥ 60% → 標 burst (今佔大半)
   - 區分「穩定大戶」(burst 0) vs 「今日 burst 進場」(burst 1)
   - 同樣讀 bsr_cache，能 catch chip_price_history top 5 漏掉的中量 broker
+- **2026-05-19 加：1 月持有成本** (Section B + C)
+  - 每行末加「(N日 均買成本 $XXX)」或「(N日 均賣價 $XXX)」
+  - 從 bsr_cache `_prices.json` 算 volume-weighted avg price
+  - 目標 20 trading days; 實際取在地可得天數 (透明標 "N日")
+  - 主力 cost vs 現價 = 套牢 / 獲利狀態的快速判讀
+
+**G. 分點 N 日時段 pattern** (`broker_timing_pattern`, 2026-05-20 加)
+- 給定 (stock_code, broker_id, n_days=6) → 自動算每日該分點在「早盤 09:00-10:08 / 盤中 10:08-12:22 / 尾盤 12:22-13:30」三時段的買賣分布
+- 配對當日 OHLC + 自動分類走勢「開高走低 / 開低走高 / 中性」
+- 6 種行為標籤（依 dominant stage ≥50% + 淨方向）:
+  - 🎯 尾盤低接型 (尾盤+淨買) — swing 部位
+  - ⚠ 尾盤倒貨型 (尾盤+淨賣) — day-trade 結算
+  - 🚀 早盤追擊型 (早盤+淨買) — 動能策略
+  - 📉 早盤出貨型 (早盤+淨賣) — 停損 / 反向獲利
+  - ⚖ 盤中布局/出貨型 (盤中) — TWAP/VWAP 演算法
+  - 🔀 多時段混合操作 — 無明確 pattern
+- 網頁版 broker drilldown 自動顯示, 每個標籤附可展開的詳細解讀 (專有名詞 + 推論依據 + 實務含意)
 
 **G. 精準時序匹配 — 跨 cell 一致性** (`match_broker_cells_consistent`, 2026-05-14 加入)
 
