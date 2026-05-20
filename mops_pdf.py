@@ -395,6 +395,176 @@ def fetch_breakdown_series(stock_code: str, years: int = 5,
     return {d: series[d] for d in sorted(sorted_dates)}
 
 
+def parse_contract_liabilities(pdf_path: str) -> dict:
+    """Extract 合約負債 (Contract Liabilities) from a financial-report PDF.
+
+    Some companies (e.g. 3491 昇達科, 6282 康舒, 2330 台積電) don't report
+    合約負債 as a top-level balance sheet line — they bury it inside
+    「其他流動負債」 (Other Current Liabilities) footnote. FinMind's
+    TaiwanStockBalanceSheet only reads top-level XBRL tags, so it misses
+    these. This parser reads the footnote breakdown directly.
+
+    Returns {dates: [...], amounts: [...]}: parallel lists where
+      dates[i] = ISO date string (e.g. "2026-03-31")
+      amounts[i] = 合約負債 in 仟元
+
+    PDF layout (3491 115Q1 example, page 26):
+        其他流動負債
+          合約負債    $6,486   $6,572   $7,750
+          遞延收入    -        -        2,445
+          其 他      8,944    7,726    8,797
+          合計      $15,430  $14,298  $18,992
+    """
+    try:
+        import pdfplumber
+        import unicodedata
+    except ImportError:
+        raise RuntimeError("pdfplumber not installed: pip install pdfplumber")
+
+    out: dict = {"dates": [], "amounts": []}
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            text = unicodedata.normalize(
+                "NFKC", page.extract_text() or "")
+            if "合約負債" not in text:
+                continue
+            # Normalize embedded CJK spaces + split date-headers from data rows
+            text_compact = re.sub(
+                r"(?<=[一-鿿豈-﫿])\s+(?=[一-鿿豈-﫿])", "", text)
+            text_compact = re.sub(
+                r"(\d+年\d+月\d+日)\s*([一-鿿豈-﫿])",
+                r"\1\n\2", text_compact)
+            text_compact = re.sub(
+                r"(\d{2,4}[./-]\d{1,2}[./-]\d{1,2})\s*([一-鿿豈-﫿])",
+                r"\1\n\2", text_compact)
+            # Locate 合約負債 row
+            idx = text_compact.find("合約負債")
+            if idx < 0:
+                continue
+            # Look 400 chars upstream for the column-date header
+            up = text_compact[max(0, idx - 400): idx]
+            dates_found = re.findall(
+                r"(?:(\d{2,4})年\s*(\d{1,2})月\s*(\d{1,2})日"
+                r"|(\d{2,4})[./-](\d{1,2})[./-](\d{1,2}))",
+                up,
+            )
+            # Prefer the LAST 2-3 dates before 合約負債 (those are this
+            # table's column headers; earlier ones are from prior sections).
+            dates: list[str] = []
+            seen = set()
+            for m in reversed(dates_found):
+                if m[0]:  # Chinese form
+                    y, mo, d = m[0], m[1], m[2]
+                else:
+                    y, mo, d = m[3], m[4], m[5]
+                yi = int(y)
+                wy = yi + 1911 if yi < 200 else yi
+                date = f"{wy}-{int(mo):02d}-{int(d):02d}"
+                if date in seen:
+                    continue
+                seen.add(date)
+                dates.append(date)
+                if len(dates) >= 3:
+                    break
+            dates.reverse()  # restore chronological order in column sense
+            if not dates:
+                continue
+            ncols = len(dates)
+
+            # Parse the 合約負債 row — capture amounts
+            line_end = text_compact.find("\n", idx)
+            if line_end < 0:
+                line_end = idx + 200
+            line = text_compact[idx:line_end]
+            # Pattern: "合約負債 $ N1 $ N2 $ N3"  OR with dash for missing
+            amt = r"(?:\$?\s*\(?\s*([\d,]+|[-—－])\s*\)?)"
+            line_re = re.compile(
+                r"^合約負債\s+" + r"\s+".join([amt] * ncols)
+            )
+            m = line_re.match(line)
+            if not m:
+                # Try with looser separator (in case of weird spacing)
+                m = re.match(
+                    r"^合約負債(.+)$", line)
+                if m:
+                    # Extract all number-like tokens from the tail
+                    tail = m.group(1)
+                    nums = re.findall(r"([\d,]+|[-—－])", tail)
+                    if len(nums) >= ncols:
+                        nums = nums[:ncols]
+                    else:
+                        continue
+                else:
+                    continue
+            else:
+                nums = [m.group(i + 1) for i in range(ncols)]
+            amounts: list = []
+            for n in nums:
+                if n in ("-", "—", "－"):
+                    amounts.append(None)
+                else:
+                    try:
+                        amounts.append(int(n.replace(",", "")))
+                    except ValueError:
+                        amounts.append(None)
+            out["dates"] = dates
+            out["amounts"] = amounts
+            return out
+    return out
+
+
+def fetch_contract_liabilities_series(stock_code: str, years: int = 3,
+                                       progress=None) -> dict:
+    """Download + parse ~N years of quarterly 合約負債 from MOPS PDFs.
+
+    Returns dict {date: amount_thousand_TWD}. Use as fallback when FinMind
+    TaiwanStockBalanceSheet returns no 'CurrentContractLiabilities' row.
+    """
+    today_roc_year = datetime.now().year - 1911
+    today_month = datetime.now().month
+    if today_month >= 5:
+        latest_finished_season = 1
+    elif today_month >= 8:
+        latest_finished_season = 2
+    elif today_month >= 11:
+        latest_finished_season = 3
+    else:
+        latest_finished_season = 4
+
+    targets = []
+    y = today_roc_year
+    s = latest_finished_season
+    needed = years * 4
+    for _ in range(needed + 4):
+        targets.append((y, s))
+        s -= 1
+        if s < 1:
+            s = 4
+            y -= 1
+    targets = targets[:needed]
+
+    series: dict[str, int] = {}
+    for roc_year, season in targets:
+        if progress:
+            progress(f"downloading {roc_year}Q{season}…")
+        path = download_pdf(stock_code, roc_year, season)
+        if not path:
+            continue
+        if progress:
+            progress(f"parsing {roc_year}Q{season}…")
+        try:
+            parsed = parse_contract_liabilities(path)
+        except Exception:
+            continue
+        for date, amt in zip(parsed.get("dates", []),
+                              parsed.get("amounts", [])):
+            if date and amt is not None and date not in series:
+                series[date] = amt
+        time.sleep(0.3)
+    sorted_dates = sorted(series.keys(), reverse=True)[:years * 4]
+    return {d: series[d] for d in sorted(sorted_dates)}
+
+
 if __name__ == "__main__":
     import sys
     code = sys.argv[1] if len(sys.argv) > 1 else "2330"

@@ -867,7 +867,8 @@ def _render_chip_price_page(code: str | None = None,
 def _render_contract_liabilities_page(code: str = "", years: int = 3,
                                       rows: list[dict] | None = None,
                                       name: str = "",
-                                      error: str = "") -> str:
+                                      error: str = "",
+                                      source_label: str = "") -> str:
     """Web page: 合約負債 history for a stock."""
     code_attr = html_lib.escape(code or "")
     body = ""
@@ -890,8 +891,14 @@ def _render_contract_liabilities_page(code: str = "", years: int = 3,
             '<a href="/contract-liabilities?code=6669">6669 緯穎</a> · '
             '<a href="/contract-liabilities?code=2454">2454 聯發科</a></li>'
             '</ul>'
-            '<p><b>建議</b>：去 <a href="https://mops.twse.com.tw/" target="_blank">'
-            '公開資訊觀測站 (MOPS)</a> 看該公司財報附註細目，'
+            '<p><b>建議</b>：'
+            f'<a href="/contract-liabilities?code={code_esc}&years={years}&pdf=1"'
+            ' style="display:inline-block;padding:6px 14px;background:#0066cc;'
+            'color:white;text-decoration:none;border-radius:4px;font-weight:600">'
+            '🔍 從 MOPS 季報 PDF 附註查 (約 30 秒)</a><br>'
+            '<small>會自動下載該公司過去 N 年季報 PDF，解析「其他流動負債」附註內的合約負債明細。</small></p>'
+            '<p>或去 <a href="https://mops.twse.com.tw/" target="_blank">'
+            '公開資訊觀測站 (MOPS)</a> 手動看，'
             '或改用該集團母公司/同業作 proxy '
             '(e.g., 6282 → 看 2301 光寶科 或 2308 台達電)。</p>'
             '</div>'
@@ -938,11 +945,16 @@ def _render_contract_liabilities_page(code: str = "", years: int = 3,
                 cagr_str = (f'<p>📈 期間 CAGR: <span class="{cagr_cls}">'
                              f'<b>{cagr:+.1f}%</b></span> '
                              f'({rows[0]["date"]} → {rows[-1]["date"]})</p>')
+        source_html = (
+            f'<p class="meta" style="font-size:0.85em">資料源：'
+            f'{html_lib.escape(source_label)}</p>' if source_label else "")
         body = f"""
 <section class="header-card">
   <h2>{_esc(code)} {_esc(name)} 合約負債 (近 {years} 年 / {len(rows)} 季)</h2>
+  {source_html}
   {cagr_str}
-</section>
+</section>"""
+        body += f"""
 <section>
   <table class="report-table">
     <thead><tr>
@@ -1056,8 +1068,31 @@ def contract_liabilities():
         return _render_contract_liabilities_page(
             code=code, years=years, error=f"{type(e).__name__}: {e}")
     name = tw_contract_liabilities._zh_name(code)
-    return _render_contract_liabilities_page(code=code, years=years,
-                                              rows=rows, name=name)
+    source_label = "FinMind TaiwanStockBalanceSheet"
+    # PDF fallback: when FinMind has no top-level 合約負債 (e.g. 3491,
+    # 6282, 2330 — bury it under 其他流動負債), parse the MOPS quarterly
+    # report PDF footnote instead. Only triggered on user-explicit
+    # ?pdf=1 to avoid auto-downloading 12+ PDFs per query.
+    if not rows and request.args.get("pdf") == "1":
+        try:
+            import mops_pdf
+            pdf_series = mops_pdf.fetch_contract_liabilities_series(
+                code, years=years)
+            if pdf_series:
+                rows = [
+                    {"date": d, "current": amt * 1000, "noncurrent": 0,
+                     "total": amt * 1000}
+                    for d, amt in sorted(pdf_series.items())
+                ]
+                rows = tw_contract_liabilities.annotate_changes(rows)
+                source_label = "MOPS 季報 PDF 附註 (其他流動負債明細)"
+        except Exception as e:
+            return _render_contract_liabilities_page(
+                code=code, years=years,
+                error=f"PDF fallback failed: {type(e).__name__}: {e}")
+    return _render_contract_liabilities_page(
+        code=code, years=years, rows=rows, name=name,
+        source_label=source_label)
 
 
 def _breakdown_commentary(series: dict) -> str:
