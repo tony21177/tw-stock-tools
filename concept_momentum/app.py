@@ -691,26 +691,130 @@ def _render_broker_drilldown(code: str, date: str, broker_query: str,
                 f'淨 {"+" if net_total >= 0 else ""}{net_total} 張 '
                 f'({direction})</li>'
             )
-            # Behavior label
-            label = ""
+            # Behavior label + detailed explanation
+            label_key = None
+            label_short = ""
+            label_long = ""
             if top_strong >= n_days * 0.5:
                 if top_stage == "尾盤" and net_total > 0:
-                    label = ('🎯 <b>尾盤低接型</b> — 偏好弱勢時或盤後便宜價接刀'
-                             '，可能是法人/大戶分批 swing 部位')
+                    label_key = "尾盤低接型"
+                    label_short = ('🎯 <b>尾盤低接型</b> — 偏好弱勢時或盤後便宜價接刀，'
+                                   '可能是<b>法人/大戶分批 swing 部位</b>')
+                    label_long = (
+                        '<p><b>什麼是 swing 部位?</b></p>'
+                        '<p>swing trade 即「<b>波段交易</b>」，介於當沖跟長期之間：</p>'
+                        '<ul>'
+                        '<li>當沖 (day trade)：1 天內買進賣出</li>'
+                        '<li><b>波段 swing trade：持有 2-30 天</b>，目標 5-15% 中期波動</li>'
+                        '<li>長期 position：1-6 個月以上</li>'
+                        '</ul>'
+                        '<p><b>為什麼判定這個分點是 swing 部位?</b></p>'
+                        '<ul>'
+                        '<li><b>跨日連續建倉</b>：N 日內天天買 → 不是 day trade</li>'
+                        '<li><b>沒當沖結算</b>：賣量遠小於買量 → 不在當日出</li>'
+                        '<li><b>逢弱勢加碼</b>：尾盤殺低時積極接 → 降低 entry cost 法人作法</li>'
+                        '<li><b>集中區持續推升</b>：跨日均價墊高 → 越買越高願意付更高價</li>'
+                        '<li><b>量級偏大</b>：累計 N 百張 → 散戶很少這樣分批</li>'
+                        '</ul>'
+                        '<p><b>實務含意</b>：未來 2-4 週可能是該分點持有期，短線不會大砍。'
+                        '出場點通常 +5% ~ +15% 中期目標。跟他們同方向 = 有大戶背書，'
+                        '但他們均成本可能是支撐 / 停損參考線。</p>'
+                        '<p><b>常見玩家</b>：自營商、中小型投信基金、私募、千張級大戶。</p>'
+                    )
                 elif top_stage == "尾盤" and net_total < 0:
-                    label = ('⚠ <b>尾盤倒貨型</b> — 在收盤前出貨，'
-                             '可能是短線投機客 day-trade 結算')
+                    label_key = "尾盤倒貨型"
+                    label_short = ('⚠ <b>尾盤倒貨型</b> — 在收盤前出貨，'
+                                   '可能是<b>短線投機客 day-trade 結算</b>或<b>法人減碼</b>')
+                    label_long = (
+                        '<p><b>什麼是 day-trade 結算?</b></p>'
+                        '<p>day trade = 當沖。當沖客當天買進，當天 12:00-13:30 收盤前必出，'
+                        '避免收盤後留倉風險。當沖客大量集中在尾盤倒貨是常見現象。</p>'
+                        '<p><b>為什麼判定為尾盤倒貨型?</b></p>'
+                        '<ul>'
+                        '<li>尾盤是該分點淨賣的主場時段</li>'
+                        '<li>N 日累計淨賣 → 整體在出貨</li>'
+                        '<li>可能解讀: (1) 當沖結算 (2) 法人逐日減碼 swing 部位</li>'
+                        '</ul>'
+                        '<p><b>實務含意</b>：跟這分點同方向 = 跟跌 / 跟空; '
+                        '反方向 = 接他們倒的貨 (要注意是否他們有未公開的負面訊息)</p>'
+                    )
                 elif top_stage == "早盤" and net_total > 0:
-                    label = ('🚀 <b>早盤追擊型</b> — 開盤就積極建倉，可能是動能策略')
+                    label_key = "早盤追擊型"
+                    label_short = ('🚀 <b>早盤追擊型</b> — 開盤就積極建倉，'
+                                   '可能是<b>動能策略 (momentum)</b>')
+                    label_long = (
+                        '<p><b>動能策略 (Momentum Strategy)</b></p>'
+                        '<p>「強者恆強」邏輯：股票一旦開盤跳空向上或開高走高，'
+                        '法人/演算法系統會在早盤前 30 分鐘搶進，期待當日續強。</p>'
+                        '<p><b>為什麼判定為早盤追擊型?</b></p>'
+                        '<ul>'
+                        '<li>早盤 09:00-10:08 是主場時段</li>'
+                        '<li>淨買累積大 → 不是測試單，是真實建倉</li>'
+                        '<li>常見於：法人量化交易、跟風者、ETF rebalance</li>'
+                        '</ul>'
+                        '<p><b>注意</b>：早盤追擊風險較高，若股票尾盤反轉拉回，他們可能套高。'
+                        '5/12 的 9A81 就是這種情境 (早盤 +68 但收盤 -5.4%)。</p>'
+                    )
                 elif top_stage == "早盤" and net_total < 0:
-                    label = ('📉 <b>早盤出貨型</b> — 開盤立刻倒貨')
+                    label_key = "早盤出貨型"
+                    label_short = ('📉 <b>早盤出貨型</b> — 開盤立刻倒貨，'
+                                   '可能是<b>停損</b>或<b>反向獲利了結</b>')
+                    label_long = (
+                        '<p><b>典型行為</b>：開盤後 30 分鐘內大量倒貨。常見於：</p>'
+                        '<ul>'
+                        '<li>觸發前一日設定的停損價</li>'
+                        '<li>昨晚有負面消息 (財報miss/政策 etc) 開盤倒貨</li>'
+                        '<li>大戶逢開盤拉高賣出 (反向獲利)</li>'
+                        '</ul>'
+                        '<p><b>注意</b>：早盤倒貨後股價往往會繼續走弱 (因為其他人跟賣)。'
+                        '跟同方向 = 跟賣; 反向 = 接他們的籌碼 (要評估為何他們急著出)</p>'
+                    )
                 elif top_stage == "盤中":
-                    label = (f'⚖ <b>盤中{("布局" if net_total > 0 else "出貨")}型</b>')
+                    direction_word = "布局" if net_total > 0 else "出貨"
+                    label_key = f"盤中{direction_word}型"
+                    label_short = (f'⚖ <b>盤中{direction_word}型</b> — '
+                                   '避開早盤情緒激動 + 尾盤搶賣，挑盤中相對冷靜時段操作')
+                    label_long = (
+                        '<p><b>盤中 (10:08-12:22) 是什麼樣的時段?</b></p>'
+                        '<p>早盤情緒激動 (開盤跳空/搶買搶賣) 結束、尾盤恐慌 (收盤前砍倉) 還沒開始，'
+                        '盤中是「相對冷靜」的成交時段。法人和聰明資金常選這時段操作，'
+                        '因為買賣價差 (spread) 較合理。</p>'
+                        '<p><b>為什麼判定?</b></p>'
+                        '<ul>'
+                        '<li>盤中是該分點主場時段</li>'
+                        f'<li>整體方向: 淨{direction_word}</li>'
+                        '<li>常見於：法人 algorithmic execution (TWAP/VWAP 演算法)、'
+                        '價值型投資者、不想壓低/拉高市場的大戶</li>'
+                        '</ul>'
+                    )
             else:
-                label = ('🔀 <b>多時段混合操作</b> — '
-                         f'{top_stage} 略多但無明確 pattern (佔比 < 60%)')
-            if label:
-                conclusion_parts.append(f'<li>{label}</li>')
+                label_key = "多時段混合"
+                label_short = ('🔀 <b>多時段混合操作</b> — '
+                               f'{top_stage} 略多但無明確 pattern (佔比 < 60%)')
+                label_long = (
+                    '<p><b>為什麼沒明確 pattern?</b></p>'
+                    '<p>該分點 N 日操作分散在多個時段，沒有任一時段佔 ≥60%。'
+                    '可能是：</p>'
+                    '<ul>'
+                    '<li>多個客戶/帳戶共享同一分點（不同人不同 pattern）</li>'
+                    '<li>該分點本身策略靈活、見機操作</li>'
+                    '<li>樣本天數太少 (N < 5)，pattern 還沒成形</li>'
+                    '</ul>'
+                    '<p>建議：等累積 N ≥ 6 再判讀，或細看每日 OHLC + 時段對應</p>'
+                )
+            if label_short:
+                conclusion_parts.append(f'<li>{label_short}</li>')
+                if label_long:
+                    conclusion_parts.append(
+                        '<li><details style="margin-top:6px;">'
+                        f'<summary style="cursor:pointer;font-weight:600;color:#0066cc;">'
+                        f'▶ 點此展開「{label_key}」詳細解讀 (專有名詞 + 推論依據)'
+                        '</summary>'
+                        '<div style="margin-top:8px;padding:10px 14px;'
+                        'background:white;border-radius:4px;line-height:1.6;">'
+                        + label_long +
+                        '</div></details></li>'
+                    )
 
             parts.append(
                 '<div style="background:#f8f9fa;padding:12px 16px;'
