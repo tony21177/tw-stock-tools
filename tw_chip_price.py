@@ -981,6 +981,8 @@ def broker_time_estimate(cells: list[dict], side: str,
 def broker_wash_candidates(rows: list[dict], day_low: float, day_high: float,
                            top_n: int = 5, min_each_side: int = 1000,
                            min_wash_score: float = 0.05,
+                           min_side_pct_of_day: float = 0.01,
+                           day_total_volume: int | None = None,
                            price_to_time: dict | None = None) -> list[dict]:
     """Detect 同分點 高賣低買 (sold high then bought low same day) — looks
     like distribution on net basis but is actually accumulation.
@@ -1021,9 +1023,19 @@ def broker_wash_candidates(rows: list[dict], day_low: float, day_high: float,
         agg["_cells"].append({"price": r["price"], "buy": r["buy"], "sell": r["sell"]})
 
     day_range = max(day_high - day_low, 0.01)
+    # Volume threshold: 至少一邊 (買 OR 賣) 要佔當日總量 ≥ min_side_pct_of_day
+    # (default 1%). Excludes noise from broker who only crossed a tiny amount
+    # of the day's flow. day_total_volume is in 股 (shares).
+    vol_threshold = 0
+    if day_total_volume and min_side_pct_of_day > 0:
+        vol_threshold = int(day_total_volume * min_side_pct_of_day)
     candidates = []
     for b in per_broker.values():
         if b["buy_shares"] < min_each_side or b["sell_shares"] < min_each_side:
+            continue
+        # Require max(buy, sell) ≥ 1% of day total volume — filters tiny
+        # cross-trades in high-volume stocks that are 100% noise.
+        if vol_threshold > 0 and max(b["buy_shares"], b["sell_shares"]) < vol_threshold:
             continue
         buy_avg = b["_buy_value"] / b["buy_shares"]
         sell_avg = b["_sell_value"] / b["sell_shares"]
@@ -1908,6 +1920,7 @@ def analyze(stock_code: str, date: str | None = None,
     wash = broker_wash_candidates(
         bsr["rows"], day_low=ohlc["low"], day_high=ohlc["high"], top_n=5,
         price_to_time=price_to_time,
+        day_total_volume=bsr.get("total_buy_shares", 0),
     )
     # Prefer time-based stage when tick data is available (correct on V-shaped
     # / reversal days); fall back to price-quartile heuristic otherwise.
