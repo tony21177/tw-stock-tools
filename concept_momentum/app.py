@@ -955,17 +955,23 @@ def _render_chip_price_page(code: str | None = None,
 <nav><a href="/">← 大盤 dashboard</a> <a href="/chip-price">📋 籌碼價量</a> <a href="/contract-liabilities">💰 合約負債</a> <a href="/inventory">📦 存貨</a></nav>
 <h1>📊 籌碼價量分析 (broker × price × time)</h1>
 
-<form method="get" action="/chip-price">
+<form method="get" action="/chip-price" style="flex-wrap:wrap;">
   <label for="code">股票代號:</label>
   <input type="text" id="code" name="code" value="{code_attr}"
-         placeholder="例: 2313" autofocus required>
+         placeholder="例: 2313" autofocus required style="width:100px;">
   <label for="broker">分點 (選填):</label>
   <input type="text" id="broker" name="broker" value="{broker_attr}"
-         placeholder="例: 5381 或 員林" style="width:160px;">
+         placeholder="例: 9A81 / 5381 / 員林 / 永豐"
+         style="width:200px;">
   <button type="submit">查詢 (用快取)</button>
   <button type="submit" name="fresh" value="1" class="secondary">即時抓取 (5-15秒)</button>
 </form>
-<p class="small">💡 分點欄可輸入代號 (e.g. <code>5381</code>)、分行名稱 (e.g. <code>員林</code> = 所有 *員林 分行) 或銀行系名 (e.g. <code>第一</code> = 第一銀全系)</p>
+<p class="small">💡 <b>分點欄填了會多顯示「📅 N 日時段 pattern」</b> (該分點過去 6-8 日的早盤/盤中/尾盤買賣分布) +「🔍 分點深度」(per-cell 時間 + 價位分布)。</p>
+<p class="small">分點欄可輸入：(1) 代號 e.g. <code>9A81</code>、<code>5381</code>  (2) 分行名稱 e.g. <code>員林</code> = 所有 *員林 分行  (3) 銀行系名 e.g. <code>永豐</code> = 永豐金全系  (4) 中文名 e.g. <code>永豐金匯立</code></p>
+<p class="small">範例：
+ <a href="/chip-price?code=3491&broker=9A81">3491 + 9A81 永豐金匯立 時段 pattern</a> ·
+ <a href="/chip-price?code=2313&broker=8843">2313 + 玉山高雄</a> ·
+ <a href="/chip-price?code=7750&broker=1470">7750 + 台灣摩根</a></p>
 
 <div class="recent">📂 近期快取 (點擊直接看)：{recent_links}</div>
 
