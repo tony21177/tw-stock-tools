@@ -298,6 +298,16 @@ def _render_report_html(data: dict) -> str:
 
     # ── Section 6: 🌀 同分點兩面操作 — 高賣低買 OR 低賣高買 ────────────────
     wash = data.get("wash_candidates", [])
+    # Defensive runtime filter: enforce 1% of day volume threshold even on
+    # legacy cached wash_candidates (generated before 2026-05-20 filter fix).
+    day_total_vol = data.get("total_buy_shares", 0)
+    if wash and day_total_vol > 0:
+        vol_thresh = day_total_vol * 0.01
+        wash = [
+            w for w in wash
+            if max(w.get("buy_shares", 0), w.get("sell_shares", 0))
+            >= vol_thresh
+        ]
     if wash:
         parts.append('<section><h2>🌀 同分點兩面操作 '
                       '(高賣低買 / 低賣高買 型態)</h2>')
