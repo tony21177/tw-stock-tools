@@ -622,19 +622,29 @@ def _render_broker_drilldown(code: str, date: str, broker_query: str,
                 '⚠ OHLC 來自 FinMind，沒抓到的日期會空白。</p>'
             )
             # ── 結論分析 (pattern conclusion) ──
+            # User feedback (2026-05-21): 不應該只用「主場時段日數」判定 pattern,
+            # 買的張數 (volume) 跟價格 (low pick vs chase high) 都該納入考量。
             stage_count = {"早盤": 0, "盤中": 0, "尾盤": 0}
             stage_strong = {"早盤": 0, "盤中": 0, "尾盤": 0}
             stage_volume = {"早盤": 0, "盤中": 0, "尾盤": 0}  # accum |net|
-            trend_stage: dict = {}  # {trend: [list of dominant stages]}
+            stage_buy_vol = {"早盤": 0, "盤中": 0, "尾盤": 0}  # buy only
+            stage_buy_val = {"早盤": 0.0, "盤中": 0.0, "尾盤": 0.0}
+            # Price position: where in day range did broker buy (0 = at low,
+            # 100 = at high). Aggregate across days for the dominant stage.
+            stage_price_pos: dict = {"早盤": [], "盤中": [], "尾盤": []}
+            trend_stage: dict = {}
             total_buy_all = 0
             total_sell_all = 0
             for row in timing:
                 stages = [
-                    ("早盤", row["early_buy"], row["early_sell"]),
-                    ("盤中", row["mid_buy"], row["mid_sell"]),
-                    ("尾盤", row["late_buy"], row["late_sell"]),
+                    ("早盤", row["early_buy"], row["early_sell"],
+                     row.get("early_buy_avg")),
+                    ("盤中", row["mid_buy"], row["mid_sell"],
+                     row.get("mid_buy_avg")),
+                    ("尾盤", row["late_buy"], row["late_sell"],
+                     row.get("late_buy_avg")),
                 ]
-                nets = [abs(b - s) for _, b, s in stages]
+                nets = [abs(b - s) for _, b, s, _ in stages]
                 if sum(nets) == 0:
                     continue
                 max_idx = nets.index(max(nets))
@@ -643,20 +653,46 @@ def _render_broker_drilldown(code: str, date: str, broker_query: str,
                 stage_count[dom_stage] += 1
                 if dom_pct >= 60:
                     stage_strong[dom_stage] += 1
-                # Accumulate net volume per stage across all days (for
-                # tie-breaking + better tracking of "where real volume happens")
-                for name, sb, ss in stages:
+                # Accumulate per-stage stats
+                ohlc = row.get("ohlc", {})
+                hi = ohlc.get("high", 0)
+                lo = ohlc.get("low", 0)
+                rng = max(hi - lo, 0.01)
+                for name, sb, ss, buy_avg in stages:
                     stage_volume[name] += abs(sb - ss)
+                    stage_buy_vol[name] += sb
+                    if buy_avg is not None:
+                        stage_buy_val[name] += buy_avg * sb
+                    # Price position 0-100% for this day's buys in this stage
+                    if buy_avg is not None and lo > 0 and hi > lo:
+                        pos = (buy_avg - lo) / rng * 100
+                        stage_price_pos[name].append(
+                            (pos, sb))  # weighted by volume
                 trend_stage.setdefault(row["trend"], []).append(dom_stage)
                 total_buy_all += row["total_buy_zhang"]
                 total_sell_all += row["total_sell_zhang"]
             n_days = len(timing)
-            # Most common dominant stage; tie-break by total |net| volume
-            # (more volume in stage X = more "real" pattern there).
-            sorted_stages = sorted(stage_count.items(),
-                                   key=lambda x: (-x[1], -stage_volume[x[0]]))
-            top_stage, top_cnt = sorted_stages[0]
+            # Pick top_stage by VOLUME share (not day count) — user feedback:
+            # 1 day with 190 張 in 尾盤 weighs more than 3 days with 5 張 each
+            # in 早盤. Total net volume better reflects "real pattern".
+            total_vol = sum(stage_volume.values()) or 1
+            stage_vol_pct = {s: v / total_vol * 100
+                             for s, v in stage_volume.items()}
+            sorted_stages = sorted(stage_volume.items(),
+                                   key=lambda x: -x[1])
+            top_stage = sorted_stages[0][0]
+            top_cnt = stage_count[top_stage]
             top_strong = stage_strong[top_stage]
+            top_vol_pct = stage_vol_pct[top_stage]
+            # Volume-weighted avg buy price position for top stage
+            top_pos_data = stage_price_pos[top_stage]
+            top_avg_pos = (sum(p * v for p, v in top_pos_data) /
+                           sum(v for _, v in top_pos_data)
+                           if top_pos_data and sum(v for _, v in top_pos_data) > 0
+                           else None)
+            # Volume-weighted avg buy price (raw NT$)
+            top_vwap = (stage_buy_val[top_stage] / stage_buy_vol[top_stage]
+                        if stage_buy_vol[top_stage] > 0 else None)
             # Net direction
             net_total = total_buy_all - total_sell_all
             direction = ("**淨買方**" if net_total > total_sell_all
@@ -670,12 +706,34 @@ def _render_broker_drilldown(code: str, date: str, broker_query: str,
                                 len(ohk_lo_stages) * 100
                                 if ohk_lo_stages else 0)
             conclusion_parts = []
+            # Volume-share view (primary)
             conclusion_parts.append(
-                f'<li><b>主要時段:</b> {top_stage} 主場 {top_cnt}/{n_days} 天'
-                f' (明確 pattern {top_strong}/{n_days} 天，佔比≥60%)。'
-                f'其他: 早盤 {stage_count["早盤"]} / 盤中 {stage_count["盤中"]}'
-                f' / 尾盤 {stage_count["尾盤"]}</li>'
+                f'<li><b>主要時段 (按淨量):</b> {top_stage} 佔 '
+                f'{top_vol_pct:.0f}% 累計淨量 '
+                f'({stage_volume[top_stage]} 張)。'
+                f'早盤 {stage_vol_pct["早盤"]:.0f}% / '
+                f'盤中 {stage_vol_pct["盤中"]:.0f}% / '
+                f'尾盤 {stage_vol_pct["尾盤"]:.0f}%</li>'
             )
+            # Day-count view (secondary)
+            conclusion_parts.append(
+                f'<li><b>主場日數分布:</b> 早盤 {stage_count["早盤"]} / '
+                f'盤中 {stage_count["盤中"]} / 尾盤 {stage_count["尾盤"]} 天'
+                f' (top {top_stage}: {top_cnt}/{n_days}, '
+                f'明確 pattern {top_strong}/{n_days})</li>'
+            )
+            # Price position (where in day range did broker buy in top_stage)
+            if top_avg_pos is not None and top_vwap is not None:
+                pos_label = (
+                    "🟢 接近低點" if top_avg_pos < 35
+                    else "🔴 追逼高點" if top_avg_pos > 65
+                    else "中位區"
+                )
+                conclusion_parts.append(
+                    f'<li><b>{top_stage}買進價位:</b> 均買 '
+                    f'${top_vwap:.2f}，位於當日範圍 '
+                    f'{top_avg_pos:.0f}% 位置 → {pos_label}</li>'
+                )
             if ohk_lo_stages:
                 ohk_summary = (
                     f"開高走低 ({len(ohk_lo_stages)} 天) "
@@ -709,18 +767,39 @@ def _render_broker_drilldown(code: str, date: str, broker_query: str,
             label_key = None
             label_short = ""
             label_long = ""
-            # Pattern threshold: top_stage 強勢佔 ≥40% 天數視為明確 pattern。
-            # 過去用 50% 太嚴 — 7 日中 3 強勢日 (3/7=43%) 在邏輯上已足夠
-            # (其他 4 日散布在另兩個 stage), 但被判 "多時段混合". 加上
-            # tie-break by stage_volume 後, 弱勢日的尾盤狂買 pattern 仍會
-            # 被辨識出來而非被早盤 noise 蓋過.
-            if top_strong >= n_days * 0.4:
+            # Pattern threshold (user feedback 2026-05-21): top_stage 應該
+            # 用 volume share 而非單純日數判斷。任一條件成立即視為明確 pattern:
+            # 1. top_stage 佔累計淨量 ≥50% (volume-dominant)
+            # 2. top_stage 強勢日佔 ≥40% 天數 (day-count-dominant, 原邏輯)
+            # 這樣 "1 天 190 張在尾盤 + 3 天 30 張各在早盤" 仍會被歸尾盤
+            # (因為尾盤 volume share > 50%) — 反映 user 真實意圖
+            volume_dominant = top_vol_pct >= 50
+            count_dominant = top_strong >= n_days * 0.4
+            if volume_dominant or count_dominant:
                 if top_stage == "尾盤" and net_total > 0:
-                    label_key = "尾盤低接型"
-                    label_short = (
-                        '🎯 <b>尾盤低接型</b> — 偏好弱勢時或盤後便宜價接刀，'
-                        '<b>中期累積部位</b> (持有期難從短期資料判定，'
-                        '但確定不是當沖)')
+                    # Distinguish 真低接 vs 追高: depends on price position
+                    if top_avg_pos is not None and top_avg_pos < 35:
+                        label_key = "尾盤低接型"
+                        label_short = (
+                            '🎯 <b>尾盤低接型</b> — 尾盤淨買主場 '
+                            f'({top_vol_pct:.0f}% 淨量) 且'
+                            f'<b>接近當日低點</b> (均買位置 {top_avg_pos:.0f}%)，'
+                            '<b>中期累積部位</b> (持有期難從短期資料判定，'
+                            '但確定不是當沖)')
+                    elif top_avg_pos is not None and top_avg_pos > 65:
+                        label_key = "尾盤追高型"
+                        label_short = (
+                            '⚠ <b>尾盤追高型</b> — 尾盤淨買主場 '
+                            f'({top_vol_pct:.0f}% 淨量) 但'
+                            f'<b>接近當日高點</b> (均買位置 {top_avg_pos:.0f}%)，'
+                            '可能是收盤前 FOMO 或被動 algo execution')
+                    else:
+                        label_key = "尾盤中位接型"
+                        label_short = (
+                            '🎯 <b>尾盤中位接型</b> — 尾盤淨買主場 '
+                            f'({top_vol_pct:.0f}% 淨量), 均買位置'
+                            f' {top_avg_pos:.0f}% (中性)，'
+                            '<b>中期累積部位</b>')
                     label_long = (
                         '<p style="background:#fff4e0;padding:8px 12px;'
                         'border-left:3px solid #c30;border-radius:4px;">'

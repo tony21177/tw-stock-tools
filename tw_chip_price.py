@@ -1233,6 +1233,9 @@ def broker_timing_pattern(stock_code: str, broker_id: str,
         except Exception:
             ptm = None
         e_buy = e_sell = m_buy = m_sell = l_buy = l_sell = 0
+        # Volume-weighted buy price per stage (for "low pick vs chase high"
+        # judgement). Accumulate price × shares then divide.
+        e_buy_val = m_buy_val = l_buy_val = 0.0
         if ptm:
             for c in cells:
                 tm = ptm.get(c["price"])
@@ -1243,12 +1246,19 @@ def broker_timing_pattern(stock_code: str, broker_id: str,
                 if tm < 68:
                     e_buy += buy_z
                     e_sell += sell_z
+                    e_buy_val += c["price"] * buy_z
                 elif tm < 202:
                     m_buy += buy_z
                     m_sell += sell_z
+                    m_buy_val += c["price"] * buy_z
                 else:
                     l_buy += buy_z
                     l_sell += sell_z
+                    l_buy_val += c["price"] * buy_z
+        # Per-stage VWAP buy price
+        e_buy_avg = (e_buy_val / e_buy) if e_buy > 0 else None
+        m_buy_avg = (m_buy_val / m_buy) if m_buy > 0 else None
+        l_buy_avg = (l_buy_val / l_buy) if l_buy > 0 else None
 
         ohlc = ohlc_map.get(date, {})
         op = ohlc.get("open", 0)
@@ -1277,6 +1287,10 @@ def broker_timing_pattern(stock_code: str, broker_id: str,
             "early_buy": e_buy, "early_sell": e_sell,
             "mid_buy": m_buy, "mid_sell": m_sell,
             "late_buy": l_buy, "late_sell": l_sell,
+            # Per-stage VWAP buy prices (None if no buy in that stage)
+            "early_buy_avg": e_buy_avg,
+            "mid_buy_avg": m_buy_avg,
+            "late_buy_avg": l_buy_avg,
             "has_tick": ptm is not None,
         })
     return rows
