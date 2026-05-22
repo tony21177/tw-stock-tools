@@ -1576,27 +1576,44 @@ def contract_liabilities():
         source_label=source_label)
 
 
-def _breakdown_commentary(series: dict) -> str:
+def _breakdown_commentary(series: dict, inv_rows: list[dict] | None = None) -> str:
     """Generate accounting/industry expert commentary on inventory breakdown.
 
-    Looks at YoY growth for each category in the latest quarter and applies
-    rule-of-thumb interpretation. Each category has known signal semantics:
-
-    - 原料 ↑: 備料增加，預期 1-2 季後產能上升 (leading indicator)
-    - 在製品 ↑: 訂單在生產，1-3 個月後轉營收 (strongest near-term signal)
-    - 製成品 ↑: 出貨壓力 / 客戶 push-out / 庫存堆積風險 (lagging, 警訊)
-    - 在途存貨 ↑: 物流時間長 / 大批採購中
-    - 物料及零件 / 消耗品: 跟原料同步觀察
-    - 商品: 通路 / 純代工才看
+    判定邏輯：YoY 為主方向 + QoQ 連 2 季同向加倍強化 + 營收交叉驗證。
+    - 訊號方向由 YoY 決定（扣季節性）
+    - 若近 2 季 QoQ 也與 YoY 同方向 → 標 ⚡ 加倍強化
+    - 若近 2 季 QoQ 反向 → 標 ↻ YoY 訊號減弱 (轉折)
+    - inv_rows 帶營收時，再做存貨 vs 營收交叉檢查：存貨雙升但營收沒同步
+      → 觸發「庫存壓力劇增 / 跌價損失風險」警訊
     """
     dates = sorted(series.keys())
     if len(dates) < 5:
         return ""  # Need ≥5 quarters for meaningful YoY
     latest = series[dates[-1]]
-    yoy = series[dates[-5]] if len(dates) >= 5 else None
-    prev_q = series[dates[-2]] if len(dates) >= 2 else None
+    yoy = series[dates[-5]]
+    prev_q = series[dates[-2]]
+    prev2_q = series[dates[-3]] if len(dates) >= 3 else None
     if not yoy:
         return ""
+
+    def _qoq_accel(yp, q_now, q_prev, thresh=1.0):
+        """Return (html_tag, accelerated_bool, reversed_bool).
+        accelerated = QoQ 連 2 季都與 YoY 同向
+        reversed    = QoQ 連 2 季都與 YoY 反向 (轉折訊號)
+        """
+        if yp is None or q_now is None or q_prev is None:
+            return ("", False, False)
+        if abs(q_now) < thresh or abs(q_prev) < thresh:
+            return ("", False, False)
+        yoy_up = yp > 0
+        both_up = q_now > 0 and q_prev > 0
+        both_dn = q_now < 0 and q_prev < 0
+        if (yoy_up and both_up) or ((not yoy_up) and both_dn):
+            return (' <b style="color:#c00">⚡ QoQ 連 2 季同向強化</b>', True, False)
+        if (yoy_up and both_dn) or ((not yoy_up) and both_up):
+            return (' <span style="color:#888">↻ 近 2 季 QoQ 反向，YoY 訊號減弱</span>',
+                    False, True)
+        return ("", False, False)
 
     cat_meta = {
         "raw_materials": ("原料",
@@ -1623,15 +1640,21 @@ def _breakdown_commentary(series: dict) -> str:
         "byproducts": ("副產品", ("副產品累積", "副產品下降")),
     }
 
+    accel_map = {}  # key → True if YoY 方向被 QoQ 連 2 季確認
     items = []
     for key, (label, (up_msg, down_msg)) in cat_meta.items():
         v_latest = latest.get(key, 0)
         v_yoy = yoy.get(key, 0)
         v_prev = prev_q.get(key, 0) if prev_q else 0
+        v_prev2 = prev2_q.get(key, 0) if prev2_q else 0
         if v_latest == 0 and v_yoy == 0:
             continue
         yoy_pct = ((v_latest - v_yoy) / v_yoy * 100) if v_yoy > 0 else None
         qoq_pct = ((v_latest - v_prev) / v_prev * 100) if v_prev > 0 else None
+        qoq_prev_pct = ((v_prev - v_prev2) / v_prev2 * 100) if v_prev2 > 0 else None
+        accel_tag, accelerated, reversed_ = _qoq_accel(
+            yoy_pct, qoq_pct, qoq_prev_pct)
+        accel_map[key] = accelerated
         msg = up_msg if yoy_pct is not None and yoy_pct > 0 else down_msg
         yoy_str = (f'<span class="{"pos" if yoy_pct >= 0 else "neg"}">'
                    f'{"+" if yoy_pct >= 0 else ""}{yoy_pct:.0f}%</span>'
@@ -1641,13 +1664,18 @@ def _breakdown_commentary(series: dict) -> str:
                    if qoq_pct is not None else "—")
         items.append(
             f'<li><b>{label}</b> {v_latest / 1000:,.0f} 千元 '
-            f'(YoY {yoy_str}, QoQ {qoq_str}) — {msg}</li>'
+            f'(YoY {yoy_str}, QoQ {qoq_str}) — {msg}{accel_tag}</li>'
         )
 
     # Overall total trend
     tot_latest = latest.get("_total", 0)
     tot_yoy = yoy.get("_total", 0)
+    tot_prev = prev_q.get("_total", 0) if prev_q else 0
+    tot_prev2 = prev2_q.get("_total", 0) if prev2_q else 0
     tot_yoy_pct = ((tot_latest - tot_yoy) / tot_yoy * 100) if tot_yoy > 0 else None
+    tot_qoq_pct = ((tot_latest - tot_prev) / tot_prev * 100) if tot_prev > 0 else None
+    tot_qoq_prev_pct = ((tot_prev - tot_prev2) / tot_prev2 * 100) if tot_prev2 > 0 else None
+    _, tot_accel, _ = _qoq_accel(tot_yoy_pct, tot_qoq_pct, tot_qoq_prev_pct)
     # Strongest signals
     headline = ""
     fg = latest.get("finished_goods", 0)
@@ -1659,21 +1687,85 @@ def _breakdown_commentary(series: dict) -> str:
     raw = latest.get("raw_materials", 0)
     raw_yoy = yoy.get("raw_materials", 0)
     raw_yoy_pct = ((raw - raw_yoy) / raw_yoy * 100) if raw_yoy > 0 else 0
-    if wip_yoy_pct > 20 and raw_yoy_pct > 20 and fg_yoy_pct < 15:
-        headline = "🟢 **強訊號：產能拉貨**" \
-                   "（原料+在製大幅增加但製成品控制 → 客戶要貨積極，1-3 季內營收動能）"
+    # accel flags from per-item map
+    wip_accel = accel_map.get("work_in_progress", False)
+    raw_accel = accel_map.get("raw_materials", False)
+    fg_accel = accel_map.get("finished_goods", False)
+
+    def _amp(prefix_accel: bool) -> str:
+        return "⚡ **加倍強化** — " if prefix_accel else ""
+
+    # ── 營收交叉驗證：存貨雙升但營收沒跟上 → 庫存壓力警訊 ─────────────
+    # 用 rev_yoy 與 rev_qoq 跟存貨 YoY/QoQ 比；若存貨 ↑↑ 但營收沒同步成長
+    # → 「庫存壓力劇增 + 跌價損失 / 打庫存風險」
+    rev_yoy_pct = rev_qoq_pct = None
+    rev_pressure = False
+    rev_warning_text = ""
+    if inv_rows and len(inv_rows) >= 5:
+        try:
+            sorted_rows = sorted(inv_rows, key=lambda r: r.get("date", ""))
+            r_latest = sorted_rows[-1].get("revenue", 0) or 0
+            r_yoy = sorted_rows[-5].get("revenue", 0) or 0
+            r_prev = sorted_rows[-2].get("revenue", 0) or 0
+            if r_yoy > 0:
+                rev_yoy_pct = (r_latest - r_yoy) / r_yoy * 100
+            if r_prev > 0:
+                rev_qoq_pct = (r_latest - r_prev) / r_prev * 100
+            # 觸發條件：存貨 YoY > +10% 且 QoQ > +1% 且 (rev_yoy < inv_yoy-10pp 或 rev_yoy<0)
+            if (tot_yoy_pct is not None and tot_yoy_pct > 10
+                    and tot_qoq_pct is not None and tot_qoq_pct > 1
+                    and rev_yoy_pct is not None
+                    and (rev_yoy_pct < tot_yoy_pct - 10 or rev_yoy_pct < 0)):
+                rev_pressure = True
+                gap = tot_yoy_pct - rev_yoy_pct
+                rev_warning_text = (
+                    f"🔴 **警訊：庫存壓力劇增**（存貨 YoY +{tot_yoy_pct:.0f}% / "
+                    f"QoQ +{tot_qoq_pct:.0f}% 雙升，但營收 YoY {'+' if rev_yoy_pct>=0 else ''}"
+                    f"{rev_yoy_pct:.0f}% 沒跟上，差距 {gap:.0f}pp → "
+                    f"庫存堆積中，注意未來跌價損失 / 打庫存風險）"
+                )
+        except Exception:
+            pass
+
+    if rev_pressure:
+        headline = rev_warning_text
+    elif wip_yoy_pct > 20 and raw_yoy_pct > 20 and fg_yoy_pct < 15:
+        amp = _amp(wip_accel and raw_accel)
+        headline = f"🟢 **強訊號：產能拉貨**（{amp}原料+在製大幅增加但製成品控制 → 客戶要貨積極，1-3 季內營收動能）"
     elif fg_yoy_pct > 25 and wip_yoy_pct < 10:
-        headline = "🔴 **警訊：庫存堆積**" \
-                   "（製成品大幅增加但在製品停滯 → 客戶 push-out / 出貨遲緩，毛利壓力）"
+        amp = _amp(fg_accel)
+        headline = f"🔴 **警訊：庫存堆積**（{amp}製成品大幅增加但在製品停滯 → 客戶 push-out / 出貨遲緩，毛利壓力）"
     elif wip_yoy_pct > 30:
-        headline = "🟢 **強訊號：在製暴增**" \
-                   f"（在製品 YoY +{wip_yoy_pct:.0f}% → 預期未來 1-3 季營收大幅增長）"
+        amp = _amp(wip_accel)
+        headline = f"🟢 **強訊號：在製暴增**（{amp}在製品 YoY +{wip_yoy_pct:.0f}% → 預期未來 1-3 季營收大幅增長）"
     elif tot_yoy_pct and tot_yoy_pct < -15:
-        headline = "🟡 **去化中**（整體存貨 YoY 大降 → 出貨好但要看新訂單能不能補上）"
+        amp = _amp(tot_accel)
+        headline = f"🟡 **去化中**（{amp}整體存貨 YoY 大降 → 出貨好但要看新訂單能不能補上）"
     elif tot_yoy_pct and tot_yoy_pct > 30:
-        headline = "🟡 **存貨快速擴大**（整體 YoY 大增，要分辨是好的備料還是堆積）"
+        amp = _amp(tot_accel)
+        headline = f"🟡 **存貨快速擴大**（{amp}整體 YoY 大增，要分辨是好的備料還是堆積）"
     else:
         headline = "→ 存貨結構平穩，無明顯訊號"
+
+    # Revenue cross-check display row
+    rev_html = ""
+    if rev_yoy_pct is not None or rev_qoq_pct is not None:
+        ry = (f'<span class="{"pos" if rev_yoy_pct >= 0 else "neg"}">'
+              f'{"+" if rev_yoy_pct >= 0 else ""}{rev_yoy_pct:.1f}%</span>'
+              if rev_yoy_pct is not None else "—")
+        rq = (f'<span class="{"pos" if rev_qoq_pct >= 0 else "neg"}">'
+              f'{"+" if rev_qoq_pct >= 0 else ""}{rev_qoq_pct:.1f}%</span>'
+              if rev_qoq_pct is not None else "—")
+        gap_html = ""
+        if rev_yoy_pct is not None and tot_yoy_pct is not None:
+            gap = tot_yoy_pct - rev_yoy_pct
+            if gap > 10:
+                gap_html = (f' &nbsp;<span style="color:#c00">⚠ 存貨領先營收 '
+                            f'{gap:.0f}pp，庫存堆積中</span>')
+            elif gap < -10:
+                gap_html = (f' &nbsp;<span style="color:#0a0">✓ 營收領先存貨 '
+                            f'{-gap:.0f}pp，去化順暢</span>')
+        rev_html = (f'<p><b>📊 營收交叉:</b> YoY {ry} / QoQ {rq}{gap_html}</p>')
 
     return f"""
 <section>
@@ -1682,13 +1774,18 @@ def _breakdown_commentary(series: dict) -> str:
      <span class="{"pos" if tot_yoy_pct and tot_yoy_pct >= 0 else "neg"}">
      {("+" if tot_yoy_pct >= 0 else "") + f"{tot_yoy_pct:.1f}%" if tot_yoy_pct is not None else "—"}</span>
      ({dates[-5][:7]} → {dates[-1][:7]})</p>
+  {rev_html}
   <p style="font-size:1.05em; margin:8px 0;">{headline}</p>
   <h4 style="margin-top:14px; font-size:0.95em;">逐項解讀：</h4>
   <ul class="commentary-list" style="line-height:1.7;">
     {''.join(items)}
   </ul>
   <p class="small" style="margin-top:10px;">
-    解讀邏輯：原料↑=備料 (1-2 季 leading) / 在製品↑=訂單在線 (1-3 月最強 leading) /
+    判定邏輯：<b>YoY 為主</b>（扣季節性）+ <b>QoQ 連 2 季同向</b>加倍強化。
+    若兩季 QoQ 都跟 YoY 同方向 → 標 <b style="color:#c00">⚡ 加倍強化</b>（趨勢正在加速）；
+    若兩季 QoQ 都跟 YoY 反向 → 標 <span style="color:#888">↻ YoY 訊號減弱</span>（轉折中，YoY 還沒翻但動能已轉）。
+    QoQ 變動 &lt;1% 視為持平不計入。<br>
+    原料↑=備料 (1-2 季 leading) / 在製品↑=訂單在線 (1-3 月最強 leading) /
     製成品↑=⚠ 出貨壓力 (lagging warning) / 在途↑=物流增加。
     產業差異：純代工 (e.g. 2330/2317) 看在製品; PCB/組裝 (e.g. 2313) 看製成品堆積;
     電源/工業 (e.g. 6282) 看原料 vs 製成品比例。
@@ -1697,7 +1794,8 @@ def _breakdown_commentary(series: dict) -> str:
 """
 
 
-def _breakdown_section_html(series: dict | None) -> str:
+def _breakdown_section_html(series: dict | None,
+                             inv_rows: list[dict] | None = None) -> str:
     """Render the optional 5-item inventory breakdown (stacked bar chart +
     table). Used by _render_inventory_page when ?breakdown=1 was provided.
     Returns '' if no series given.
@@ -1770,7 +1868,7 @@ def _breakdown_section_html(series: dict | None) -> str:
     th_cats = ''.join(
         f'<th class="num">{label} (千元)</th>' for _, label, _ in used_cats)
 
-    commentary = _breakdown_commentary(series)
+    commentary = _breakdown_commentary(series, inv_rows=inv_rows)
     return f"""
 <section>
   <h3>📦 拆分明細 (從 MOPS 財報 PDF 解析，{len(dates)} 個季底)</h3>
@@ -1939,7 +2037,7 @@ def _render_inventory_page(code: str = "", years: int = 5,
     <button type="submit">載入拆分</button>
   </form>
 </section>
-{_breakdown_section_html(breakdown_series)}
+{_breakdown_section_html(breakdown_series, inv_rows=rows)}
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
