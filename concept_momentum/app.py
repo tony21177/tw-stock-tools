@@ -1851,9 +1851,10 @@ def _breakdown_section_html(series: dict | None,
         "labels": dates, "datasets": datasets,
     }, ensure_ascii=False)
 
-    # Build date → revenue / inv_rev_pct map from inv_rows
+    # Build date → revenue / inv_rev_pct / dsi map from inv_rows
     rev_map: dict[str, float] = {}
     ratio_map: dict[str, float | None] = {}
+    dsi_map: dict[str, float | None] = {}
     if inv_rows:
         for r in inv_rows:
             d = r.get("date")
@@ -1861,6 +1862,7 @@ def _breakdown_section_html(series: dict | None,
                 continue
             rev_map[d] = float(r.get("revenue", 0) or 0)
             ratio_map[d] = r.get("inv_rev_pct")
+            dsi_map[d] = r.get("dsi_days")
 
     # Table rows
     table_rows = []
@@ -1889,6 +1891,15 @@ def _breakdown_section_html(series: dict | None,
                 f'<td class="num" style="color:{color}">{ratio:.0f}%</td>')
         else:
             cells.append('<td class="num muted">—</td>')
+        # DSI (Days Sales of Inventory) — 跨季節更穩定
+        dsi = dsi_map.get(d)
+        if dsi is not None:
+            dsi_color = ("#c00" if dsi > 90 else
+                         "#a60" if dsi > 60 else "#0a0")
+            cells.append(
+                f'<td class="num" style="color:{dsi_color}">{dsi:.0f}</td>')
+        else:
+            cells.append('<td class="num muted">—</td>')
         table_rows.append('<tr>' + ''.join(cells) + '</tr>')
 
     th_cats = ''.join(
@@ -1906,16 +1917,24 @@ def _breakdown_section_html(series: dict | None,
       <th class="num">存貨總額 (千元)</th>
       <th class="num">季營收 (千元)</th>
       <th class="num">存貨/營收</th>
+      <th class="num">DSI 天</th>
     </tr></thead>
     <tbody>{''.join(table_rows)}</tbody>
   </table>
   <p class="small">資料源：公開資訊觀測站 IFRSs 合併財報 (附註十二 / 存貨明細)。
      不同公司揭露科目不同（半導體：原料/在製品/製成品/物料及零件；
      傳產：原料/在製品/成品/商品 etc）。<br>
-     <b>存貨銷售比 = 期末存貨 / 該季營收</b>；
+     <b>存貨/營收 (存銷比) = 期末存貨 / 該季營收</b>；
      <span style="color:#0a0">&lt;50%</span> 健康 /
      <span style="color:#a60">50-100%</span> 偏高 /
-     <span style="color:#c00">&gt;100%</span> 庫存堆積（一季賣不完）。</p>
+     <span style="color:#c00">&gt;100%</span> 庫存堆積 (一季賣不完)。
+     單季營收當分母會被淡旺季干擾。<br>
+     <b>DSI 天 (Days Sales of Inventory) = 365 / 週轉率</b>，
+     週轉率 = 年化 COGS / 平均存貨；幾天能賣完，跨產業 / 跨季節更穩定可比。
+     <span style="color:#0a0">&lt;60 天</span> /
+     <span style="color:#a60">60-90 天</span> /
+     <span style="color:#c00">&gt;90 天</span> 為通用門檻
+     (半導體常見 60-90 偏正常；零售業 30 天就嫌多)。</p>
 </section>
 {commentary}
 <script>
