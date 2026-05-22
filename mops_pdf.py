@@ -199,9 +199,12 @@ def parse_inventory_breakdown(pdf_path: str) -> dict:
             # varied numbering: "十二、存貨" / "(四)存貨" / "六、存貨" etc.
             # Try matching any of these patterns.
             # Headings vary: "十二、存貨" / "(四)存貨" / "六、存貨" / "(十二)存貨"
+            # 5347 uses "十三、 存貨" (space between 、 and 存) — 、 is not in
+            # CJK ideograph range so space-normalization regex doesn't catch
+            # it. Allow optional whitespace after 、 / closing paren.
             heading_re = re.compile(
-                r"(?:[一二三四五六七八九十]{1,3}、|\([一二三四五六七八九十]{1,3}\)\s?)"
-                r"[一-鿿豈-﫿]*存貨"
+                r"(?:[一二三四五六七八九十]{1,3}、\s*|\([一二三四五六七八九十]{1,3}\)\s?)"
+                r"[一-鿿豈-﫿]*\s?存\s?貨"
             )
             # Find ALL heading matches and pick one that actually has data
             # (date pattern within first 300 chars after heading). 年報 has
