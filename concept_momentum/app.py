@@ -1851,6 +1851,17 @@ def _breakdown_section_html(series: dict | None,
         "labels": dates, "datasets": datasets,
     }, ensure_ascii=False)
 
+    # Build date → revenue / inv_rev_pct map from inv_rows
+    rev_map: dict[str, float] = {}
+    ratio_map: dict[str, float | None] = {}
+    if inv_rows:
+        for r in inv_rows:
+            d = r.get("date")
+            if not d:
+                continue
+            rev_map[d] = float(r.get("revenue", 0) or 0)
+            ratio_map[d] = r.get("inv_rev_pct")
+
     # Table rows
     table_rows = []
     for d in dates:
@@ -1863,6 +1874,21 @@ def _breakdown_section_html(series: dict | None,
                           else '<td class="num muted">—</td>')
         total = e.get("_total", 0)
         cells.append(f'<td class="num"><b>{total / 1000:,.0f}</b></td>')
+        # Revenue + inv/revenue ratio
+        rev = rev_map.get(d, 0)
+        ratio = ratio_map.get(d)
+        if rev > 0:
+            cells.append(f'<td class="num">{rev / 1000:,.0f}</td>')
+        else:
+            cells.append('<td class="num muted">—</td>')
+        if ratio is not None:
+            # 存貨銷售比顏色：>100% 紅 (庫存高於季營收) / 50-100% 中 / <50% 綠
+            color = ("#c00" if ratio > 100 else
+                     "#a60" if ratio > 50 else "#0a0")
+            cells.append(
+                f'<td class="num" style="color:{color}">{ratio:.0f}%</td>')
+        else:
+            cells.append('<td class="num muted">—</td>')
         table_rows.append('<tr>' + ''.join(cells) + '</tr>')
 
     th_cats = ''.join(
@@ -1877,13 +1903,19 @@ def _breakdown_section_html(series: dict | None,
     <thead><tr>
       <th>季底</th>
       {th_cats}
-      <th class="num">合計</th>
+      <th class="num">存貨總額 (千元)</th>
+      <th class="num">季營收 (千元)</th>
+      <th class="num">存貨/營收</th>
     </tr></thead>
     <tbody>{''.join(table_rows)}</tbody>
   </table>
   <p class="small">資料源：公開資訊觀測站 IFRSs 合併財報 (附註十二 / 存貨明細)。
      不同公司揭露科目不同（半導體：原料/在製品/製成品/物料及零件；
-     傳產：原料/在製品/成品/商品 etc）。</p>
+     傳產：原料/在製品/成品/商品 etc）。<br>
+     <b>存貨銷售比 = 期末存貨 / 該季營收</b>；
+     <span style="color:#0a0">&lt;50%</span> 健康 /
+     <span style="color:#a60">50-100%</span> 偏高 /
+     <span style="color:#c00">&gt;100%</span> 庫存堆積（一季賣不完）。</p>
 </section>
 {commentary}
 <script>
