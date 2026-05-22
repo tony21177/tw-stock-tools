@@ -1814,7 +1814,8 @@ def _breakdown_section_html(series: dict | None) -> str:
 def _render_inventory_page(code: str = "", years: int = 5,
                             rows: list[dict] | None = None,
                             name: str = "", error: str = "",
-                            breakdown_series: dict | None = None) -> str:
+                            breakdown_series: dict | None = None,
+                            bd_years: int = 3) -> str:
     """Web page: 存貨歷史 + 衍生指標 for a stock, with Chart.js charts."""
     code_attr = html_lib.escape(code or "")
     body = ""
@@ -1923,8 +1924,20 @@ def _render_inventory_page(code: str = "", years: int = 5,
      存貨/營收 = 期末存貨/該季營收。<br>
      存貨 ↑ 通常是出貨壓力或拉貨；↓ 表示去化順暢。
      週轉率 ↑ + DSI ↓ = 庫存效率提升 (景氣轉好)。</p>
-  <p class="small">原料 / 在製品 / 半成品 / 成品 / 副產品 等項目拆分：
-     <a href="?code={code_attr}&years={years}&breakdown=1">點此載入拆分明細 (從 MOPS 財報 PDF 解析，第一次約需 30 秒下載)</a></p>
+  <p class="small">原料 / 在製品 / 半成品 / 成品 / 副產品 等項目拆分（從 MOPS 財報 PDF 解析）：</p>
+  <form method="get" action="/inventory" class="small" style="margin:6px 0 12px">
+    <input type="hidden" name="code" value="{code_attr}">
+    <input type="hidden" name="years" value="{years}">
+    <input type="hidden" name="breakdown" value="1">
+    <label for="bd_years">拆分明細回看:</label>
+    <select id="bd_years" name="bd_years">
+      <option value="2"{' selected' if bd_years==2 else ''}>2 年 (~8 季，約 8 秒)</option>
+      <option value="3"{' selected' if bd_years==3 else ''}>3 年 (~12 季，約 12 秒)</option>
+      <option value="5"{' selected' if bd_years==5 else ''}>5 年 (~20 季，約 20 秒)</option>
+      <option value="8"{' selected' if bd_years==8 else ''}>8 年 (~32 季，約 30 秒)</option>
+    </select>
+    <button type="submit">載入拆分</button>
+  </form>
 </section>
 {_breakdown_section_html(breakdown_series)}
 
@@ -2096,14 +2109,26 @@ def inventory():
     breakdown_series = None
     if breakdown and rows:
         try:
+            bd_years = int(request.args.get("bd_years") or "3")
+            bd_years = max(1, min(bd_years, 10))
+        except ValueError:
+            bd_years = 3
+        try:
             import mops_pdf
             breakdown_series = mops_pdf.fetch_breakdown_series(
-                code, years=years)
+                code, years=bd_years)
         except Exception as e:
             breakdown_series = {"_error": f"{type(e).__name__}: {e}"}
+    bd_years_val = 3
+    if breakdown and rows:
+        try:
+            bd_years_val = max(1, min(int(request.args.get("bd_years") or "3"), 10))
+        except ValueError:
+            bd_years_val = 3
     return _render_inventory_page(code=code, years=years,
                                    rows=rows, name=name,
-                                   breakdown_series=breakdown_series)
+                                   breakdown_series=breakdown_series,
+                                   bd_years=bd_years_val)
 
 
 @app.route("/chip-price")

@@ -33,7 +33,7 @@
 14. **日內籌碼×價格** — 當日 BSR broker × price 二維分析（CLI / Skill）→ `tw_chip_price.py`
 15. **合約負債歷史** — 單檔近 N 年每季合約負債 + QoQ/YoY/CAGR（CLI + 網頁；FinMind 缺資料時 fallback MOPS 季報 PDF 附註，2026-05-20 加 fallback）→ `tw_contract_liabilities.py` · `mops_pdf.py` · `/contract-liabilities?pdf=1`
 16. **存貨歷史 + 衍生指標** — 單檔近 N 年每季存貨 + 週轉率/DSI/存貨營收比 + 圖表（CLI + 網頁，2026-05-15 加）→ `tw_inventory.py` · `/inventory`
-17. **存貨 5 項拆分** — 從 MOPS 財報 PDF 解析原料/在製品/半成品/製成品/副產品/物料拆分，疊圖顯示（2026-05-17 加）→ `mops_pdf.py` · `/inventory?breakdown=1`
+17. **存貨 5 項拆分** — 從 MOPS 財報 PDF 解析原料/在製品/半成品/製成品/副產品/物料拆分，疊圖顯示（2026-05-17 加；2026-05-22 加平行下載 + ProcessPool 解析，20 季從 ~80s → ~30s，網頁多回看年數下拉 2/3/5/8 年）→ `mops_pdf.py` · `/inventory?breakdown=1`
 18. **族群點火警示** — 偵測族群評分「休眠 → 轉強」事件（昨 <3 → 今 ≥10, Δ ≥8），自動標真假機率 + 5 日後續追蹤倍率（concept_momentum 17:00 cron + dashboard 🔥 族群點火 tab，2026-05-18 加）→ `concept_momentum/run_daily.py` · `/`
 19. **分點 N 日時段 pattern** — 給定 (股號, 分點)，自動算過去 N 日該分點在早/中/尾盤的買賣分布 + 配對 OHLC 走勢 + 6 種行為標籤（尾盤低接 / 早盤追擊 / etc）+ 可展開的專有名詞詳細解讀（2026-05-20 加）→ `broker_timing_pattern()` in `tw_chip_price.py` · `/chip-price?code=X&broker=Y`
 
