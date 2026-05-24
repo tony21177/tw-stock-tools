@@ -30,6 +30,7 @@ current quarter-end, prior quarter-end, year-ago quarter-end.
 
 import os
 import re
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -378,7 +379,9 @@ def fetch_breakdown_series(stock_code: str, years: int = 5,
                 progress(f"downloaded {y}Q{s}")
             try:
                 pdf_paths[(y, s)] = fut.result()
-            except Exception:
+            except Exception as ex:
+                print(f"[mops_pdf] download FAILED {stock_code} {y}Q{s}: "
+                      f"{type(ex).__name__}: {ex}", file=sys.stderr)
                 pdf_paths[(y, s)] = None
 
     # ── Parallel parse stage (warm-cache speedup) ────────────────────────
@@ -393,15 +396,20 @@ def fetch_breakdown_series(stock_code: str, years: int = 5,
                                        [p for _, p in valid_paths]))
             for (rs, p), parsed in zip(valid_paths, results):
                 parsed_map[rs] = (p, parsed)
-        except Exception:
-            # Fallback: sequential parse if ProcessPool fails (e.g. Flask reload)
+        except Exception as ex:
+            # ProcessPool 整批掛掉 (e.g. Flask reload)，落回 sequential parse
+            print(f"[mops_pdf] ProcessPool FAILED {stock_code} breakdown: "
+                  f"{type(ex).__name__}: {ex} — fallback sequential",
+                  file=sys.stderr)
             for rs, p in valid_paths:
                 if progress:
                     progress(f"parsing {rs[0]}Q{rs[1]}…")
                 try:
                     parsed_map[rs] = (p, parse_inventory_breakdown(p))
-                except Exception:
-                    pass
+                except Exception as pex:
+                    print(f"[mops_pdf] parse FAILED {stock_code} "
+                          f"{rs[0]}Q{rs[1]} ({p}): "
+                          f"{type(pex).__name__}: {pex}", file=sys.stderr)
 
     series: dict[str, dict] = {}
     for roc_year, season in targets:
@@ -411,6 +419,10 @@ def fetch_breakdown_series(stock_code: str, years: int = 5,
         path, parsed = item
         dates = parsed.get("dates", [])
         if not dates:
+            print(f"[mops_pdf] parse OK but EMPTY dates {stock_code} "
+                  f"{roc_year}Q{season} ({os.path.basename(path)}) "
+                  f"— PDF 結構可能異常或非標準存貨揭露",
+                  file=sys.stderr)
             continue
         for col, date in enumerate(dates):
             if not date or date in series:
@@ -588,7 +600,9 @@ def fetch_contract_liabilities_series(stock_code: str, years: int = 3,
                 progress(f"downloaded {y}Q{s}")
             try:
                 pdf_paths[(y, s)] = fut.result()
-            except Exception:
+            except Exception as ex:
+                print(f"[mops_pdf] download FAILED {stock_code} {y}Q{s}: "
+                      f"{type(ex).__name__}: {ex}", file=sys.stderr)
                 pdf_paths[(y, s)] = None
 
     parsed_map = {}
@@ -600,12 +614,17 @@ def fetch_contract_liabilities_series(stock_code: str, years: int = 3,
                                        [p for _, p in valid_paths]))
             for (rs, _), parsed in zip(valid_paths, results):
                 parsed_map[rs] = parsed
-        except Exception:
+        except Exception as ex:
+            print(f"[mops_pdf] ProcessPool FAILED {stock_code} "
+                  f"contract_liabilities: {type(ex).__name__}: {ex} — "
+                  f"fallback sequential", file=sys.stderr)
             for rs, p in valid_paths:
                 try:
                     parsed_map[rs] = parse_contract_liabilities(p)
-                except Exception:
-                    pass
+                except Exception as pex:
+                    print(f"[mops_pdf] parse FAILED {stock_code} "
+                          f"{rs[0]}Q{rs[1]} ({p}): "
+                          f"{type(pex).__name__}: {pex}", file=sys.stderr)
 
     series: dict[str, int] = {}
     for roc_year, season in targets:
