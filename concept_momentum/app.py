@@ -2372,6 +2372,29 @@ def _holding_distribution_html(dist: dict | None) -> str:
     big_holder_series = json.dumps([t["大戶 (400-1000張)"] for t in trend])
     tier_labels = json.dumps([t["level"] for t in dist["latest_tiers"]])
     tier_pcts = json.dumps([t["percent"] for t in dist["latest_tiers"]])
+
+    # Weekly group table (most recent first) — the tabular form of the trend
+    # chart, with week-over-week Δ on 千張大戶 so the change is readable.
+    wk_rows = []
+    rev = list(reversed(trend))  # newest first
+    for idx, t in enumerate(rev):
+        big = t["千張大戶 (>1000張)"]
+        prev_big = rev[idx + 1]["千張大戶 (>1000張)"] if idx + 1 < len(rev) else None
+        if prev_big is None:
+            delta_html = '<td class="num muted">—</td>'
+        else:
+            d = big - prev_big
+            color = "#c30" if d > 0 else "#060" if d < 0 else "#999"
+            delta_html = (f'<td class="num" style="color:{color}">'
+                          f'{"+" if d >= 0 else ""}{d:.2f}</td>')
+        wk_rows.append(
+            f'<tr><td>{_esc(t["date"])}</td>'
+            f'<td class="num" style="color:#c30;font-weight:600">{big:.2f}%</td>'
+            f'{delta_html}'
+            f'<td class="num">{t["大戶 (400-1000張)"]:.2f}%</td>'
+            f'<td class="num">{t["中實戶 (10-400張)"]:.2f}%</td>'
+            f'<td class="num" style="color:#060">{t["散戶 (<10張)"]:.2f}%</td></tr>')
+    weekly_table = "".join(wk_rows)
     return f"""
 <section>
   <h3>📊 集保大戶分布 (TDCC 每週，最新 {_esc(dist["latest_date"])})</h3>
@@ -2381,7 +2404,18 @@ def _holding_distribution_html(dist: dict | None) -> str:
     🔴 千張大戶 {g_big:.2f}% / 🟢 散戶(&lt;10張) {g_retail:.2f}% 趨勢 —
     千張大戶 ↑ + 散戶 ↓ = 籌碼集中 (偏多)；反之 = 籌碼分散。</p>
   <canvas id="dist-bar" height="130"></canvas>
-  <table class="report-table" style="margin-top:14px;">
+  <h4 style="margin:18px 0 6px;font-size:0.95em;color:#444;">📅 各群組週變化 (近 {len(trend)} 週)</h4>
+  <table class="report-table">
+    <thead><tr><th>週 (週五)</th>
+      <th class="num">千張大戶</th><th class="num">千張Δ</th>
+      <th class="num">大戶</th><th class="num">中實戶</th>
+      <th class="num">散戶</th></tr></thead>
+    <tbody>{weekly_table}</tbody>
+  </table>
+  <p class="small" style="margin:6px 0 14px;">千張Δ = 千張大戶持股比例的週變化 (pp)。
+    連續正值 = 大戶持續吸籌；連續負值 = 大戶減碼。</p>
+  <h4 style="margin:18px 0 6px;font-size:0.95em;color:#444;">📋 最新一週各級距明細 ({_esc(dist["latest_date"])})</h4>
+  <table class="report-table">
     <thead><tr><th>持股級距 (股)</th><th class="num">人數</th>
       <th class="num">持股比例</th></tr></thead>
     <tbody>{trows}</tbody>
