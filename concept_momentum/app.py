@@ -2321,23 +2321,30 @@ def _holding_distribution_data(code: str, weeks: int = 16) -> dict:
         by_date.setdefault(r["date"], {})[lvl] = {
             "people": r.get("people", 0),
             "percent": r.get("percent", 0.0),
+            "unit": r.get("unit", 0),  # 股數 (= 張數 × 1000)
         }
     dates = sorted(by_date.keys())
     if not dates:
         return {"error": "集保無有效分級資料"}
 
-    def group_pct(tiers: dict) -> dict:
-        return {g: round(sum(tiers.get(L, {}).get("percent", 0.0)
-                             for L in levels), 2)
-                for g, levels in _DIST_GROUPS.items()}
+    def group_stats(tiers: dict) -> dict:
+        # Per group: pct (持股比例), lots (張數 = 股數/1000), people (人數)
+        out = {}
+        for g, levels in _DIST_GROUPS.items():
+            pct = sum(tiers.get(L, {}).get("percent", 0.0) for L in levels)
+            shares = sum(tiers.get(L, {}).get("unit", 0) for L in levels)
+            ppl = sum(tiers.get(L, {}).get("people", 0) for L in levels)
+            out[g] = {"pct": round(pct, 2), "lots": round(shares / 1000),
+                      "people": ppl}
+        return out
 
-    trend = [{"date": d, **group_pct(by_date[d])} for d in dates]
+    trend = [{"date": d, "groups": group_stats(by_date[d])} for d in dates]
     latest = dates[-1]
     tier_order = [L for g in _DIST_GROUPS.values() for L in g]
     latest_tiers = [{"level": L, **by_date[latest][L]}
                     for L in tier_order if L in by_date[latest]]
     return {"latest_date": latest, "latest_tiers": latest_tiers,
-            "latest_groups": group_pct(by_date[latest]), "trend": trend}
+            "latest_groups": group_stats(by_date[latest]), "trend": trend}
 
 
 def _holding_distribution_html(dist: dict | None) -> str:
@@ -2348,52 +2355,66 @@ def _holding_distribution_html(dist: dict | None) -> str:
         return (f'<section><h3>📊 集保大戶分布</h3>'
                 f'<p class="small">⚠ 無法載入：{_esc(dist["error"])}</p></section>')
     groups = dist["latest_groups"]
-    g_big = groups["千張大戶 (>1000張)"]
-    g_retail = groups["散戶 (<10張)"]
-    # group summary cards
+    g_big = groups["千張大戶 (>1000張)"]["pct"]
+    g_retail = groups["散戶 (<10張)"]["pct"]
+    # group summary cards (% + 張數 + 人數)
     cards = "".join(
-        f'<div style="flex:1;min-width:130px;background:#fafafa;border-radius:6px;'
+        f'<div style="flex:1;min-width:140px;background:#fafafa;border-radius:6px;'
         f'padding:10px 12px;text-align:center;">'
         f'<div style="font-size:0.82em;color:#666;">{_esc(g)}</div>'
         f'<div style="font-size:1.4em;font-weight:700;color:'
         f'{"#c30" if "千張" in g else "#060" if "散戶" in g else "#444"};">'
-        f'{v:.2f}%</div></div>'
-        for g, v in groups.items())
+        f'{st["pct"]:.2f}%</div>'
+        f'<div style="font-size:0.78em;color:#888;">{st["lots"]:,} 張 · '
+        f'{st["people"]:,} 人</div></div>'
+        for g, st in groups.items())
     # tier table
     trows = "".join(
         f'<tr><td>{_esc(t["level"])}</td>'
         f'<td class="num">{t["people"]:,}</td>'
+        f'<td class="num">{round(t["unit"]/1000):,}</td>'
         f'<td class="num">{t["percent"]:.2f}%</td></tr>'
         for t in dist["latest_tiers"])
     trend = dist["trend"]
     labels = json.dumps([t["date"][5:] for t in trend])
-    big_series = json.dumps([t["千張大戶 (>1000張)"] for t in trend])
-    retail_series = json.dumps([t["散戶 (<10張)"] for t in trend])
-    big_holder_series = json.dumps([t["大戶 (400-1000張)"] for t in trend])
+    big_series = json.dumps([t["groups"]["千張大戶 (>1000張)"]["pct"] for t in trend])
+    retail_series = json.dumps([t["groups"]["散戶 (<10張)"]["pct"] for t in trend])
+    big_holder_series = json.dumps([t["groups"]["大戶 (400-1000張)"]["pct"] for t in trend])
     tier_labels = json.dumps([t["level"] for t in dist["latest_tiers"]])
     tier_pcts = json.dumps([t["percent"] for t in dist["latest_tiers"]])
 
-    # Weekly group table (most recent first) — the tabular form of the trend
-    # chart, with week-over-week Δ on 千張大戶 so the change is readable.
+    # Weekly group table (most recent first): per group show %/張數/人數, plus
+    # week-over-week Δ on 千張大戶's 張數 (the most actionable accumulation
+    # signal). Grouped 2-row header; wide table scrolls horizontally on mobile.
+    GORDER = ["千張大戶 (>1000張)", "大戶 (400-1000張)",
+              "中實戶 (10-400張)", "散戶 (<10張)"]
     wk_rows = []
     rev = list(reversed(trend))  # newest first
     for idx, t in enumerate(rev):
-        big = t["千張大戶 (>1000張)"]
-        prev_big = rev[idx + 1]["千張大戶 (>1000張)"] if idx + 1 < len(rev) else None
-        if prev_big is None:
+        g = t["groups"]
+        big_lots = g["千張大戶 (>1000張)"]["lots"]
+        prev_lots = (rev[idx + 1]["groups"]["千張大戶 (>1000張)"]["lots"]
+                     if idx + 1 < len(rev) else None)
+        if prev_lots is None:
             delta_html = '<td class="num muted">—</td>'
         else:
-            d = big - prev_big
+            d = big_lots - prev_lots
             color = "#c30" if d > 0 else "#060" if d < 0 else "#999"
             delta_html = (f'<td class="num" style="color:{color}">'
-                          f'{"+" if d >= 0 else ""}{d:.2f}</td>')
-        wk_rows.append(
-            f'<tr><td>{_esc(t["date"])}</td>'
-            f'<td class="num" style="color:#c30;font-weight:600">{big:.2f}%</td>'
-            f'{delta_html}'
-            f'<td class="num">{t["大戶 (400-1000張)"]:.2f}%</td>'
-            f'<td class="num">{t["中實戶 (10-400張)"]:.2f}%</td>'
-            f'<td class="num" style="color:#060">{t["散戶 (<10張)"]:.2f}%</td></tr>')
+                          f'{"+" if d >= 0 else ""}{d:,} 張</td>')
+        cells = [f'<td>{_esc(t["date"])}</td>']
+        for gi, gname in enumerate(GORDER):
+            st = g[gname]
+            pc = ("#c30" if "千張" in gname else
+                  "#060" if "散戶" in gname else "#444")
+            cells.append(
+                f'<td class="num" style="color:{pc};font-weight:600">'
+                f'{st["pct"]:.2f}%</td>'
+                f'<td class="num">{st["lots"]:,}</td>'
+                f'<td class="num">{st["people"]:,}</td>')
+            if gi == 0:  # 千張大戶 Δ right after its block
+                cells.append(delta_html)
+        wk_rows.append("<tr>" + "".join(cells) + "</tr>")
     weekly_table = "".join(wk_rows)
     return f"""
 <section>
@@ -2405,19 +2426,34 @@ def _holding_distribution_html(dist: dict | None) -> str:
     千張大戶 ↑ + 散戶 ↓ = 籌碼集中 (偏多)；反之 = 籌碼分散。</p>
   <canvas id="dist-bar" height="130"></canvas>
   <h4 style="margin:18px 0 6px;font-size:0.95em;color:#444;">📅 各群組週變化 (近 {len(trend)} 週)</h4>
-  <table class="report-table">
-    <thead><tr><th>週 (週五)</th>
-      <th class="num">千張大戶</th><th class="num">千張Δ</th>
-      <th class="num">大戶</th><th class="num">中實戶</th>
-      <th class="num">散戶</th></tr></thead>
+  <div style="overflow-x:auto;">
+  <table class="report-table" style="white-space:nowrap;">
+    <thead>
+    <tr>
+      <th rowspan="2">週 (週五)</th>
+      <th class="num" colspan="3" style="border-left:2px solid #ddd;color:#c30">千張大戶 (&gt;1000張)</th>
+      <th class="num" rowspan="2" style="color:#c30">千張張數Δ</th>
+      <th class="num" colspan="3" style="border-left:2px solid #ddd">大戶 (400-1000張)</th>
+      <th class="num" colspan="3" style="border-left:2px solid #ddd">中實戶 (10-400張)</th>
+      <th class="num" colspan="3" style="border-left:2px solid #ddd;color:#060">散戶 (&lt;10張)</th>
+    </tr>
+    <tr>
+      <th class="num" style="border-left:2px solid #ddd">%</th><th class="num">張數</th><th class="num">人數</th>
+      <th class="num" style="border-left:2px solid #ddd">%</th><th class="num">張數</th><th class="num">人數</th>
+      <th class="num" style="border-left:2px solid #ddd">%</th><th class="num">張數</th><th class="num">人數</th>
+      <th class="num" style="border-left:2px solid #ddd">%</th><th class="num">張數</th><th class="num">人數</th>
+    </tr>
+    </thead>
     <tbody>{weekly_table}</tbody>
   </table>
-  <p class="small" style="margin:6px 0 14px;">千張Δ = 千張大戶持股比例的週變化 (pp)。
-    連續正值 = 大戶持續吸籌；連續負值 = 大戶減碼。</p>
+  </div>
+  <p class="small" style="margin:6px 0 14px;">每組顯示 持股比例% / 張數 / 人數。
+    千張張數Δ = 千張大戶持股張數的週變化；連續正值 = 大戶持續吸籌、籌碼集中 (偏多)；
+    連續負值 = 大戶減碼、籌碼分散。</p>
   <h4 style="margin:18px 0 6px;font-size:0.95em;color:#444;">📋 最新一週各級距明細 ({_esc(dist["latest_date"])})</h4>
   <table class="report-table">
     <thead><tr><th>持股級距 (股)</th><th class="num">人數</th>
-      <th class="num">持股比例</th></tr></thead>
+      <th class="num">張數</th><th class="num">持股比例</th></tr></thead>
     <tbody>{trows}</tbody>
   </table>
   <p class="small">資料來源：集保結算所 (TDCC) 股權分散表，每週五更新。
