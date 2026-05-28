@@ -128,6 +128,22 @@ def fetch_financial_statements(stock_id: str, start_date: str, end_date: str,
     }, token)
 
 
+def fetch_holding_distribution(stock_id: str, start_date: str, end_date: str,
+                                token: str) -> list[dict]:
+    """Fetch 集保戶股權分散表 (TDCC shareholding distribution by tier).
+
+    Weekly cadence (每週五). Returns rows with shape:
+      {date, stock_id, HoldingSharesLevel, people, percent, unit}
+    HoldingSharesLevel examples (in 股): '1-999', '1,000-5,000', ...,
+    'more than 1,000,001' (= 千張大戶 >1000張), 'total'.
+    """
+    return _call("TaiwanStockHoldingSharesPer", {
+        "data_id": stock_id,
+        "start_date": start_date,
+        "end_date": end_date,
+    }, token)
+
+
 def fetch_stock_price_tick(stock_id: str, date: str,
                            token: str) -> list[dict]:
     """Fetch tick-by-tick 成交資料 for one stock on one date.

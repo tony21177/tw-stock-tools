@@ -2282,10 +2282,149 @@ def inventory():
                                    bd_years=bd_years_val)
 
 
+# 集保戶股權分散表 tier → 張 group mapping (tiers are in 股; 1 張 = 1000 股)
+_DIST_GROUPS = {
+    "散戶 (<10張)": ["1-999", "1,000-5,000", "5,001-10,000"],
+    "中實戶 (10-400張)": ["10,001-15,000", "15,001-20,000", "20,001-30,000",
+                          "30,001-40,000", "40,001-50,000", "50,001-100,000",
+                          "100,001-200,000", "200,001-400,000"],
+    "大戶 (400-1000張)": ["400,001-600,000", "600,001-800,000",
+                          "800,001-1,000,000"],
+    "千張大戶 (>1000張)": ["more than 1,000,001"],
+}
+
+
+def _holding_distribution_data(code: str, weeks: int = 16) -> dict:
+    """Fetch 集保大戶分布 (TDCC weekly distribution). Returns
+    {latest_date, latest_tiers, latest_groups, trend} or {"error": ...}."""
+    import tw_inventory
+    import finmind_client
+    from datetime import datetime, timedelta
+    token = tw_inventory._get_token()
+    if not token:
+        return {"error": "無 FINMIND_TOKEN"}
+    end = datetime.now()
+    start = end - timedelta(days=weeks * 7 + 21)
+    try:
+        rows = finmind_client.fetch_holding_distribution(
+            code, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"), token)
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+    if not rows:
+        return {"error": "集保無資料"}
+
+    by_date: dict[str, dict] = {}
+    for r in rows:
+        lvl = r.get("HoldingSharesLevel", "")
+        if lvl in ("total", "差異數調整（說明4）"):
+            continue
+        by_date.setdefault(r["date"], {})[lvl] = {
+            "people": r.get("people", 0),
+            "percent": r.get("percent", 0.0),
+        }
+    dates = sorted(by_date.keys())
+    if not dates:
+        return {"error": "集保無有效分級資料"}
+
+    def group_pct(tiers: dict) -> dict:
+        return {g: round(sum(tiers.get(L, {}).get("percent", 0.0)
+                             for L in levels), 2)
+                for g, levels in _DIST_GROUPS.items()}
+
+    trend = [{"date": d, **group_pct(by_date[d])} for d in dates]
+    latest = dates[-1]
+    tier_order = [L for g in _DIST_GROUPS.values() for L in g]
+    latest_tiers = [{"level": L, **by_date[latest][L]}
+                    for L in tier_order if L in by_date[latest]]
+    return {"latest_date": latest, "latest_tiers": latest_tiers,
+            "latest_groups": group_pct(by_date[latest]), "trend": trend}
+
+
+def _holding_distribution_html(dist: dict | None) -> str:
+    """Render 集保大戶分布 section: group summary + tier table + 2 charts."""
+    if not dist:
+        return ""
+    if dist.get("error"):
+        return (f'<section><h3>📊 集保大戶分布</h3>'
+                f'<p class="small">⚠ 無法載入：{_esc(dist["error"])}</p></section>')
+    groups = dist["latest_groups"]
+    g_big = groups["千張大戶 (>1000張)"]
+    g_retail = groups["散戶 (<10張)"]
+    # group summary cards
+    cards = "".join(
+        f'<div style="flex:1;min-width:130px;background:#fafafa;border-radius:6px;'
+        f'padding:10px 12px;text-align:center;">'
+        f'<div style="font-size:0.82em;color:#666;">{_esc(g)}</div>'
+        f'<div style="font-size:1.4em;font-weight:700;color:'
+        f'{"#c30" if "千張" in g else "#060" if "散戶" in g else "#444"};">'
+        f'{v:.2f}%</div></div>'
+        for g, v in groups.items())
+    # tier table
+    trows = "".join(
+        f'<tr><td>{_esc(t["level"])}</td>'
+        f'<td class="num">{t["people"]:,}</td>'
+        f'<td class="num">{t["percent"]:.2f}%</td></tr>'
+        for t in dist["latest_tiers"])
+    trend = dist["trend"]
+    labels = json.dumps([t["date"][5:] for t in trend])
+    big_series = json.dumps([t["千張大戶 (>1000張)"] for t in trend])
+    retail_series = json.dumps([t["散戶 (<10張)"] for t in trend])
+    big_holder_series = json.dumps([t["大戶 (400-1000張)"] for t in trend])
+    tier_labels = json.dumps([t["level"] for t in dist["latest_tiers"]])
+    tier_pcts = json.dumps([t["percent"] for t in dist["latest_tiers"]])
+    return f"""
+<section>
+  <h3>📊 集保大戶分布 (TDCC 每週，最新 {_esc(dist["latest_date"])})</h3>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">{cards}</div>
+  <canvas id="dist-trend" height="150"></canvas>
+  <p class="small" style="margin:6px 0 14px;">
+    🔴 千張大戶 {g_big:.2f}% / 🟢 散戶(&lt;10張) {g_retail:.2f}% 趨勢 —
+    千張大戶 ↑ + 散戶 ↓ = 籌碼集中 (偏多)；反之 = 籌碼分散。</p>
+  <canvas id="dist-bar" height="130"></canvas>
+  <table class="report-table" style="margin-top:14px;">
+    <thead><tr><th>持股級距 (股)</th><th class="num">人數</th>
+      <th class="num">持股比例</th></tr></thead>
+    <tbody>{trows}</tbody>
+  </table>
+  <p class="small">資料來源：集保結算所 (TDCC) 股權分散表，每週五更新。
+    級距以「股」計 (÷1000 = 張)。千張大戶 = 持股 &gt; 1,000,000 股 (1000 張)。</p>
+</section>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+(function(){{
+  new Chart(document.getElementById('dist-trend'), {{
+    type:'line',
+    data:{{labels:{labels},datasets:[
+      {{label:'千張大戶 %',data:{big_series},borderColor:'#c30',
+        backgroundColor:'rgba(204,51,0,.1)',tension:.2,yAxisID:'y'}},
+      {{label:'大戶 400-1000張 %',data:{big_holder_series},borderColor:'#e8a',
+        borderDash:[4,3],tension:.2,yAxisID:'y'}},
+      {{label:'散戶 <10張 %',data:{retail_series},borderColor:'#060',
+        backgroundColor:'rgba(0,102,0,.08)',tension:.2,yAxisID:'y'}}
+    ]}},
+    options:{{responsive:true,interaction:{{mode:'index',intersect:false}},
+      plugins:{{title:{{display:true,text:'籌碼集中度趨勢 (千張大戶 vs 散戶)'}}}},
+      scales:{{y:{{title:{{display:true,text:'持股比例 %'}}}}}}}}
+  }});
+  new Chart(document.getElementById('dist-bar'), {{
+    type:'bar',
+    data:{{labels:{tier_labels},datasets:[
+      {{label:'最新持股比例 %',data:{tier_pcts},backgroundColor:'#0066cc'}}
+    ]}},
+    options:{{responsive:true,plugins:{{legend:{{display:false}},
+      title:{{display:true,text:'最新各級距持股分布'}}}},
+      scales:{{x:{{ticks:{{maxRotation:60,minRotation:45,font:{{size:9}}}}}},
+        y:{{title:{{display:true,text:'%'}}}}}}}}
+  }});
+}})();
+</script>"""
+
+
 def _render_shareholders_page(code: str = "", name: str = "",
                                data: dict | None = None,
-                               error: str = "") -> str:
-    """Web page: 前十大股東 (top-10 named shareholders from annual report)."""
+                               error: str = "",
+                               dist: dict | None = None) -> str:
+    """Web page: 前十大股東 (年報) + 集保大戶分布 (TDCC 每週)."""
     code_attr = html_lib.escape(code or "")
     body = ""
     if error:
@@ -2330,8 +2469,13 @@ def _render_shareholders_page(code: str = "", name: str = "",
   </table>
   <p class="small">⚠ 前十大股東名單來自<b>年報</b>，每年股東會前更新一次
      (停止過戶日為股權快照日)，<b>非即時</b>。盤中籌碼請看 /chip-price 或
-     集保大戶分布。持股單位為「股」(÷1000 = 張)。</p>
+     下方集保大戶分布。持股單位為「股」(÷1000 = 張)。</p>
 </section>"""
+
+    # Append 集保大戶分布 section (shows even if top-10 parse failed, as long
+    # as a code was queried) — gives a weekly, more current chip view.
+    if not error and dist is not None:
+        body += _holding_distribution_html(dist)
 
     return f"""<!DOCTYPE html>
 <html lang="zh-Hant"><head><meta charset="utf-8">
@@ -2414,7 +2558,8 @@ def shareholders():
     except Exception as e:
         return _render_shareholders_page(
             code=code, name=name, error=f"{type(e).__name__}: {e}")
-    return _render_shareholders_page(code=code, name=name, data=data)
+    dist = _holding_distribution_data(code)
+    return _render_shareholders_page(code=code, name=name, data=data, dist=dist)
 
 
 @app.route("/chip-price")

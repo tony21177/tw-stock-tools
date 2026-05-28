@@ -36,7 +36,7 @@
 17. **存貨 5 項拆分** — 從 MOPS 財報 PDF 解析原料/在製品/半成品/製成品/副產品/物料拆分，疊圖顯示（2026-05-17 加；2026-05-22 加平行下載 + ProcessPool 解析 20 季 80s→30s、網頁拆分回看年數下拉、解讀邏輯 YoY 為主 + QoQ 連 2 季同向加倍強化 ⚡ + 營收交叉警訊「存貨雙升 vs 營收沒跟上 → 庫存壓力劇增 🔴」、拆分表多 4 欄存貨總額 / 季營收 / 存貨銷售比 / DSI 天 色碼，存銷比 + DSI 互相驗證跨季節更穩定）→ `mops_pdf.py` · `/inventory?breakdown=1`
 18. **族群點火警示** — 偵測族群評分「休眠 → 轉強」事件（昨 <3 → 今 ≥10, Δ ≥8），自動標真假機率 + 5 日後續追蹤倍率（concept_momentum 17:00 cron + dashboard 🔥 族群點火 tab，2026-05-18 加）→ `concept_momentum/run_daily.py` · `/`
 19. **分點 N 日時段 pattern** — 給定 (股號, 分點)，自動算過去 N 日該分點在早/中/尾盤的買賣分布 + 配對 OHLC 走勢 + 6 種行為標籤（尾盤低接 / 早盤追擊 / etc）+ 可展開的專有名詞詳細解讀（2026-05-20 加）→ `broker_timing_pattern()` in `tw_chip_price.py` · `/chip-price?code=X&broker=Y`
-20. **前十大股東** — 輸入股號查 MOPS 年報「主要股東名單」前十大股東（姓名 + 持有股數 + 持股比例 + 停止過戶日），自動下載 F04 年報本文 PDF 解析；年度更新一次非即時（2026-05-28 加）→ `fetch_major_shareholders()` in `mops_pdf.py` · `/shareholders?code=X`
+20. **前十大股東 + 集保大戶分布** — 輸入股號查 (a) MOPS 年報「主要股東名單」前十大股東（姓名 + 持有股數 + 持股比例 + 停止過戶日，自動下載 F04 年報本文 PDF，early-exit 掃描 + JSON 快取）；(b) 集保 TDCC 每週股權分散表，4 群組摘要（散戶/中實戶/大戶/千張大戶）+ 籌碼集中度趨勢線（千張大戶 vs 散戶）+ 級距長條圖 + 15 級距表（2026-05-28 加）→ `fetch_major_shareholders()` in `mops_pdf.py` · `fetch_holding_distribution()` in `finmind_client.py` · `/shareholders?code=X`
 
 所有工具放在 `~/project/tw_stock_tools/`，cron 設定每天排程推送到 Telegram 群組。
 概念動能子模組詳見 `concept_momentum/README.md`。

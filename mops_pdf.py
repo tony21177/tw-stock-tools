@@ -157,10 +157,21 @@ def parse_major_shareholders(pdf_path: str) -> dict:
         raise RuntimeError("pdfplumber not installed: pip install pdfplumber")
     import unicodedata
 
+    # Early-exit scan: extract text page-by-page; once the shareholders
+    # heading appears, grab that page + next 2 and stop. Avoids extracting
+    # all ~87 pages with pdfplumber (which is slow, ~0.3s/page).
+    collected = []
+    found_at = None
     with pdfplumber.open(pdf_path) as pdf:
-        pages = [unicodedata.normalize("NFKC", p.extract_text() or "")
-                 for p in pdf.pages]
-    text = "\n".join(pages)
+        for i, page in enumerate(pdf.pages):
+            t = unicodedata.normalize("NFKC", page.extract_text() or "")
+            collected.append(t)
+            if found_at is None and (
+                    "主要股東名單" in t or "持股比例占前十名" in t):
+                found_at = i
+            if found_at is not None and i >= found_at + 2:
+                break
+    text = "\n".join(collected)
 
     # The cleanest table is under "主要股東名單"; fall back to the
     # "持股比例占前十名之股東" relationship table if that heading is absent.
@@ -216,9 +227,20 @@ def fetch_major_shareholders(stock_code: str,
       {"record_date", "shareholders", "data_year", "source_pdf"} or
       {"error": "..."}.
     """
+    import json
     if roc_year is None:
         roc_year = datetime.now().year - 1911
     for yr in (roc_year, roc_year - 1):
+        # JSON cache of the parsed result — re-parsing an 87-page PDF with
+        # pdfplumber on every web request takes ~20s; cache makes it instant.
+        json_cache = os.path.join(
+            PDF_CACHE, f"{stock_code}_AR{yr}.shareholders.json")
+        if os.path.exists(json_cache):
+            try:
+                with open(json_cache, encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
         path = download_annual_report(stock_code, yr)
         if not path:
             continue
@@ -226,6 +248,11 @@ def fetch_major_shareholders(stock_code: str,
         if parsed["shareholders"]:
             parsed["data_year"] = yr
             parsed["source_pdf"] = os.path.basename(path)
+            try:
+                with open(json_cache, "w", encoding="utf-8") as f:
+                    json.dump(parsed, f, ensure_ascii=False)
+            except Exception:
+                pass
             return parsed
     return {"error": "找不到年報或無法解析主要股東名單",
             "shareholders": []}
