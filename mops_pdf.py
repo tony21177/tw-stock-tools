@@ -157,65 +157,160 @@ def parse_major_shareholders(pdf_path: str) -> dict:
         raise RuntimeError("pdfplumber not installed: pip install pdfplumber")
     import unicodedata
 
-    # Early-exit scan: extract text page-by-page; once the shareholders
-    # heading appears, grab that page + next 2 and stop. Avoids extracting
-    # all ~87 pages with pdfplumber (which is slow, ~0.3s/page).
-    collected = []
-    found_at = None
+    def _norm(s):
+        return unicodedata.normalize("NFKC", (s or "")).replace("\n", "").strip()
+
+    def _clean_name(name):
+        name = re.sub(r"\(簡稱.*", "", name)
+        name = re.sub(r"(?:董事長|代表人|總經理|負責人)[:：].*", "", name)
+        # drop a leading "股份" header artifact ("股份主要股東名稱")
+        name = re.sub(r"^股份(?=主要股東)", "", name)
+        # drop a leading 序號 like "1." "2、" "10 "
+        name = re.sub(r"^\d{1,2}[.、,\s]+", "", name)
+        return name.strip()
+
+    # PDF table detection is inconsistent across companies: some report a
+    # clean 主要股東名單 table that extract_tables() captures perfectly
+    # (2408), others where the grid drops the name/pct columns so only the
+    # raw text lines are clean (2330). We therefore parse BOTH ways and keep
+    # whichever yields more valid rows. We target the simple 主要股東名單
+    # table (header 持有股數 + 持股比例) and skip the 目錄 (TOC) + the
+    # multi-column 關係人 table; the latter is a last-resort fallback.
+    # data row: shares (≥4-digit, commas) + optional 股 + pct. The optional 股
+    # matters for 2330-style text ("5,313,592,968 股 20.49%").
+    data_row = re.compile(r"[\d,]{4,}\s*(?:股)?\s+\d+\.\d+")
+    target_text = None
+    target_tables = None
+    rel_row = re.compile(r"[\d,]{4,}\s*(?:股)?\s+\d+\.\d+\s*%")
     with pdfplumber.open(pdf_path) as pdf:
+        npages = len(pdf.pages)
+        # Single pass over pages (extract_text is the bottleneck, ~0.3-0.8s/
+        # page; scanning twice doubled the cost on 150+ page reports). We
+        # prefer the clean 主要股東名單 table (exact header "主要股東名稱"),
+        # but remember the first 關係人 table (持股比例占前十名 / 前十大股東
+        # 相互間) as a fallback if no clean table appears.
+        page_texts = []
+        rel_idx = None
+        clean_idx = None
         for i, page in enumerate(pdf.pages):
             t = unicodedata.normalize("NFKC", page.extract_text() or "")
-            collected.append(t)
-            if found_at is None and (
-                    "主要股東名單" in t or "持股比例占前十名" in t):
-                found_at = i
-            if found_at is not None and i >= found_at + 2:
+            page_texts.append(t)
+            if clean_idx is None and "主要股東名稱" in t and data_row.search(t):
+                clean_idx = i
+                break  # clean table is best — stop immediately
+            if rel_idx is None and (
+                    "持股比例占前十名" in t or "前十大股東相互間" in t) \
+                    and rel_row.search(t):
+                rel_idx = i  # remember; a clean table usually follows soon
+            # Once we have the 關係人 table, the clean 主要股東名單 table (if
+            # any) sits within ~15 pages. Don't scan a 168-page report to the
+            # end hoping for one — bounds worst-case time.
+            if rel_idx is not None and i >= rel_idx + 15:
                 break
-    text = "\n".join(collected)
 
-    # The cleanest table is under "主要股東名單"; fall back to the
-    # "持股比例占前十名之股東" relationship table if that heading is absent.
-    seg = None
-    m = re.search(r"主要股東名單(.*?)(?:股利政策|股利分派|公司股利|３、|3、)",
-                  text, re.S)
-    if m:
-        seg = m.group(1)
-    else:
-        m = re.search(r"持股比例占前十名之股東(.*?)(?:公司、公司之董事|募資情形)",
-                      text, re.S)
-        seg = m.group(1) if m else None
-    if not seg:
+        hit = clean_idx if clean_idx is not None else rel_idx
+        if hit is not None:
+            target_text = page_texts[hit]
+            target_tables = list(pdf.pages[hit].extract_tables() or [])
+            # table may spill to the next page
+            if hit + 1 < npages:
+                nt = unicodedata.normalize(
+                    "NFKC", pdf.pages[hit + 1].extract_text() or "")
+                spill_markers = ("主要股東", "持股比例占前十名", "前十大股東相互間")
+                if rel_row.search(nt) and not any(
+                        mk in nt for mk in spill_markers):
+                    target_tables += list(
+                        pdf.pages[hit + 1].extract_tables() or [])
+                    target_text += "\n" + nt
+    if target_tables is None:
         return {"record_date": None, "shareholders": []}
 
     record_date = None
-    # 停止過戶日 may sit just before the section; widen the search to the
-    # section plus the preceding ~400 chars, and accept 基準日 as a synonym.
-    head = text[max(0, text.find(seg[:30]) - 400):text.find(seg[:30]) + len(seg)] \
-        if seg[:30] in text else seg
     rd = re.search(r"(?:停止過戶日|基準日)[:：]?\s*(?:民國)?\s*(\d+)\s*年"
-                   r"\s*(\d+)\s*月\s*(\d+)\s*日", head)
+                   r"\s*(\d+)\s*月\s*(\d+)\s*日", target_text or "")
     if rd:
         roc, mo, dy = map(int, rd.groups())
         record_date = f"{roc + 1911}-{mo:02d}-{dy:02d}"
 
-    shareholders = []
-    seen = set()
-    for name, shares, pct in re.findall(
-            r"(.+?)\s+([\d,]{4,})\s+([\d.]+)\s*%", seg):
-        name = re.sub(r"\s+", "", name.strip())
-        # strip leading 註/序號 noise
-        name = re.sub(r"^[\d.、\(\)註]+", "", name)
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        shareholders.append({
-            "name": name,
-            "shares": int(shares.replace(",", "")),
-            "pct": float(pct),
-        })
-        if len(shareholders) >= 10:
-            break
-    return {"record_date": record_date, "shareholders": shareholders}
+    # Scope text to the shareholders section only (from the 主要股東 heading
+    # to the next major heading), so other tables on the page (股本來源,
+    # 股利政策…) don't bleed numeric rows into the text parser.
+    section_text = target_text or ""
+    h = re.search(r"主要股東名單|持股比例占前十名|前十大股東相互間", section_text)
+    if h:
+        tail = section_text[h.start():]
+        end = re.search(r"(?:股利政策|股利分派|公司股利|資本及股份|募資情形"
+                        r"|三、|肆、)", tail[20:])
+        section_text = tail[:end.start() + 20] if end else tail
+
+    HEADERS = {"姓名", "姓 名", "主要股東名稱", "股東名稱", "股份主要股東名稱"}
+    HEADER_HINT = ("主要股東", "持有股數", "股東名稱", "本人持有股份")
+    pct_in_cell = re.compile(r"(\d+\.\d+)\s*%?")
+    shares_only = re.compile(r"^\d{4,}$")
+
+    def _from_tables():
+        out, seen = [], set()
+        for tbl in target_tables:
+            # only parse the shareholders table — skip 股本/董監 tables on the
+            # same page (their header rows lack these hints)
+            head_blob = " ".join(_norm(c) for c in (tbl[0] if tbl else []))
+            if tbl and len(tbl) > 1:
+                head_blob += " " + " ".join(_norm(c) for c in tbl[1])
+            if not any(hint in head_blob for hint in HEADER_HINT):
+                continue
+            for row in tbl:
+                cells = [_norm(c) for c in row]
+                if not cells or not cells[0]:
+                    continue
+                name = _clean_name(cells[0])
+                if not name or name in HEADERS or name in seen:
+                    continue
+                shares = pct = None
+                for c in cells[1:]:
+                    cc = c.replace(",", "").replace("(註)", "").strip()
+                    if shares is None and shares_only.match(cc):
+                        shares = int(cc)
+                    elif pct is None:
+                        pm = pct_in_cell.fullmatch(c.replace("(註)", "").strip())
+                        if pm and float(pm.group(1)) <= 100:
+                            pct = float(pm.group(1))
+                if shares is None or pct is None:
+                    continue
+                seen.add(name)
+                out.append({"name": name, "shares": shares, "pct": pct})
+                if len(out) >= 10:
+                    return out
+        return out
+
+    def _from_text():
+        out, seen = [], set()
+        # name + shares(commas) + optional 股 + pct + optional %. No end
+        # anchor: some layouts (2330) interleave a 董監持股 column after the
+        # pct on the same text line ("...投資專戶 5,313,592,968 20.49% 米玉傑").
+        line_re = re.compile(
+            r"^(.+?)\s+([\d,]{4,})\s*(?:股)?\s+(\d+\.\d+)\s*%?")
+        for ln in section_text.splitlines():
+            m = line_re.match(unicodedata.normalize("NFKC", ln).strip())
+            if not m:
+                continue
+            name = _clean_name(m.group(1).strip())
+            if not name or name in HEADERS or name in seen:
+                continue
+            pct = float(m.group(3))
+            if pct > 100:
+                continue
+            seen.add(name)
+            out.append({"name": name,
+                        "shares": int(m.group(2).replace(",", "")),
+                        "pct": pct})
+            if len(out) >= 10:
+                break
+        return out
+
+    by_table = _from_tables()
+    by_text = _from_text()
+    shareholders = by_text if len(by_text) > len(by_table) else by_table
+    return {"record_date": record_date, "shareholders": shareholders[:10]}
 
 
 def fetch_major_shareholders(stock_code: str,
@@ -245,7 +340,10 @@ def fetch_major_shareholders(stock_code: str,
         if not path:
             continue
         parsed = parse_major_shareholders(path)
-        if parsed["shareholders"]:
+        # A real 前十大股東 list has ~10 rows; < 5 means the parse mis-fired on
+        # an unusual layout (e.g. 中華電's interleaved govt-holding table) and
+        # would show misleading truncated names — treat as a miss instead.
+        if len(parsed["shareholders"]) >= 5:
             parsed["data_year"] = yr
             parsed["source_pdf"] = os.path.basename(path)
             try:
@@ -254,8 +352,19 @@ def fetch_major_shareholders(stock_code: str,
             except Exception:
                 pass
             return parsed
-    return {"error": "找不到年報或無法解析主要股東名單",
-            "shareholders": []}
+    # Negative cache: 中華電-class reports take ~100s to scan and fail; without
+    # this every page load would re-scan. Cache under the primary year so the
+    # graceful error returns instantly on repeat (年報 once filed won't change).
+    result = {"error": "找不到年報或主要股東名單格式非標準，無法可靠解析",
+              "shareholders": []}
+    try:
+        neg_cache = os.path.join(
+            PDF_CACHE, f"{stock_code}_AR{roc_year}.shareholders.json")
+        with open(neg_cache, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False)
+    except Exception:
+        pass
+    return result
 
 
 def download_pdf(stock_code: str, roc_year: int, season: int,
