@@ -79,6 +79,158 @@ def _make_opener():
     return opener
 
 
+def download_annual_report(stock_code: str, roc_year: int,
+                            force: bool = False) -> str | None:
+    """Download the 年報本文 (Chinese annual-report book, mtype=F dtype=F04)
+    for a company. Returns path to cached PDF or None.
+
+    `roc_year` is the 民國 filing year (e.g. 115 = filed 2026, covers FY2025).
+    F04 is the full annual-report book (~5-10 MB, 80+ pages) that contains
+    the 「主要股東名單 / 持股比例占前十名之股東」 table.
+    """
+    cache_path = os.path.join(
+        PDF_CACHE, f"{stock_code}_AR{roc_year}.pdf")
+    if not force and os.path.exists(cache_path) and os.path.getsize(cache_path) > 1000:
+        return cache_path
+
+    opener = _make_opener()
+    try:
+        opener.open(FORM_URL, timeout=15).read()
+        # Step 1: list mtype=F files, pick the F04 (年報本文中文版)
+        data = urllib.parse.urlencode({
+            "step": "1", "colorchg": "1", "co_id": stock_code,
+            "year": str(roc_year), "seamon": "", "mtype": "F",
+        }).encode()
+        r = opener.open(urllib.request.Request(
+            FORM_URL, data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        ), timeout=20)
+        body = r.read().decode("big5", errors="replace")
+        files = re.findall(
+            r'readfile2?\("([^"]*)","([^"]*)","([^"]+\.pdf)"\)', body)
+        f04 = next((fn for _, _, fn in files
+                    if re.search(r"F04\.pdf$", fn)), None)
+        if not f04:
+            return None
+
+        # Step 2: resolve timestamped download URL
+        data = urllib.parse.urlencode({
+            "step": "9", "kind": "F", "co_id": stock_code,
+            "filename": f04, "DEBUG": "",
+        }).encode()
+        r = opener.open(urllib.request.Request(
+            FORM_URL, data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        ), timeout=30)
+        body = r.read().decode("big5", errors="replace")
+        m = re.search(r"href='(/pdf/[^']+\.pdf)'", body)
+        if not m:
+            return None
+        pdf_url = "https://doc.twse.com.tw" + m.group(1)
+
+        r = opener.open(pdf_url, timeout=120)
+        blob = r.read()
+        if not blob.startswith(b"%PDF"):
+            return None
+        with open(cache_path, "wb") as f:
+            f.write(blob)
+        return cache_path
+    except Exception as ex:
+        print(f"[mops_pdf] annual-report download FAILED {stock_code} "
+              f"AR{roc_year}: {type(ex).__name__}: {ex}", file=sys.stderr)
+        return None
+
+
+def parse_major_shareholders(pdf_path: str) -> dict:
+    """Parse 「主要股東名單」(top-10 shareholders) from an annual-report PDF.
+
+    Returns:
+      {
+        "record_date": "YYYY-MM-DD" | None,   # 停止過戶日 (snapshot date)
+        "shareholders": [{"name": str, "shares": int, "pct": float}, ...],
+      }
+    Shares in 股 (not 張). Empty list if the table isn't found.
+    """
+    try:
+        import pdfplumber
+    except ImportError:
+        raise RuntimeError("pdfplumber not installed: pip install pdfplumber")
+    import unicodedata
+
+    with pdfplumber.open(pdf_path) as pdf:
+        pages = [unicodedata.normalize("NFKC", p.extract_text() or "")
+                 for p in pdf.pages]
+    text = "\n".join(pages)
+
+    # The cleanest table is under "主要股東名單"; fall back to the
+    # "持股比例占前十名之股東" relationship table if that heading is absent.
+    seg = None
+    m = re.search(r"主要股東名單(.*?)(?:股利政策|股利分派|公司股利|３、|3、)",
+                  text, re.S)
+    if m:
+        seg = m.group(1)
+    else:
+        m = re.search(r"持股比例占前十名之股東(.*?)(?:公司、公司之董事|募資情形)",
+                      text, re.S)
+        seg = m.group(1) if m else None
+    if not seg:
+        return {"record_date": None, "shareholders": []}
+
+    record_date = None
+    # 停止過戶日 may sit just before the section; widen the search to the
+    # section plus the preceding ~400 chars, and accept 基準日 as a synonym.
+    head = text[max(0, text.find(seg[:30]) - 400):text.find(seg[:30]) + len(seg)] \
+        if seg[:30] in text else seg
+    rd = re.search(r"(?:停止過戶日|基準日)[:：]?\s*(?:民國)?\s*(\d+)\s*年"
+                   r"\s*(\d+)\s*月\s*(\d+)\s*日", head)
+    if rd:
+        roc, mo, dy = map(int, rd.groups())
+        record_date = f"{roc + 1911}-{mo:02d}-{dy:02d}"
+
+    shareholders = []
+    seen = set()
+    for name, shares, pct in re.findall(
+            r"(.+?)\s+([\d,]{4,})\s+([\d.]+)\s*%", seg):
+        name = re.sub(r"\s+", "", name.strip())
+        # strip leading 註/序號 noise
+        name = re.sub(r"^[\d.、\(\)註]+", "", name)
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        shareholders.append({
+            "name": name,
+            "shares": int(shares.replace(",", "")),
+            "pct": float(pct),
+        })
+        if len(shareholders) >= 10:
+            break
+    return {"record_date": record_date, "shareholders": shareholders}
+
+
+def fetch_major_shareholders(stock_code: str,
+                             roc_year: int | None = None) -> dict:
+    """Top-level: download + parse top-10 shareholders for a stock.
+
+    Tries the current 民國 filing year first, falls back one year if the
+    company hasn't filed its annual report yet. Returns:
+      {"record_date", "shareholders", "data_year", "source_pdf"} or
+      {"error": "..."}.
+    """
+    if roc_year is None:
+        roc_year = datetime.now().year - 1911
+    for yr in (roc_year, roc_year - 1):
+        path = download_annual_report(stock_code, yr)
+        if not path:
+            continue
+        parsed = parse_major_shareholders(path)
+        if parsed["shareholders"]:
+            parsed["data_year"] = yr
+            parsed["source_pdf"] = os.path.basename(path)
+            return parsed
+    return {"error": "找不到年報或無法解析主要股東名單",
+            "shareholders": []}
+
+
 def download_pdf(stock_code: str, roc_year: int, season: int,
                  force: bool = False) -> str | None:
     """Download a single (code, ROC year, season) financial-report PDF

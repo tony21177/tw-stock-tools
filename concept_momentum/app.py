@@ -1315,7 +1315,7 @@ def _render_chip_price_page(code: str | None = None,
 </style>
 </head>
 <body>
-<nav><a href="/">← 大盤 dashboard</a> <a href="/chip-price">📋 籌碼價量</a> <a href="/contract-liabilities">💰 合約負債</a> <a href="/inventory">📦 存貨</a></nav>
+<nav><a href="/">← 大盤 dashboard</a> <a href="/chip-price">📋 籌碼價量</a> <a href="/contract-liabilities">💰 合約負債</a> <a href="/inventory">📦 存貨</a> <a href="/shareholders">👥 前十大股東</a></nav>
 <h1>📊 籌碼價量分析 (broker × price × time)</h1>
 
 <form method="get" action="/chip-price" style="flex-wrap:wrap;">
@@ -1508,6 +1508,7 @@ def _render_contract_liabilities_page(code: str = "", years: int = 3,
   <a href="/chip-price">📋 籌碼價量</a>
   <a href="/contract-liabilities">💰 合約負債</a>
   <a href="/inventory">📦 存貨</a>
+  <a href="/shareholders">👥 前十大股東</a>
 </nav>
 <h1>💰 合約負債歷史</h1>
 
@@ -2214,6 +2215,7 @@ def _render_inventory_page(code: str = "", years: int = 5,
   <a href="/chip-price">📋 籌碼價量</a>
   <a href="/contract-liabilities">💰 合約負債</a>
   <a href="/inventory">📦 存貨</a>
+  <a href="/shareholders">👥 前十大股東</a>
 </nav>
 <h1>📦 存貨歷史 + 衍生指標</h1>
 
@@ -2278,6 +2280,141 @@ def inventory():
                                    rows=rows, name=name,
                                    breakdown_series=breakdown_series,
                                    bd_years=bd_years_val)
+
+
+def _render_shareholders_page(code: str = "", name: str = "",
+                               data: dict | None = None,
+                               error: str = "") -> str:
+    """Web page: 前十大股東 (top-10 named shareholders from annual report)."""
+    code_attr = html_lib.escape(code or "")
+    body = ""
+    if error:
+        body = f'<div class="error">⚠ {html_lib.escape(error)}</div>'
+    elif data is not None and data.get("error"):
+        body = (f'<div class="empty"><p><b>⚠ {html_lib.escape(code)} '
+                f'{html_lib.escape(name)} 查無前十大股東</b></p>'
+                f'<p>{html_lib.escape(data["error"])}</p>'
+                f'<p class="small">可能：股票代號錯誤、公司年報尚未上傳 MOPS、'
+                f'或年報股權結構格式非標準無法解析。</p></div>')
+    elif data is not None:
+        sh = data.get("shareholders", [])
+        rd = data.get("record_date")
+        dy = data.get("data_year")
+        rd_str = f"停止過戶日 {rd}" if rd else "停止過戶日 (年報未標準揭露)"
+        total_pct = sum(s["pct"] for s in sh)
+        rows_html = []
+        for i, s in enumerate(sh, 1):
+            rows_html.append(
+                f'<tr><td class="num">{i}</td>'
+                f'<td>{html_lib.escape(s["name"])}</td>'
+                f'<td class="num">{s["shares"]:,}</td>'
+                f'<td class="num">{s["pct"]:.2f}%</td></tr>')
+        body = f"""
+<section class="header-card">
+  <h2>{_esc(code)} {_esc(name)} 前十大股東</h2>
+  <p class="small">資料來源：MOPS 民國 {dy} 年報「主要股東名單」· {rd_str}
+     · 來源檔 {_esc(data.get("source_pdf",""))}</p>
+</section>
+<section>
+  <table class="report-table">
+    <thead><tr>
+      <th class="num">#</th><th>股東名稱</th>
+      <th class="num">持有股數</th><th class="num">持股比例</th>
+    </tr></thead>
+    <tbody>{''.join(rows_html)}</tbody>
+    <tfoot><tr style="font-weight:600;border-top:2px solid #ddd">
+      <td></td><td>前十大合計</td>
+      <td class="num">{sum(s["shares"] for s in sh):,}</td>
+      <td class="num">{total_pct:.2f}%</td>
+    </tr></tfoot>
+  </table>
+  <p class="small">⚠ 前十大股東名單來自<b>年報</b>，每年股東會前更新一次
+     (停止過戶日為股權快照日)，<b>非即時</b>。盤中籌碼請看 /chip-price 或
+     集保大戶分布。持股單位為「股」(÷1000 = 張)。</p>
+</section>"""
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>前十大股東 — 台股單檔</title>
+<style>
+  body {{ font-family: -apple-system, "Segoe UI", "Microsoft JhengHei",
+           sans-serif; max-width: 1100px; margin: 1em auto; padding: 0 1em;
+           background: #f7f7f9; color: #222; }}
+  h1 {{ font-size: 1.4em; margin: 0.5em 0; }}
+  form {{ display: flex; gap: 8px; align-items: center;
+          background: white; padding: 12px; border-radius: 6px;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 12px; }}
+  input[type=text] {{ font-size: 16px; padding: 8px 12px; width: 120px;
+                       border: 1px solid #ccc; border-radius: 4px; }}
+  button {{ font-size: 16px; padding: 8px 16px; cursor: pointer;
+            background: #0066cc; color: white; border: none; border-radius: 4px; }}
+  button:hover {{ background: #0052a3; }}
+  nav a {{ margin-right: 12px; color: #0066cc; text-decoration: none; }}
+  .error {{ background: #fee; border: 1px solid #f99; padding: 12px;
+            border-radius: 4px; color: #c00; margin-bottom: 12px; }}
+  .empty {{ background: white; padding: 16px; border-radius: 6px;
+            color: #666; box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 12px; }}
+  section {{ background: white; padding: 12px 16px; border-radius: 6px;
+              margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }}
+  section.header-card h2 {{ margin: 0 0 6px 0; font-size: 1.3em; }}
+  table.report-table {{ width: 100%; border-collapse: collapse; font-size: 0.9em; }}
+  table.report-table th, table.report-table td {{ padding: 6px 10px;
+                            border-bottom: 1px solid #eee; text-align: left; }}
+  table.report-table th {{ background: #fafafa; font-weight: 600; color: #555; }}
+  table.report-table .num {{ text-align: right;
+                              font-variant-numeric: tabular-nums; }}
+  .small, small {{ font-size: 0.85em; color: #666; }}
+  @media (max-width: 768px) {{
+    body {{ padding: 0 4px; }} section {{ overflow-x: auto; }}
+    table.report-table {{ font-size: 0.8em; }}
+  }}
+</style>
+</head>
+<body>
+<nav>
+  <a href="/">← 大盤 dashboard</a>
+  <a href="/chip-price">📋 籌碼價量</a>
+  <a href="/contract-liabilities">💰 合約負債</a>
+  <a href="/inventory">📦 存貨</a>
+  <a href="/shareholders">👥 前十大股東</a>
+</nav>
+<h1>👥 前十大股東 (年報)</h1>
+
+<form method="get" action="/shareholders">
+  <label for="code">股票代號:</label>
+  <input type="text" id="code" name="code" value="{code_attr}"
+         placeholder="例: 2330" autofocus required>
+  <button type="submit">查詢</button>
+</form>
+<p class="small">💡 從 MOPS 年報「主要股東名單」解析，每年股東會前更新。
+   範例：<a href="/shareholders?code=2330">2330 台積電</a> ·
+   <a href="/shareholders?code=2317">2317 鴻海</a> ·
+   <a href="/shareholders?code=2313">2313 華通</a> ·
+   <a href="/shareholders?code=6282">6282 康舒</a></p>
+
+{body}
+</body>
+</html>"""
+
+
+@app.route("/shareholders")
+def shareholders():
+    code = (request.args.get("code") or "").strip()
+    if not code:
+        return _render_shareholders_page()
+    try:
+        import tw_inventory
+        name = tw_inventory._zh_name(code)
+    except Exception:
+        name = ""
+    try:
+        import mops_pdf
+        data = mops_pdf.fetch_major_shareholders(code)
+    except Exception as e:
+        return _render_shareholders_page(
+            code=code, name=name, error=f"{type(e).__name__}: {e}")
+    return _render_shareholders_page(code=code, name=name, data=data)
 
 
 @app.route("/chip-price")
