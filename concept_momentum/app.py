@@ -2549,8 +2549,28 @@ def _shareholders_history_html(history: dict | None, code: str,
         body_rows.append(
             f'<tr><td>{html_lib.escape(r["name"])}</td>{"".join(cells)}'
             f'<td>{trend}</td></tr>')
+
+    # Line chart: top-6 holders present in the newest year (by latest pct).
+    # null for years a holder was off the top-10 → Chart.js shows a gap.
+    chart_rows = [r for r in rows if r["latest"] is not None][:6]
+    palette = ["#c30", "#06c", "#0a0", "#e80", "#90c", "#0aa"]
+    labels = json.dumps([f"{y}年" for y in years])
+    datasets = []
+    for i, r in enumerate(chart_rows):
+        data = [r["by_year"].get(y) for y in years]  # None → gap
+        nm = r["name"][:14] + ("…" if len(r["name"]) > 14 else "")
+        datasets.append({
+            "label": nm, "data": data,
+            "borderColor": palette[i % len(palette)],
+            "backgroundColor": palette[i % len(palette)],
+            "tension": 0.2, "spanGaps": False,
+        })
+    chart_json = json.dumps({"labels": json.loads(labels),
+                             "datasets": datasets}, ensure_ascii=False)
+
     return form + f"""
-  <div style="overflow-x:auto;">
+  <canvas id="sh-hist-chart" height="150"></canvas>
+  <div style="overflow-x:auto;margin-top:12px;">
   <table class="report-table" style="white-space:nowrap;">
     <thead><tr><th>股東名稱</th>{th}<th>{yold}→{ynew} 變化</th></tr></thead>
     <tbody>{''.join(body_rows)}</tbody>
@@ -2558,8 +2578,24 @@ def _shareholders_history_html(history: dict | None, code: str,
   </div>
   <p class="small">每格為該年度年報揭露的持股比例 (%)。— = 該年未進前十大。
     ▲/▼ 為最舊→最新年度的變化 (pp)；★ 新進榜 / 已退榜 表示期間進出前十大。
+    折線圖為最新年度前 6 大股東；線中斷表示該年未進前十大。
     註：保管銀行受託專戶名稱逐年略有差異，可能造成同一機構分列。</p>
-</section>"""
+</section>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+(function(){{
+  var el=document.getElementById('sh-hist-chart');
+  if(!el||typeof Chart==='undefined') return;
+  new Chart(el, {{
+    type:'line',
+    data:{chart_json},
+    options:{{responsive:true,interaction:{{mode:'index',intersect:false}},
+      plugins:{{title:{{display:true,text:'前十大股東持股比例 N 年趨勢'}},
+        legend:{{labels:{{boxWidth:12,font:{{size:10}}}}}}}},
+      scales:{{y:{{title:{{display:true,text:'持股比例 %'}}}}}}}}
+  }});
+}})();
+</script>"""
 
 
 def _render_shareholders_page(code: str = "", name: str = "",
