@@ -291,11 +291,23 @@ def parse_major_shareholders(pdf_path: str) -> dict:
                     continue
                 rel_name = cells[-3]
                 relation = cells[-2]
-                holder = _clean_name(cells[0]) if cells[0] else None
+                raw0 = cells[0]
+                holder = _clean_name(raw0) if raw0 else None
                 if holder and holder not in HEADERS \
                         and not holder.startswith(("姓", "本人", "股數", "持股")):
                     cur = holder
                     rels.setdefault(cur, [])
+                    # The 代表人 / 董事長 / 負責人 of a corporate holder is
+                    # disclosed inside the NAME cell itself ("岑昕投資(股)公司
+                    # 代表人:陳淑敏"), not in the 關係人名稱/關係 columns. Pull it
+                    # out as a relation so corporate holders show their rep.
+                    rep = re.search(r"(代表人|董事長|負責人|總經理)[:：]\s*(.+)$",
+                                    raw0)
+                    if rep:
+                        rep_entry = {"name": rep.group(2).strip()[:20],
+                                     "relation": rep.group(1)}
+                        if rep_entry["name"] and rep_entry not in rels[cur]:
+                            rels[cur].append(rep_entry)
                 if cur and rel_name and rel_name not in ("無", "—", "-", "") \
                         and not rel_name.startswith(("名稱", "股數", "持股")):
                     relation = relation[:40] if relation else ""
@@ -404,14 +416,27 @@ def fetch_major_shareholders(stock_code: str,
                 parsed["data_year"] = yr
                 parsed["source_pdf"] = os.path.basename(path)
                 parsed["source_type"] = src
-                # Attach disclosed 關係人 to each top-10 holder (matched by name)
+                # Attach disclosed 關係人 to each top-10 holder (matched by name).
+                # Names differ across the 主要股東名單 vs 相互間關係 tables —
+                # esp. "(股)公司" (relationship table) vs "股份有限公司" (ranked
+                # table). Normalize the abbreviation + fall back to prefix match.
                 rels = parsed.get("relations", {})
                 if rels:
-                    rel_by_norm = {re.sub(r"\s+", "", k): v
-                                   for k, v in rels.items()}
+                    def _mk(n):
+                        n = re.sub(r"\s+", "", n)
+                        return n.replace("(股)", "股份有限").replace(
+                            "（股）", "股份有限")
+                    rel_by_norm = {_mk(k): v for k, v in rels.items()}
                     for s in parsed["shareholders"]:
-                        key = re.sub(r"\s+", "", s["name"])
-                        s["relations"] = rel_by_norm.get(key, [])
+                        key = _mk(s["name"])
+                        hit = rel_by_norm.get(key)
+                        if hit is None:  # prefix fallback (truncation/variants)
+                            for rk, rv in rel_by_norm.items():
+                                if len(rk) >= 4 and (key.startswith(rk)
+                                                     or rk.startswith(key)):
+                                    hit = rv
+                                    break
+                        s["relations"] = hit or []
                 parsed.pop("relations", None)
                 try:
                     with open(json_cache, "w", encoding="utf-8") as f:
