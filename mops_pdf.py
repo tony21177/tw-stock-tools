@@ -79,24 +79,24 @@ def _make_opener():
     return opener
 
 
-def download_annual_report(stock_code: str, roc_year: int,
-                            force: bool = False) -> str | None:
-    """Download the 年報本文 (Chinese annual-report book, mtype=F dtype=F04)
-    for a company. Returns path to cached PDF or None.
+def _download_f_report(stock_code: str, roc_year: int, dtype: str,
+                       cache_suffix: str, force: bool = False) -> str | None:
+    """Download a single mtype=F annual-report attachment by dtype.
 
-    `roc_year` is the 民國 filing year (e.g. 115 = filed 2026, covers FY2025).
-    F04 is the full annual-report book (~5-10 MB, 80+ pages) that contains
-    the 「主要股東名單 / 持股比例占前十名之股東」 table.
+    dtype examples:
+      F04 = 年報本文 (full book, ~5-10 MB, 80+ pages)
+      F17 = 前十大股東相互間關係表 (standalone ~70 KB, 1 page) — the dedicated
+            top-10 shareholders table, also reachable via MOPS t144sb10.
+    Returns path to cached PDF or None.
     """
     cache_path = os.path.join(
-        PDF_CACHE, f"{stock_code}_AR{roc_year}.pdf")
+        PDF_CACHE, f"{stock_code}_{cache_suffix}{roc_year}.pdf")
     if not force and os.path.exists(cache_path) and os.path.getsize(cache_path) > 1000:
         return cache_path
 
     opener = _make_opener()
     try:
         opener.open(FORM_URL, timeout=15).read()
-        # Step 1: list mtype=F files, pick the F04 (年報本文中文版)
         data = urllib.parse.urlencode({
             "step": "1", "colorchg": "1", "co_id": stock_code,
             "year": str(roc_year), "seamon": "", "mtype": "F",
@@ -108,15 +108,14 @@ def download_annual_report(stock_code: str, roc_year: int,
         body = r.read().decode("big5", errors="replace")
         files = re.findall(
             r'readfile2?\("([^"]*)","([^"]*)","([^"]+\.pdf)"\)', body)
-        f04 = next((fn for _, _, fn in files
-                    if re.search(r"F04\.pdf$", fn)), None)
-        if not f04:
+        target = next((fn for _, _, fn in files
+                       if re.search(rf"{dtype}\.pdf$", fn)), None)
+        if not target:
             return None
 
-        # Step 2: resolve timestamped download URL
         data = urllib.parse.urlencode({
             "step": "9", "kind": "F", "co_id": stock_code,
-            "filename": f04, "DEBUG": "",
+            "filename": target, "DEBUG": "",
         }).encode()
         r = opener.open(urllib.request.Request(
             FORM_URL, data=data,
@@ -136,9 +135,23 @@ def download_annual_report(stock_code: str, roc_year: int,
             f.write(blob)
         return cache_path
     except Exception as ex:
-        print(f"[mops_pdf] annual-report download FAILED {stock_code} "
-              f"AR{roc_year}: {type(ex).__name__}: {ex}", file=sys.stderr)
+        print(f"[mops_pdf] {dtype} download FAILED {stock_code} "
+              f"{roc_year}: {type(ex).__name__}: {ex}", file=sys.stderr)
         return None
+
+
+def download_annual_report(stock_code: str, roc_year: int,
+                            force: bool = False) -> str | None:
+    """Download the 年報本文 (F04, full annual-report book). See _download_f_report."""
+    return _download_f_report(stock_code, roc_year, "F04", "AR", force)
+
+
+def download_top10_f17(stock_code: str, roc_year: int,
+                       force: bool = False) -> str | None:
+    """Download the 前十大股東相互間關係表 (F17) — the dedicated, tiny (~70 KB),
+    single-page top-10 shareholders table. This is what MOPS's t144sb10
+    彙總表 links to; far faster + cleaner to parse than the 80-page F04 book."""
+    return _download_f_report(stock_code, roc_year, "F17", "F17_", force)
 
 
 def parse_major_shareholders(pdf_path: str) -> dict:
@@ -294,6 +307,11 @@ def parse_major_shareholders(pdf_path: str) -> dict:
             txt_sh = _from_text(sec)
             if len(txt_sh) > len(sh):
                 sh = txt_sh
+            # Sort by 本人持股比率 descending. The 主要股東名單 simple tables are
+            # already ranked (no-op), but the 相互間關係 / F17 table interleaves
+            # related parties (配偶/代表人) out of rank order — sorting drops
+            # those small holdings below the true top-10 cut.
+            sh = sorted(sh, key=lambda s: s["pct"], reverse=True)
             if len(sh) > len(best["shareholders"]):
                 best = {"record_date": _record_date(text),
                         "shareholders": sh[:10]}
@@ -315,8 +333,8 @@ def fetch_major_shareholders(stock_code: str,
     if roc_year is None:
         roc_year = datetime.now().year - 1911
     for yr in (roc_year, roc_year - 1):
-        # JSON cache of the parsed result — re-parsing an 87-page PDF with
-        # pdfplumber on every web request takes ~20s; cache makes it instant.
+        # JSON cache of the parsed result — re-parsing a PDF with pdfplumber on
+        # every web request is slow; cache makes repeat loads instant.
         json_cache = os.path.join(
             PDF_CACHE, f"{stock_code}_AR{yr}.shareholders.json")
         if os.path.exists(json_cache):
@@ -325,22 +343,31 @@ def fetch_major_shareholders(stock_code: str,
                     return json.load(f)
             except Exception:
                 pass
-        path = download_annual_report(stock_code, yr)
-        if not path:
-            continue
-        parsed = parse_major_shareholders(path)
-        # A real 前十大股東 list has ~10 rows; < 5 means the parse mis-fired on
-        # an unusual layout (e.g. 中華電's interleaved govt-holding table) and
-        # would show misleading truncated names — treat as a miss instead.
-        if len(parsed["shareholders"]) >= 5:
-            parsed["data_year"] = yr
-            parsed["source_pdf"] = os.path.basename(path)
-            try:
-                with open(json_cache, "w", encoding="utf-8") as f:
-                    json.dump(parsed, f, ensure_ascii=False)
-            except Exception:
-                pass
-            return parsed
+        # F04 first: its 主要股東名單 is a CLEAN ranked top-10 table. F17
+        # (前十大股東相互間關係表, what MOPS t144sb10 links to) is the reliable
+        # always-present fallback — but it interleaves related parties
+        # (配偶/代表人) into the same columns, so a pure top-10 extraction is
+        # noisier. Use F17 only when F04's table is missing/unparseable
+        # (e.g. 中華電's 80-page book where the table layout defeats parsing).
+        for src, downloader in (("F04", download_annual_report),
+                                ("F17", download_top10_f17)):
+            path = downloader(stock_code, yr)
+            if not path:
+                continue
+            parsed = parse_major_shareholders(path)
+            # A real 前十大股東 list has ~10 rows; < 5 means the parse mis-fired
+            # on an unusual layout (e.g. 中華電's interleaved govt table) — treat
+            # as a miss and let the next source / year try.
+            if len(parsed["shareholders"]) >= 5:
+                parsed["data_year"] = yr
+                parsed["source_pdf"] = os.path.basename(path)
+                parsed["source_type"] = src
+                try:
+                    with open(json_cache, "w", encoding="utf-8") as f:
+                        json.dump(parsed, f, ensure_ascii=False)
+                except Exception:
+                    pass
+                return parsed
     # Negative cache: 中華電-class reports take ~100s to scan and fail; without
     # this every page load would re-scan. Cache under the primary year so the
     # graceful error returns instantly on repeat (年報 once filed won't change).
