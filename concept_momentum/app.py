@@ -2511,13 +2511,26 @@ def _render_shareholders_page(code: str = "", name: str = "",
         dy = data.get("data_year")
         rd_str = f"停止過戶日 {rd}" if rd else "停止過戶日 (年報未標準揭露)"
         total_pct = sum(s["pct"] for s in sh)
+        any_rel = any(s.get("relations") for s in sh)
         rows_html = []
         for i, s in enumerate(sh, 1):
+            rels = s.get("relations") or []
+            if rels:
+                rel_html = "<br>".join(
+                    f'{html_lib.escape(r["name"])}'
+                    f'<span style="color:#888">'
+                    f'（{html_lib.escape(r["relation"][:16])}）</span>'
+                    for r in rels)
+            else:
+                rel_html = '<span class="muted">—</span>'
+            rel_cell = f'<td style="font-size:0.85em">{rel_html}</td>' if any_rel else ""
             rows_html.append(
                 f'<tr><td class="num">{i}</td>'
                 f'<td>{html_lib.escape(s["name"])}</td>'
                 f'<td class="num">{s["shares"]:,}</td>'
-                f'<td class="num">{s["pct"]:.2f}%</td></tr>')
+                f'<td class="num">{s["pct"]:.2f}%</td>{rel_cell}</tr>')
+        rel_th = '<th>關係人 (備註)</th>' if any_rel else ""
+        rel_foot = "<td></td>" if any_rel else ""
         body = f"""
 <section class="header-card">
   <h2>{_esc(code)} {_esc(name)} 前十大股東</h2>
@@ -2528,18 +2541,19 @@ def _render_shareholders_page(code: str = "", name: str = "",
   <table class="report-table">
     <thead><tr>
       <th class="num">#</th><th>股東名稱</th>
-      <th class="num">持有股數</th><th class="num">持股比例</th>
+      <th class="num">持有股數</th><th class="num">持股比例</th>{rel_th}
     </tr></thead>
     <tbody>{''.join(rows_html)}</tbody>
     <tfoot><tr style="font-weight:600;border-top:2px solid #ddd">
       <td></td><td>前十大合計</td>
       <td class="num">{sum(s["shares"] for s in sh):,}</td>
-      <td class="num">{total_pct:.2f}%</td>
+      <td class="num">{total_pct:.2f}%</td>{rel_foot}
     </tr></tfoot>
   </table>
   <p class="small">⚠ 前十大股東名單來自<b>年報</b>，每年股東會前更新一次
      (停止過戶日為股權快照日)，<b>非即時</b>。盤中籌碼請看 /chip-price 或
-     下方集保大戶分布。持股單位為「股」(÷1000 = 張)。</p>
+     下方集保大戶分布。持股單位為「股」(÷1000 = 張)。<br>
+     「關係人 (備註)」= 年報揭露的前十大股東相互間配偶 / 二親等 / 法人關係。</p>
 </section>"""
 
     # Append 集保大戶分布 section (shows even if top-10 parse failed, as long

@@ -161,8 +161,11 @@ def parse_major_shareholders(pdf_path: str) -> dict:
       {
         "record_date": "YYYY-MM-DD" | None,   # 停止過戶日 (snapshot date)
         "shareholders": [{"name": str, "shares": int, "pct": float}, ...],
+        "relations": {holder_name: [{"name": str, "relation": str}, ...]},
       }
-    Shares in 股 (not 張). Empty list if the table isn't found.
+    Shares in 股 (not 張). Empty list if the table isn't found. `relations`
+    maps each holder to its disclosed 關係人 (配偶/二親等/法人關係…), parsed
+    from the 持股比例占前十名之股東相互間關係 table.
     """
     try:
         import pdfplumber
@@ -269,6 +272,39 @@ def parse_major_shareholders(pdf_path: str) -> dict:
             return f"{roc + 1911}-{mo:02d}-{dy:02d}"
         return None
 
+    def _extract_relations(tables):
+        # The 相互間關係 table is a 10-col grid: [姓名, 本人股數, 本人%, 配偶股數,
+        # 配偶%, 他人股數, 他人%, 關係人名稱, 關係, 備註]. The last 3 cols are
+        # 名稱(或姓名)/關係/備註. Continuation rows (col0 empty) carry extra
+        # 關係人 for the previous holder. Returns {holder: [{name, relation}]}.
+        rels = {}
+        for tbl in tables:
+            head = " ".join(_norm(c) for c in (tbl[0] if tbl else []))
+            if tbl and len(tbl) > 1:
+                head += " " + " ".join(_norm(c) for c in tbl[1])
+            if "關係" not in head or "名稱" not in head:
+                continue
+            cur = None
+            for row in tbl:
+                cells = [_norm(c) for c in row]
+                if len(cells) < 4:
+                    continue
+                rel_name = cells[-3]
+                relation = cells[-2]
+                holder = _clean_name(cells[0]) if cells[0] else None
+                if holder and holder not in HEADERS \
+                        and not holder.startswith(("姓", "本人", "股數", "持股")):
+                    cur = holder
+                    rels.setdefault(cur, [])
+                if cur and rel_name and rel_name not in ("無", "—", "-", "") \
+                        and not rel_name.startswith(("名稱", "股數", "持股")):
+                    relation = relation[:40] if relation else ""
+                    entry = {"name": rel_name, "relation": relation}
+                    if entry not in rels[cur]:
+                        rels[cur].append(entry)
+        # drop holders with no disclosed relations
+        return {k: v for k, v in rels.items() if v}
+
     # Header/grid layouts vary wildly across companies (主要股東名稱 first vs
     # 持有股數 first, % present or not, grid clean or broken). Rather than one
     # brittle detector, collect candidate pages and actually PARSE each — the
@@ -290,7 +326,8 @@ def parse_major_shareholders(pdf_path: str) -> dict:
                 break
         candidates.sort(key=lambda c: (c[0], c[1]))
 
-        best = {"record_date": None, "shareholders": []}
+        best = {"record_date": None, "shareholders": [], "relations": {}}
+        all_relations = {}
         for _prio, idx, t in candidates[:5]:
             tables = list(pdf.pages[idx].extract_tables() or [])
             text = t
@@ -302,6 +339,9 @@ def parse_major_shareholders(pdf_path: str) -> dict:
                 if data_row.search(nt) and not any(m in nt for m in spill_markers):
                     tables += list(pdf.pages[idx + 1].extract_tables() or [])
                     text += "\n" + nt
+            # Capture 關係人 from any relationship table we pass (independent of
+            # which table wins the clean top-10 ranking).
+            all_relations.update(_extract_relations(tables))
             sec = _section_text(text)
             sh = _from_tables(tables)
             txt_sh = _from_text(sec)
@@ -314,9 +354,11 @@ def parse_major_shareholders(pdf_path: str) -> dict:
             sh = sorted(sh, key=lambda s: s["pct"], reverse=True)
             if len(sh) > len(best["shareholders"]):
                 best = {"record_date": _record_date(text),
-                        "shareholders": sh[:10]}
-            if len(best["shareholders"]) >= 10:
-                break
+                        "shareholders": sh[:10], "relations": {}}
+            # NOTE: don't break on len>=10 — the clean 主要股東名單 table usually
+            # sorts first (priority 0) and would hit 10 before we reach the
+            # 關係人 table (priority 1), losing the relationship annotations.
+        best["relations"] = all_relations
     return best
 
 
@@ -362,6 +404,15 @@ def fetch_major_shareholders(stock_code: str,
                 parsed["data_year"] = yr
                 parsed["source_pdf"] = os.path.basename(path)
                 parsed["source_type"] = src
+                # Attach disclosed 關係人 to each top-10 holder (matched by name)
+                rels = parsed.get("relations", {})
+                if rels:
+                    rel_by_norm = {re.sub(r"\s+", "", k): v
+                                   for k, v in rels.items()}
+                    for s in parsed["shareholders"]:
+                        key = re.sub(r"\s+", "", s["name"])
+                        s["relations"] = rel_by_norm.get(key, [])
+                parsed.pop("relations", None)
                 try:
                     with open(json_cache, "w", encoding="utf-8") as f:
                         json.dump(parsed, f, ensure_ascii=False)
