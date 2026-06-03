@@ -2490,11 +2490,85 @@ def _holding_distribution_html(dist: dict | None) -> str:
 </script>"""
 
 
+def _shareholders_history_html(history: dict | None, code: str,
+                                hist_years: int) -> str:
+    """Render the multi-year 前十大股東 matrix (holder × year, pct cells)."""
+    code_esc = html_lib.escape(code)
+    # toggle / year selector form
+    opts = "".join(
+        f'<option value="{y}"{" selected" if y == hist_years else ""}>{y} 年</option>'
+        for y in (3, 5, 8, 10))
+    form = f"""
+<section>
+  <h3>📅 前十大股東 N 年變化</h3>
+  <form method="get" action="/shareholders" class="small" style="margin:4px 0">
+    <input type="hidden" name="code" value="{code_esc}">
+    <input type="hidden" name="history" value="1">
+    <label>回看年數:
+      <select name="hist_years">{opts}</select></label>
+    <button type="submit">載入 N 年變化</button>
+    <span class="muted">（從各年度 MOPS 年報 F17 表解析，第一次約每年 3 秒）</span>
+  </form>
+"""
+    if history is None:
+        return form + "</section>"
+    if history.get("error"):
+        return form + (f'<p class="small">⚠ {html_lib.escape(history["error"])}'
+                       f'</p></section>')
+    years = history.get("years", [])
+    rows = history.get("rows", [])
+    if not years or not rows:
+        return form + '<p class="small">查無多年度資料。</p></section>'
+
+    ynew, yold = years[-1], years[0]
+    th = "".join(f'<th class="num">{y}年</th>' for y in years)
+    body_rows = []
+    for r in rows:
+        by = r["by_year"]
+        cells = []
+        for y in years:
+            if y in by:
+                cells.append(f'<td class="num">{by[y]:.2f}%</td>')
+            else:
+                cells.append('<td class="num muted">—</td>')
+        # trend arrow: newest vs oldest available value for this holder
+        present = [y for y in years if y in by]
+        trend = ""
+        if len(present) >= 2:
+            delta = by[present[-1]] - by[present[0]]
+            if delta > 0.05:
+                trend = f'<span style="color:#c30">▲ +{delta:.2f}</span>'
+            elif delta < -0.05:
+                trend = f'<span style="color:#060">▼ {delta:.2f}</span>'
+            else:
+                trend = '<span class="muted">→ 持平</span>'
+        elif r["latest"] is not None and len(present) == 1:
+            trend = '<span style="color:#c30">★ 新進榜</span>'
+        if r["latest"] is None:
+            trend = '<span class="muted">已退榜</span>'
+        body_rows.append(
+            f'<tr><td>{html_lib.escape(r["name"])}</td>{"".join(cells)}'
+            f'<td>{trend}</td></tr>')
+    return form + f"""
+  <div style="overflow-x:auto;">
+  <table class="report-table" style="white-space:nowrap;">
+    <thead><tr><th>股東名稱</th>{th}<th>{yold}→{ynew} 變化</th></tr></thead>
+    <tbody>{''.join(body_rows)}</tbody>
+  </table>
+  </div>
+  <p class="small">每格為該年度年報揭露的持股比例 (%)。— = 該年未進前十大。
+    ▲/▼ 為最舊→最新年度的變化 (pp)；★ 新進榜 / 已退榜 表示期間進出前十大。
+    註：保管銀行受託專戶名稱逐年略有差異，可能造成同一機構分列。</p>
+</section>"""
+
+
 def _render_shareholders_page(code: str = "", name: str = "",
                                data: dict | None = None,
                                error: str = "",
-                               dist: dict | None = None) -> str:
-    """Web page: 前十大股東 (年報) + 集保大戶分布 (TDCC 每週)."""
+                               dist: dict | None = None,
+                               history: dict | None = None,
+                               hist_years: int = 5) -> str:
+    """Web page: 前十大股東 (年報) + N 年變化 + 集保大戶分布 (TDCC 每週)."""
     code_attr = html_lib.escape(code or "")
     body = ""
     if error:
@@ -2555,6 +2629,11 @@ def _render_shareholders_page(code: str = "", name: str = "",
      下方集保大戶分布。持股單位為「股」(÷1000 = 張)。<br>
      「關係人 (備註)」= 年報揭露的前十大股東相互間配偶 / 二親等 / 法人關係。</p>
 </section>"""
+
+    # Multi-year 前十大股東 變化 (toggle form always shown once a stock is
+    # queried; matrix renders when ?history=1 loaded it).
+    if not error and (data is not None and not data.get("error")):
+        body += _shareholders_history_html(history, code, hist_years)
 
     # Append 集保大戶分布 section (shows even if top-10 parse failed, as long
     # as a code was queried) — gives a weekly, more current chip view.
@@ -2643,7 +2722,20 @@ def shareholders():
         return _render_shareholders_page(
             code=code, name=name, error=f"{type(e).__name__}: {e}")
     dist = _holding_distribution_data(code)
-    return _render_shareholders_page(code=code, name=name, data=data, dist=dist)
+    # Multi-year history is lazy (downloads up to N F17 PDFs) — only when asked.
+    history = None
+    hist_years = 5
+    if request.args.get("history") == "1":
+        try:
+            hist_years = max(2, min(int(request.args.get("hist_years") or "5"), 10))
+        except ValueError:
+            hist_years = 5
+        try:
+            history = mops_pdf.fetch_shareholders_history(code, years=hist_years)
+        except Exception as e:
+            history = {"error": f"{type(e).__name__}: {e}", "years": [], "rows": []}
+    return _render_shareholders_page(code=code, name=name, data=data, dist=dist,
+                                     history=history, hist_years=hist_years)
 
 
 @app.route("/chip-price")

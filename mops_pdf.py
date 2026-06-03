@@ -422,13 +422,9 @@ def fetch_major_shareholders(stock_code: str,
                 # table). Normalize the abbreviation + fall back to prefix match.
                 rels = parsed.get("relations", {})
                 if rels:
-                    def _mk(n):
-                        n = re.sub(r"\s+", "", n)
-                        return n.replace("(股)", "股份有限").replace(
-                            "（股）", "股份有限")
-                    rel_by_norm = {_mk(k): v for k, v in rels.items()}
+                    rel_by_norm = {_match_key(k): v for k, v in rels.items()}
                     for s in parsed["shareholders"]:
-                        key = _mk(s["name"])
+                        key = _match_key(s["name"])
                         hit = rel_by_norm.get(key)
                         if hit is None:  # prefix fallback (truncation/variants)
                             for rk, rv in rel_by_norm.items():
@@ -457,6 +453,95 @@ def fetch_major_shareholders(stock_code: str,
     except Exception:
         pass
     return result
+
+
+def _match_key(name: str) -> str:
+    """Normalize a shareholder name for cross-year/cross-table matching.
+    Drops whitespace + the (股) abbreviation, then strips the trailing
+    corporate suffix so "岑昕投資(股)公司" / "岑昕投資有限公司" /
+    "岑昕投資股份有限公司" all collapse to "岑昕投資"."""
+    n = re.sub(r"\s+", "", name or "")
+    n = n.replace("(股)", "").replace("（股）", "")
+    n = re.sub(r"(股份有限公司|有限公司|公司)$", "", n)
+    return n
+
+
+def fetch_shareholders_history(stock_code: str, years: int = 5,
+                               end_roc_year: int | None = None) -> dict:
+    """Build a multi-year 前十大股東 matrix (default 5 years).
+
+    Uses the F17 前十大股東相互間關係表 for ALL years — it's a standardized
+    single-page form (~70 KB) that parses consistently across years, unlike
+    the F04 年報本文 whose layout drifts in older reports. Returns:
+      {
+        "years": [111, 112, ...],          # roc years with data, ascending
+        "rows": [                          # one per distinct holder (union)
+          {"name": <latest display name>,
+           "by_year": {111: pct, 112: pct, ...},  # missing years absent
+           "latest": <pct in newest year, or None>},
+          ...                              # sorted by latest pct desc
+        ],
+      }
+    """
+    import json
+    if end_roc_year is None:
+        end_roc_year = datetime.now().year - 1911
+    target_years = list(range(end_roc_year - years + 1, end_roc_year + 1))
+
+    per_year = {}   # roc_year -> {match_key: {"name", "pct"}}
+    for yr in target_years:
+        cache = os.path.join(PDF_CACHE, f"{stock_code}_F17hist{yr}.json")
+        if os.path.exists(cache):
+            try:
+                with open(cache, encoding="utf-8") as f:
+                    holders = json.load(f)
+            except Exception:
+                holders = None
+        else:
+            holders = None
+        if holders is None:
+            path = download_top10_f17(stock_code, yr)
+            holders = []
+            if path:
+                parsed = parse_major_shareholders(path)
+                holders = sorted(parsed.get("shareholders", []),
+                                 key=lambda s: s["pct"], reverse=True)[:10]
+            try:
+                with open(cache, "w", encoding="utf-8") as f:
+                    json.dump(holders, f, ensure_ascii=False)
+            except Exception:
+                pass
+        if holders:
+            per_year[yr] = {_match_key(h["name"]): h for h in holders}
+
+    avail = sorted(per_year.keys())
+    if not avail:
+        return {"years": [], "rows": []}
+
+    # Union of all holders across years; display name from the newest year a
+    # holder appears in. Dedup by normalized match key.
+    newest = avail[-1]
+    rows_by_key = {}
+    for yr in avail:
+        for key, h in per_year[yr].items():
+            r = rows_by_key.setdefault(
+                key, {"name": h["name"], "by_year": {}, "_newest_seen": yr})
+            r["by_year"][yr] = h["pct"]
+            if yr >= r["_newest_seen"]:
+                r["_newest_seen"] = yr
+                r["name"] = h["name"]  # prefer most-recent name spelling
+    rows = []
+    for key, r in rows_by_key.items():
+        r["latest"] = r["by_year"].get(newest)
+        r.pop("_newest_seen", None)
+        rows.append(r)
+    # sort: holders present in newest year first (by pct desc), then the rest
+    # by their max pct
+    rows.sort(key=lambda r: (r["latest"] is not None,
+                             r["latest"] if r["latest"] is not None
+                             else max(r["by_year"].values())),
+              reverse=True)
+    return {"years": avail, "rows": rows}
 
 
 def download_pdf(stock_code: str, roc_year: int, season: int,
