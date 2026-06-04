@@ -81,6 +81,7 @@ def fetch_premium_series(years: int = 5) -> dict:
     tsm = df.fetch_yahoo("TSM", rng)
     tw = df.fetch_yahoo("2330.TW", rng)
     fx = df.fetch_yahoo("TWD=X", rng)
+    twii = df.fetch_yahoo("^TWII", rng)  # 加權指數 (for chart overlay)
     if not tsm or not tw or not fx:
         missing = [n for n, r in (("TSM", tsm), ("2330.TW", tw),
                                   ("TWD=X", fx)) if not r]
@@ -93,7 +94,9 @@ def fetch_premium_series(years: int = 5) -> dict:
     tsm_map = {r["date"]: r["close"] for r in tsm if r.get("close")}
     tw_map = {r["date"]: r["close"] for r in tw if r.get("close")}
     fx_map = {r["date"]: r["close"] for r in fx if r.get("close")}
+    twii_map = {r["date"]: r["close"] for r in (twii or []) if r.get("close")}
     fx_dates = sorted(fx_map.keys())
+    twii_dates = sorted(twii_map.keys())
 
     # window cutoff (trim the standard yahoo range to exactly `years`)
     cutoff = (datetime.now() - timedelta(days=int(years * 365.25))
@@ -111,9 +114,11 @@ def fetch_premium_series(years: int = 5) -> dict:
         if twp <= 0:
             continue
         prem = (theo / twp - 1) * 100
+        twii_v = _nearest_prior(twii_map, twii_dates, d) if twii_map else None
         series.append({"date": _fmt(d), "tsm": round(tsm_map[d], 2),
                        "fx": round(rate, 3), "theoretical": round(theo, 1),
-                       "tw": round(twp, 1), "premium": round(prem, 2)})
+                       "tw": round(twp, 1), "premium": round(prem, 2),
+                       "twii": round(twii_v, 1) if twii_v else None})
 
     if not series:
         return {"error": "無重疊交易日資料", "series": [], "summary": {}}

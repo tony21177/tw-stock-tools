@@ -2898,6 +2898,15 @@ def _render_adr_premium_page(years: int = 5, data: dict | None = None,
         labels = json.dumps([r["date"] for r in ser])
         prem = json.dumps([r["premium"] for r in ser])
         mean_line = json.dumps([s["mean"]] * len(ser))
+        # rebase 2330 + 加權指數 to 100 at window start (different scale →
+        # right axis, normalized so the two price series are comparable).
+        tw0 = next((r["tw"] for r in ser if r.get("tw")), None)
+        twii0 = next((r["twii"] for r in ser if r.get("twii")), None)
+        tw_idx = json.dumps([round(r["tw"] / tw0 * 100, 2) if tw0 and r.get("tw")
+                             else None for r in ser])
+        twii_idx = json.dumps([round(r["twii"] / twii0 * 100, 2)
+                               if twii0 and r.get("twii") else None
+                               for r in ser])
         # table: most recent 20 rows (newest first)
         trows = "".join(
             f'<tr><td>{_esc(r["date"])}</td>'
@@ -2918,8 +2927,9 @@ def _render_adr_premium_page(years: int = 5, data: dict | None = None,
   <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">{card_html}</div>
   <canvas id="adr-chart" height="150"></canvas>
   <p class="small" style="margin:6px 0 0">
-    🔴 溢價 = 美股盤後出價高於台股 (常為隔日 2330 開盤跳空的前瞻指標) /
-    🟢 折價。紅線為區間均值。</p>
+    🔵 折溢價(左軸) — 溢價 = 美股盤後出價高於台股 (隔日 2330 開盤跳空前瞻指標) /
+    折價；紅虛線=區間均值。🟡 2330 / 🟢 加權指數 (右軸，期初 rebase 到 100，
+    兩者同尺度可比) — 看溢價高低點與股價/大盤的相對位置。</p>
 </section>
 <section>
   <h3>近 20 個交易日明細</h3>
@@ -2939,15 +2949,22 @@ def _render_adr_premium_page(years: int = 5, data: dict | None = None,
   new Chart(el,{{type:'line',
     data:{{labels:{labels},datasets:[
       {{label:'折溢價 %',data:{prem},borderColor:'#0066cc',
-        borderWidth:1,pointRadius:0,tension:0.1}},
+        borderWidth:1.5,pointRadius:0,tension:0.1,yAxisID:'y'}},
       {{label:'區間均值',data:{mean_line},borderColor:'#c30',
-        borderWidth:1,borderDash:[6,4],pointRadius:0}}
+        borderWidth:1,borderDash:[6,4],pointRadius:0,yAxisID:'y'}},
+      {{label:'2330 (期初=100)',data:{tw_idx},borderColor:'#e8a200',
+        borderWidth:1,pointRadius:0,tension:0.1,yAxisID:'y1',spanGaps:true}},
+      {{label:'加權指數 (期初=100)',data:{twii_idx},borderColor:'#0a0',
+        borderWidth:1,pointRadius:0,tension:0.1,yAxisID:'y1',spanGaps:true}}
     ]}},
     options:{{responsive:true,interaction:{{mode:'index',intersect:false}},
-      plugins:{{title:{{display:true,text:'TSM ADR vs 2330 折溢價率 (%)'}}}},
+      plugins:{{title:{{display:true,
+        text:'折溢價 (左軸 %) vs 2330 & 加權指數 (右軸 期初=100)'}}}},
       scales:{{x:{{ticks:{{maxTicksLimit:12,font:{{size:9}}}}}},
-        y:{{title:{{display:true,text:'折溢價 %'}},
-            grid:{{color:function(c){{return c.tick.value===0?'#999':'#eee'}}}}}}}}}}
+        y:{{position:'left',title:{{display:true,text:'折溢價 %'}},
+            grid:{{color:function(c){{return c.tick.value===0?'#999':'#eee'}}}}}},
+        y1:{{position:'right',title:{{display:true,text:'指數 (期初=100)'}},
+            grid:{{drawOnChartArea:false}}}}}}}}
   }});
 }})();
 </script>"""
