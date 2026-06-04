@@ -2862,9 +2862,30 @@ def shareholders():
 
 
 def _render_adr_premium_page(period: str = "6mo", data: dict | None = None,
-                             error: str = "") -> str:
+                             error: str = "", mixed: dict | None = None) -> str:
     """Web page: TSM (台積電 ADR) vs 2330 折溢價，可選 1 週 ~ 10 年區間。"""
     import tw_adr_premium
+    # 最新混合即時溢價 box (2330 today vs TSM latest overnight close)
+    mixed_box = ""
+    if mixed and not mixed.get("error") and mixed.get("premium") is not None:
+        mp = mixed["premium"]
+        mc = "#c30" if mp > 0 else "#060"
+        if mixed.get("aligned"):
+            note = f'兩邊皆 {mixed["tw_date"]} 收盤（已對齊）。'
+        else:
+            note = (f'2330 {mixed["tw_date"]} 收盤 vs TSM {mixed["tsm_date"]} '
+                    f'美股收盤（跨時點：TSM 當日盤台北今晚才開，明早才對齊）。')
+        mixed_box = (
+            f'<section style="border-left:4px solid {mc}">'
+            f'<h3>📍 最新即時溢價（混合最新報價）</h3>'
+            f'<div style="font-size:1.6em;font-weight:700;color:{mc}">'
+            f'{mp:+.2f}%</div>'
+            f'<p class="small">TSM ${mixed["tsm"]} ({mixed["tsm_date"]}) × '
+            f'{mixed["fx"]} = 理論 {mixed["theoretical"]:.0f} vs '
+            f'2330 實際 {mixed["tw"]:.0f} ({mixed["tw_date"]})<br>{note}<br>'
+            f'⚠ 此為跨時點即時參考，與下方「同日收盤」歷史序列定義不同；'
+            f'反映 2330 今日收盤相對昨夜 ADR 的位置。</p></section>')
+
     opts = "".join(
         f'<option value="{k}"{" selected" if k == period else ""}>'
         f'{tw_adr_premium.PERIODS[k][2]}</option>'
@@ -3074,6 +3095,7 @@ def _render_adr_premium_page(period: str = "6mo", data: dict | None = None,
     <select name="period">{opts}</select></label>
   <button type="submit">查詢</button>
 </form>
+{mixed_box}
 {body}
 </body>
 </html>"""
@@ -3094,7 +3116,11 @@ def adr_premium():
         data = tw_adr_premium.fetch_premium_series(period)
     except Exception as e:
         return _render_adr_premium_page(period=period, error=f"{type(e).__name__}: {e}")
-    return _render_adr_premium_page(period=period, data=data)
+    try:
+        mixed = tw_adr_premium.latest_mixed_premium()
+    except Exception:
+        mixed = None
+    return _render_adr_premium_page(period=period, data=data, mixed=mixed)
 
 
 @app.route("/chip-price")

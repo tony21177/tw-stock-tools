@@ -154,6 +154,38 @@ def fetch_premium_series(period="6mo") -> dict:
     return {"series": series, "summary": summary}
 
 
+def latest_mixed_premium() -> dict:
+    """Real-time premium pairing each market's LATEST available close, even if
+    on different dates. 2330 closes 13:30 TWT; TSM's same-day session only
+    closes ~next-day 04:00 TWT, so on a TW afternoon the freshest TSM is the
+    prior US session. This gives a 'current' read (2330 today vs ADR overnight)
+    that the same-date series can't show until tomorrow morning.
+
+    Returns {tsm_date, tsm, tw_date, tw, fx_date, fx, theoretical, premium,
+    aligned (bool: same date both sides)} or {"error": ...}.
+    """
+    import data_fetcher as df
+    tsm = df.fetch_yahoo("TSM", "5d")
+    tw = df.fetch_yahoo("2330.TW", "5d")
+    fx = df.fetch_yahoo("TWD=X", "5d")
+    if not tsm or not tw or not fx:
+        return {"error": "Yahoo 抓不到最新報價"}
+
+    def _fmt(d):
+        return f"{d[:4]}-{d[4:6]}-{d[6:]}"
+    t, w, f = tsm[-1], tw[-1], fx[-1]
+    theo = t["close"] * f["close"] / ADR_RATIO
+    prem = (theo / w["close"] - 1) * 100 if w["close"] else None
+    return {
+        "tsm_date": _fmt(t["date"]), "tsm": round(t["close"], 2),
+        "tw_date": _fmt(w["date"]), "tw": round(w["close"], 1),
+        "fx_date": _fmt(f["date"]), "fx": round(f["close"], 3),
+        "theoretical": round(theo, 1),
+        "premium": round(prem, 2) if prem is not None else None,
+        "aligned": t["date"] == w["date"],
+    }
+
+
 def _pctile(series: list, window: int, cur: float) -> tuple[float, int]:
     """Percentile of `cur` within the last `window` rows of series."""
     recent = [s["premium"] for s in series[-window:]]
