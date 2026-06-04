@@ -2861,12 +2861,15 @@ def shareholders():
                                      history=history, hist_years=hist_years)
 
 
-def _render_adr_premium_page(years: int = 5, data: dict | None = None,
+def _render_adr_premium_page(period: str = "6mo", data: dict | None = None,
                              error: str = "") -> str:
-    """Web page: TSM (台積電 ADR) vs 2330 折溢價，可選 1-10 年區間。"""
+    """Web page: TSM (台積電 ADR) vs 2330 折溢價，可選 1 週 ~ 10 年區間。"""
+    import tw_adr_premium
     opts = "".join(
-        f'<option value="{y}"{" selected" if y == years else ""}>{y} 年</option>'
-        for y in range(1, 11))
+        f'<option value="{k}"{" selected" if k == period else ""}>'
+        f'{tw_adr_premium.PERIODS[k][2]}</option>'
+        for k in tw_adr_premium.PERIOD_ORDER)
+    plabel = tw_adr_premium.PERIODS.get(period, ("", 0, period))[2]
     body = ""
     if error:
         body = f'<div class="error">⚠ {html_lib.escape(error)}</div>'
@@ -2882,7 +2885,7 @@ def _render_adr_premium_page(years: int = 5, data: dict | None = None,
             ("當前折溢價", f'{cur:+.2f}%', cur_color,
              f'{s["current_date"]} · TSM ${s["current_tsm"]}×{s["current_fx"]}/5'
              f'=理論{s["current_theo"]:.0f} vs 實際{s["current_tw"]:.0f}'),
-            (f"近 {years} 年均值", f'{s["mean"]:+.2f}%', "#444",
+            (f"近 {plabel}均值", f'{s["mean"]:+.2f}%', "#444",
              f'當前位於 {s["pctile"]:.0f} 百分位'),
             ("區間最高 (溢價)", f'{s["max"]:+.2f}%', "#c30", s["max_date"]),
             ("區間最低 (折價)", f'{s["min"]:+.2f}%', "#060", s["min_date"]),
@@ -2919,7 +2922,7 @@ def _render_adr_premium_page(years: int = 5, data: dict | None = None,
             for r in reversed(ser[-20:]))
         body = f"""
 <section class="header-card">
-  <h2>TSM ADR vs 2330 折溢價（近 {years} 年）</h2>
+  <h2>TSM ADR vs 2330 折溢價（近 {plabel}）</h2>
   <p class="small">換股比例 1:5 · 理論價 = TSM(USD)×匯率÷5 · 折溢價 =
      (理論價/2330實際價 − 1)。資料：Yahoo (TSM / 2330.TW / TWD=X) 日收盤。</p>
 </section>
@@ -3008,7 +3011,7 @@ def _render_adr_premium_page(years: int = 5, data: dict | None = None,
 <h1>🇺🇸 TSM ADR vs 2330 折溢價</h1>
 <form method="get" action="/adr-premium">
   <label>區間:
-    <select name="years">{opts}</select></label>
+    <select name="period">{opts}</select></label>
   <button type="submit">查詢</button>
 </form>
 {body}
@@ -3018,16 +3021,20 @@ def _render_adr_premium_page(years: int = 5, data: dict | None = None,
 
 @app.route("/adr-premium")
 def adr_premium():
+    import tw_adr_premium
+    period = (request.args.get("period") or "").strip()
+    if period not in tw_adr_premium.PERIODS:
+        # backward-compat: old ?years=N links
+        yrs = request.args.get("years")
+        period = f"{max(1, min(int(yrs), 10))}y" if yrs and yrs.isdigit() \
+            else "6mo"
+        if period not in tw_adr_premium.PERIODS:
+            period = "6mo"
     try:
-        years = max(1, min(int(request.args.get("years") or "5"), 10))
-    except ValueError:
-        years = 5
-    try:
-        import tw_adr_premium
-        data = tw_adr_premium.fetch_premium_series(years)
+        data = tw_adr_premium.fetch_premium_series(period)
     except Exception as e:
-        return _render_adr_premium_page(years=years, error=f"{type(e).__name__}: {e}")
-    return _render_adr_premium_page(years=years, data=data)
+        return _render_adr_premium_page(period=period, error=f"{type(e).__name__}: {e}")
+    return _render_adr_premium_page(period=period, data=data)
 
 
 @app.route("/chip-price")

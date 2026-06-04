@@ -44,14 +44,28 @@ def send_telegram(message: str, bot_token: str, chat_id: str) -> bool:
         return False
 
 
-def _range_str(years: int) -> str:
-    if years <= 1:
-        return "1y"
-    if years <= 2:
-        return "2y"
-    if years <= 5:
-        return "5y"
-    return "10y"
+# period key -> (yahoo range to fetch, cutoff in days, 中文 label).
+# Fetch the smallest standard yahoo range that covers the period, then trim.
+PERIODS = {
+    "1w":  ("1mo", 7,    "1 週"),
+    "2w":  ("1mo", 14,   "2 週"),
+    "1mo": ("3mo", 31,   "1 個月"),
+    "3mo": ("6mo", 93,   "3 個月"),
+    "6mo": ("1y",  186,  "6 個月"),
+    "1y":  ("1y",  366,  "1 年"),
+    "2y":  ("2y",  731,  "2 年"),
+    "3y":  ("5y",  1096, "3 年"),
+    "5y":  ("5y",  1827, "5 年"),
+    "10y": ("10y", 3653, "10 年"),
+}
+PERIOD_ORDER = ["1w", "2w", "1mo", "3mo", "6mo", "1y", "2y", "3y", "5y", "10y"]
+
+
+def _resolve_period(period) -> tuple[str, int, str]:
+    """Accept a period key ('6mo') or a legacy int years -> (range, days, label)."""
+    if isinstance(period, int):
+        period = f"{max(1, min(period, 10))}y"
+    return PERIODS.get(period, PERIODS["6mo"])
 
 
 def _nearest_prior(date_map: dict, dates_sorted: list, target: str):
@@ -65,19 +79,19 @@ def _nearest_prior(date_map: dict, dates_sorted: list, target: str):
     return None
 
 
-def fetch_premium_series(years: int = 5) -> dict:
+def fetch_premium_series(period="6mo") -> dict:
     """Return ADR premium/discount daily series + summary.
 
-    {
-      "series": [{"date":"YYYY-MM-DD", "tsm": float, "fx": float,
-                  "theoretical": float, "tw": float, "premium": float}, ...],
-      "summary": {"current", "mean", "min", "max", "min_date", "max_date",
-                  "pctile" (current's percentile in window), "n"},
+    `period` is a key from PERIODS ('1w','1mo','6mo','5y'…) or a legacy int
+    (years). {
+      "series": [{"date","tsm","fx","theoretical","tw","premium","twii"}, ...],
+      "summary": {"current","mean","min","max","min_date","max_date","pctile",
+                  "n","period_label", ...},
       "error": str (only on failure),
     }
     """
     import data_fetcher as df
-    rng = _range_str(years)
+    rng, cutoff_days, period_label = _resolve_period(period)
     tsm = df.fetch_yahoo("TSM", rng)
     tw = df.fetch_yahoo("2330.TW", rng)
     fx = df.fetch_yahoo("TWD=X", rng)
@@ -98,9 +112,8 @@ def fetch_premium_series(years: int = 5) -> dict:
     fx_dates = sorted(fx_map.keys())
     twii_dates = sorted(twii_map.keys())
 
-    # window cutoff (trim the standard yahoo range to exactly `years`)
-    cutoff = (datetime.now() - timedelta(days=int(years * 365.25))
-              ).strftime("%Y%m%d")
+    # window cutoff (trim the fetched yahoo range to exactly the period)
+    cutoff = (datetime.now() - timedelta(days=cutoff_days)).strftime("%Y%m%d")
 
     series = []
     for d in sorted(set(tsm_map) & set(tw_map)):
@@ -133,6 +146,7 @@ def fetch_premium_series(years: int = 5) -> dict:
         "current": cur, "mean": round(sum(prems) / len(prems), 2),
         "min": lo, "min_date": lo_s["date"], "max": hi, "max_date": hi_s["date"],
         "pctile": round(below / len(prems) * 100, 1), "n": len(series),
+        "period_label": period_label,
         "current_date": series[-1]["date"],
         "current_tsm": series[-1]["tsm"], "current_fx": series[-1]["fx"],
         "current_theo": series[-1]["theoretical"], "current_tw": series[-1]["tw"],
@@ -150,7 +164,7 @@ def _pctile(series: list, window: int, cur: float) -> tuple[float, int]:
 def build_alert(high: float, low: float) -> tuple[str | None, dict]:
     """Return (telegram_message_or_None, summary). Message is non-None only
     when the current premium crosses a threshold or hits a 1-year extreme."""
-    r = fetch_premium_series(5)
+    r = fetch_premium_series("5y")
     if r.get("error"):
         return None, {"error": r["error"]}
     s, ser = r["summary"], r["series"]
