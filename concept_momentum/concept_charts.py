@@ -593,6 +593,11 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
       <input type="text" name="code" placeholder="股號" required style="width:80px;padding:6px 8px;font-size:14px;border:1px solid #ccc;border-radius:4px;">
       <button type="submit" style="padding:6px 12px;background:#0066cc;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;">📦 存貨</button>
     </form>
+    <form action="/shareholders" method="get" style="display:flex;gap:4px;">
+      <input type="text" name="code" placeholder="股號" required style="width:80px;padding:6px 8px;font-size:14px;border:1px solid #ccc;border-radius:4px;">
+      <button type="submit" style="padding:6px 12px;background:#0066cc;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;">👥 前十大股東</button>
+    </form>
+    <a href="/adr-premium" style="padding:6px 12px;background:#0a7;color:white;border-radius:4px;text-decoration:none;font-size:13px;">🇺🇸 ADR 折溢價</a>
   </div>
 </div>
 
@@ -622,6 +627,8 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
       <a class="tab" href="/chip-price" style="text-decoration:none;color:inherit;">📋 籌碼價量</a>
       <a class="tab" href="/contract-liabilities" style="text-decoration:none;color:inherit;">💰 合約負債</a>
       <a class="tab" href="/inventory" style="text-decoration:none;color:inherit;">📦 存貨</a>
+      <a class="tab" href="/shareholders" style="text-decoration:none;color:inherit;">👥 前十大股東</a>
+      <a class="tab" href="/adr-premium" style="text-decoration:none;color:inherit;">🇺🇸 ADR 折溢價</a>
     </div>
   </div>
 </div>

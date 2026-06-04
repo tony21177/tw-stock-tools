@@ -2861,6 +2861,158 @@ def shareholders():
                                      history=history, hist_years=hist_years)
 
 
+def _render_adr_premium_page(years: int = 5, data: dict | None = None,
+                             error: str = "") -> str:
+    """Web page: TSM (台積電 ADR) vs 2330 折溢價，可選 1-10 年區間。"""
+    opts = "".join(
+        f'<option value="{y}"{" selected" if y == years else ""}>{y} 年</option>'
+        for y in range(1, 11))
+    body = ""
+    if error:
+        body = f'<div class="error">⚠ {html_lib.escape(error)}</div>'
+    elif data is not None and data.get("error"):
+        body = f'<div class="error">⚠ {html_lib.escape(data["error"])}</div>'
+    elif data is not None:
+        s = data["summary"]
+        ser = data["series"]
+        cur = s["current"]
+        cur_color = "#c30" if cur > 0 else "#060"
+        # summary cards
+        cards = [
+            ("當前折溢價", f'{cur:+.2f}%', cur_color,
+             f'{s["current_date"]} · TSM ${s["current_tsm"]}×{s["current_fx"]}/5'
+             f'=理論{s["current_theo"]:.0f} vs 實際{s["current_tw"]:.0f}'),
+            (f"近 {years} 年均值", f'{s["mean"]:+.2f}%', "#444",
+             f'當前位於 {s["pctile"]:.0f} 百分位'),
+            ("區間最高 (溢價)", f'{s["max"]:+.2f}%', "#c30", s["max_date"]),
+            ("區間最低 (折價)", f'{s["min"]:+.2f}%', "#060", s["min_date"]),
+        ]
+        card_html = "".join(
+            f'<div style="flex:1;min-width:160px;background:#fafafa;'
+            f'border-radius:6px;padding:10px 14px;">'
+            f'<div style="font-size:0.82em;color:#666">{_esc(t)}</div>'
+            f'<div style="font-size:1.5em;font-weight:700;color:{c}">{v}</div>'
+            f'<div style="font-size:0.74em;color:#999">{_esc(sub)}</div></div>'
+            for t, v, c, sub in cards)
+        # chart data (downsample labels but keep all points)
+        labels = json.dumps([r["date"] for r in ser])
+        prem = json.dumps([r["premium"] for r in ser])
+        mean_line = json.dumps([s["mean"]] * len(ser))
+        # table: most recent 20 rows (newest first)
+        trows = "".join(
+            f'<tr><td>{_esc(r["date"])}</td>'
+            f'<td class="num">{r["tsm"]:.2f}</td>'
+            f'<td class="num">{r["fx"]:.3f}</td>'
+            f'<td class="num">{r["theoretical"]:.0f}</td>'
+            f'<td class="num">{r["tw"]:.0f}</td>'
+            f'<td class="num" style="color:{"#c30" if r["premium"]>0 else "#060"}">'
+            f'{r["premium"]:+.2f}%</td></tr>'
+            for r in reversed(ser[-20:]))
+        body = f"""
+<section class="header-card">
+  <h2>TSM ADR vs 2330 折溢價（近 {years} 年）</h2>
+  <p class="small">換股比例 1:5 · 理論價 = TSM(USD)×匯率÷5 · 折溢價 =
+     (理論價/2330實際價 − 1)。資料：Yahoo (TSM / 2330.TW / TWD=X) 日收盤。</p>
+</section>
+<section>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">{card_html}</div>
+  <canvas id="adr-chart" height="150"></canvas>
+  <p class="small" style="margin:6px 0 0">
+    🔴 溢價 = 美股盤後出價高於台股 (常為隔日 2330 開盤跳空的前瞻指標) /
+    🟢 折價。紅線為區間均值。</p>
+</section>
+<section>
+  <h3>近 20 個交易日明細</h3>
+  <table class="report-table">
+    <thead><tr><th>日期</th><th class="num">TSM (USD)</th>
+      <th class="num">USD/TWD</th><th class="num">理論價</th>
+      <th class="num">2330 實際</th><th class="num">折溢價</th></tr></thead>
+    <tbody>{trows}</tbody>
+  </table>
+  <p class="small">⚠ 時間差：TSM 當日收盤比 2330 同日收盤晚約 14.5 小時，同日配對
+    反映美股盤後對 2330 的看法。除權息日附近 (台美除息日不同步) 會有假性折溢價。</p>
+</section>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+(function(){{
+  var el=document.getElementById('adr-chart'); if(!el||typeof Chart==='undefined')return;
+  new Chart(el,{{type:'line',
+    data:{{labels:{labels},datasets:[
+      {{label:'折溢價 %',data:{prem},borderColor:'#0066cc',
+        borderWidth:1,pointRadius:0,tension:0.1}},
+      {{label:'區間均值',data:{mean_line},borderColor:'#c30',
+        borderWidth:1,borderDash:[6,4],pointRadius:0}}
+    ]}},
+    options:{{responsive:true,interaction:{{mode:'index',intersect:false}},
+      plugins:{{title:{{display:true,text:'TSM ADR vs 2330 折溢價率 (%)'}}}},
+      scales:{{x:{{ticks:{{maxTicksLimit:12,font:{{size:9}}}}}},
+        y:{{title:{{display:true,text:'折溢價 %'}},
+            grid:{{color:function(c){{return c.tick.value===0?'#999':'#eee'}}}}}}}}}}
+  }});
+}})();
+</script>"""
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TSM/2330 折溢價</title>
+<style>
+  body {{ font-family: -apple-system, "Segoe UI", "Microsoft JhengHei", sans-serif;
+         max-width: 1100px; margin: 1em auto; padding: 0 1em; background: #f7f7f9; color: #222; }}
+  h1 {{ font-size: 1.4em; margin: 0.5em 0; }}
+  form {{ display:flex; gap:8px; align-items:center; background:white; padding:12px;
+         border-radius:6px; box-shadow:0 1px 3px rgba(0,0,0,0.06); margin-bottom:12px; }}
+  select {{ font-size:16px; padding:6px 10px; border:1px solid #ccc; border-radius:4px; }}
+  button {{ font-size:16px; padding:8px 16px; cursor:pointer; background:#0066cc;
+           color:white; border:none; border-radius:4px; }}
+  nav a {{ margin-right:12px; color:#0066cc; text-decoration:none; }}
+  .error {{ background:#fee; border:1px solid #f99; padding:12px; border-radius:4px;
+           color:#c00; margin-bottom:12px; }}
+  section {{ background:white; padding:12px 16px; border-radius:6px; margin-bottom:12px;
+            box-shadow:0 1px 3px rgba(0,0,0,0.06); }}
+  section.header-card h2 {{ margin:0 0 6px 0; font-size:1.3em; }}
+  section h3 {{ margin:0 0 8px 0; font-size:1.05em; color:#444; }}
+  table.report-table {{ width:100%; border-collapse:collapse; font-size:0.9em; }}
+  table.report-table th, table.report-table td {{ padding:6px 10px;
+        border-bottom:1px solid #eee; text-align:left; }}
+  table.report-table th {{ background:#fafafa; font-weight:600; color:#555; }}
+  table.report-table .num {{ text-align:right; font-variant-numeric:tabular-nums; }}
+  .small, small {{ font-size:0.85em; color:#666; }}
+</style>
+</head>
+<body>
+<nav>
+  <a href="/">← 大盤 dashboard</a>
+  <a href="/chip-price">📋 籌碼價量</a>
+  <a href="/inventory">📦 存貨</a>
+  <a href="/shareholders">👥 前十大股東</a>
+  <a href="/adr-premium">🇺🇸 ADR 折溢價</a>
+</nav>
+<h1>🇺🇸 TSM ADR vs 2330 折溢價</h1>
+<form method="get" action="/adr-premium">
+  <label>區間:
+    <select name="years">{opts}</select></label>
+  <button type="submit">查詢</button>
+</form>
+{body}
+</body>
+</html>"""
+
+
+@app.route("/adr-premium")
+def adr_premium():
+    try:
+        years = max(1, min(int(request.args.get("years") or "5"), 10))
+    except ValueError:
+        years = 5
+    try:
+        import tw_adr_premium
+        data = tw_adr_premium.fetch_premium_series(years)
+    except Exception as e:
+        return _render_adr_premium_page(years=years, error=f"{type(e).__name__}: {e}")
+    return _render_adr_premium_page(years=years, data=data)
+
+
 @app.route("/chip-price")
 def chip_price():
     code = (request.args.get("code") or "").strip()
