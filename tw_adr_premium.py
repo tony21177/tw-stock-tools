@@ -232,41 +232,61 @@ def slope_signals(series: list, win: int = 5) -> dict:
                       "pos": st(pos_ret, +1), "neg": st(neg_ret, -1)}}
 
 
-def build_alert(high: float, low: float) -> tuple[str | None, dict]:
-    """Return (telegram_message_or_None, summary). Message is non-None only
-    when the current premium crosses a threshold or hits a 1-year extreme."""
+def build_alert(high: float, low: float, slope_win: int = 5,
+                check_slope: bool = True) -> tuple[str | None, dict]:
+    """Return (telegram_message_or_None, summary). Fires when EITHER the
+    premium crosses an absolute threshold (high/low) OR the slope just turned
+    (positive/negative) on the most recent day."""
     r = fetch_premium_series("5y")
     if r.get("error"):
         return None, {"error": r["error"]}
     s, ser = r["summary"], r["series"]
     cur = s["current"]
-    p1, n1 = _pctile(ser, 252, cur)   # 1-year percentile (shown as context)
-    # Trigger ONLY on absolute thresholds — keeps the daily cron quiet, firing
-    # only at genuine extremes (high premium / discount), not 1y drift.
-    if not (cur >= high or cur <= low):
-        return None, s
+    p1, n1 = _pctile(ser, 252, cur)
+    n = len(ser)
+    sections = []
 
+    # ── A. 折溢價絕對門檻 ───────────────────────────────────────────
     if cur >= high:
-        tag = f"🔴 溢價偏高 (≥{high:g}%)"
-        read = ("溢價接近歷史高檔，美股對 2330 明顯樂觀 → 隔日 2330 易開高，"
-                "但高溢價也有均值回歸風險。")
-    else:
-        tag = (f"🟢 翻折價 (≤{low:g}%)" if low <= 0
-               else f"🟢 折價/低溢價 (≤{low:g}%)")
-        read = ("溢價收斂甚至折價，美股對 2330 轉保守 → 隔日 2330 易開低 / "
-                "ADR 套利買盤可能進場。")
+        sections.append(
+            f"🔴 溢價偏高 (≥{high:g}%)：{cur:+.2f}%\n"
+            f"  溢價接近歷史高檔，美股對 2330 明顯樂觀 → 隔日易開高，"
+            f"但高溢價有均值回歸風險。")
+    elif cur <= low:
+        tag = "翻折價" if low <= 0 else "折價/低溢價"
+        sections.append(
+            f"🟢 {tag} (≤{low:g}%)：{cur:+.2f}%\n"
+            f"  溢價收斂/折價，美股對 2330 轉保守 → 隔日易開低 / 套利買盤進場。")
+
+    # ── B. 斜率剛轉折 (最新一天) ────────────────────────────────────
+    if check_slope and n >= slope_win + 1:
+        sig = slope_signals(ser, win=slope_win)
+        last = n - 1
+        st = sig["stats"]
+        if last in set(sig["pos_idx"]):
+            hit = st["pos"]["hit"] if st["pos"] else 0
+            sections.append(
+                f"🟢▲ 斜率剛轉正 (動能翻多)\n"
+                f"  折溢價斜率 {slope_win} 日由負轉正 → 隔日 2330 偏多"
+                f"（歷史此訊號隔日收紅 {hit:.0f}%）。")
+        elif last in set(sig["neg_idx"]):
+            hit = st["neg"]["hit"] if st["neg"] else 0
+            sections.append(
+                f"🔴▼ 斜率剛轉負 (動能翻空)\n"
+                f"  折溢價斜率 {slope_win} 日由正轉負 → 隔日 2330 偏空"
+                f"（歷史此訊號隔日收黑 {hit:.0f}%）。")
+
+    if not sections:
+        return None, s
 
     msg = (
         f"🇺🇸 TSM ADR 折溢價警示 ({s['current_date']})\n\n"
-        f"當前折溢價: {cur:+.2f}%  {tag}\n"
+        + "\n\n".join(sections) +
+        f"\n\n當前折溢價 {cur:+.2f}% (近 1 年 {p1:.0f} 百分位)\n"
         f"  TSM ${s['current_tsm']} × {s['current_fx']} / 5 = "
-        f"理論 {s['current_theo']:.0f} vs 2330 實際 {s['current_tw']:.0f}\n\n"
-        f"近 1 年: 當前位於 {p1:.0f} 百分位 ({n1} 交易日)\n"
-        f"近 5 年: 均值 {s['mean']:+.2f}% | 區間 {s['min']:+.2f}% "
-        f"({s['min_date']}) ~ {s['max']:+.2f}% ({s['max_date']})\n\n"
-        f"⚠ {read}\n"
-        f"註：TSM 收盤晚 2330 約 14.5h，此為隔日 2330 開盤跳空前瞻指標；"
-        f"除權息日附近數字僅供參考。"
+        f"理論 {s['current_theo']:.0f} vs 2330 實際 {s['current_tw']:.0f}\n"
+        f"註：TSM 收盤晚 2330 約 14.5h，為隔日開盤跳空前瞻指標（漲跌多在開盤反映）；"
+        f"除權息日附近僅供參考。"
     )
     return msg, s
 
@@ -280,19 +300,21 @@ if __name__ == "__main__":
                     help="警示模式: 折溢價達門檻才輸出 / 推 Telegram")
     ap.add_argument("--high", type=float, default=25.0, help="高溢價門檻 %% (預設 25)")
     ap.add_argument("--low", type=float, default=0.0, help="低溢價門檻 %% (預設 0=翻折價)")
+    ap.add_argument("--no-slope", action="store_true",
+                    help="不檢查斜率轉折 (只看溢價門檻)")
     ap.add_argument("--telegram", action="store_true", help="推送 Telegram")
     ap.add_argument("--bot-token", help="或設 TG_BOT_TOKEN 環境變數")
     ap.add_argument("--chat-id", default=DEFAULT_CHAT_ID)
     args = ap.parse_args()
 
     if args.alert:
-        msg, s = build_alert(args.high, args.low)
+        msg, s = build_alert(args.high, args.low,
+                             check_slope=not args.no_slope)
         if s.get("error"):
             print("ERROR:", s["error"], file=sys.stderr)
             sys.exit(1)
         if not msg:
-            print(f"[OK] 折溢價 {s['current']:+.2f}% 在正常區間 "
-                  f"({args.low:g}%~{args.high:g}%)，不警示。")
+            print(f"[OK] 折溢價 {s['current']:+.2f}% 正常 + 斜率無轉折，不警示。")
             sys.exit(0)
         print(msg)
         if args.telegram:
