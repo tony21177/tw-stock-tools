@@ -2910,6 +2910,25 @@ def _render_adr_premium_page(period: str = "6mo", data: dict | None = None,
         twii_idx = json.dumps([round(r["twii"] / twii0 * 100, 2)
                                if twii0 and r.get("twii") else None
                                for r in ser])
+        # 折溢價斜率: rolling least-squares slope of premium over a trailing
+        # window (pp per day). >0 = 溢價擴大中, <0 = 收斂中. Window adapts to
+        # the period's point density (short windows for short ranges).
+        pvals = [r["premium"] for r in ser]
+        n = len(pvals)
+        win = max(2, min(5, n // 3)) if n >= 6 else 2
+        slope = []
+        for i in range(n):
+            if i < win - 1:
+                slope.append(None)
+                continue
+            ys = pvals[i - win + 1:i + 1]
+            xm = (win - 1) / 2.0
+            ym = sum(ys) / win
+            num = sum((j - xm) * (ys[j] - ym) for j in range(win))
+            den = sum((j - xm) ** 2 for j in range(win))
+            slope.append(round(num / den, 3) if den else None)
+        slope_line = json.dumps(slope)
+        slope_win = win
         # table: most recent 20 rows (newest first)
         trows = "".join(
             f'<tr><td>{_esc(r["date"])}</td>'
@@ -2932,7 +2951,9 @@ def _render_adr_premium_page(period: str = "6mo", data: dict | None = None,
   <p class="small" style="margin:6px 0 0">
     🔵 折溢價(左軸) — 溢價 = 美股盤後出價高於台股 (隔日 2330 開盤跳空前瞻指標) /
     折價；紅虛線=區間均值。🟡 2330 / 🟢 加權指數 (右軸，期初 rebase 到 100，
-    兩者同尺度可比) — 看溢價高低點與股價/大盤的相對位置。</p>
+    兩者同尺度可比) — 看溢價高低點與股價/大盤的相對位置。
+    🟣 折溢價斜率 (紫虛線，右軸 pp/日) — 溢價變化動能，&gt;0 擴大中、&lt;0 收斂中，
+    穿越 0 = 動能轉向。</p>
 </section>
 <section>
   <h3>近 20 個交易日明細</h3>
@@ -2958,15 +2979,20 @@ def _render_adr_premium_page(period: str = "6mo", data: dict | None = None,
       {{label:'2330 (期初=100)',data:{tw_idx},borderColor:'#e8a200',
         borderWidth:1,pointRadius:0,tension:0.1,yAxisID:'y1',spanGaps:true}},
       {{label:'加權指數 (期初=100)',data:{twii_idx},borderColor:'#0a0',
-        borderWidth:1,pointRadius:0,tension:0.1,yAxisID:'y1',spanGaps:true}}
+        borderWidth:1,pointRadius:0,tension:0.1,yAxisID:'y1',spanGaps:true}},
+      {{label:'折溢價斜率 ({slope_win}日, pp/日)',data:{slope_line},
+        borderColor:'#90c',borderWidth:1.5,borderDash:[3,2],pointRadius:0,
+        tension:0.1,yAxisID:'y2',spanGaps:true}}
     ]}},
     options:{{responsive:true,interaction:{{mode:'index',intersect:false}},
       plugins:{{title:{{display:true,
-        text:'折溢價 (左軸 %) vs 2330 & 加權指數 (右軸 期初=100)'}}}},
+        text:'折溢價 (左 %) vs 2330 & 加權 (右 期初=100) + 斜率 (紫,右)'}}}},
       scales:{{x:{{ticks:{{maxTicksLimit:12,font:{{size:9}}}}}},
         y:{{position:'left',title:{{display:true,text:'折溢價 %'}},
             grid:{{color:function(c){{return c.tick.value===0?'#999':'#eee'}}}}}},
         y1:{{position:'right',title:{{display:true,text:'指數 (期初=100)'}},
+            grid:{{drawOnChartArea:false}}}},
+        y2:{{position:'right',title:{{display:true,text:'斜率 pp/日'}},
             grid:{{drawOnChartArea:false}}}}}}}}
   }});
 }})();
