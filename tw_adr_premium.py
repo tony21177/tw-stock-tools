@@ -161,6 +161,77 @@ def _pctile(series: list, window: int, cur: float) -> tuple[float, int]:
     return round(below / len(recent) * 100, 1), len(recent)
 
 
+def compute_slope(series: list, win: int) -> list:
+    """Rolling least-squares slope of premium (pp/day), aligned to series
+    (None for the first win-1 points)."""
+    pv = [r["premium"] for r in series]
+    n = len(pv)
+    out = [None] * n
+    if n < win:
+        return out
+    xm = (win - 1) / 2.0
+    den = sum((j - xm) ** 2 for j in range(win))
+    for i in range(win - 1, n):
+        ys = pv[i - win + 1:i + 1]
+        ym = sum(ys) / win
+        num = sum((j - xm) * (ys[j] - ym) for j in range(win))
+        out[i] = round(num / den, 3) if den else None
+    return out
+
+
+def slope_signals(series: list, win: int = 5) -> dict:
+    """Detect slope-turn events + backtest next-day 2330 reaction.
+
+    A turn-positive at i = slope[i-1] <= 0 < slope[i]; turn-negative the
+    reverse. Next-day reaction uses the series' own consecutive 2330 closes
+    (series[i+1].tw / series[i].tw). Returns slope list, marker index lists,
+    and hit-rate / mean-return stats vs the all-day baseline.
+    """
+    slope = compute_slope(series, win)
+    n = len(series)
+
+    def nxt_ret(i):
+        if i + 1 >= n:
+            return None
+        a, b = series[i].get("tw"), series[i + 1].get("tw")
+        return (b / a - 1) * 100 if a and b else None
+
+    base = [r for r in (nxt_ret(i) for i in range(n)) if r is not None]
+    base_up = round(sum(1 for r in base if r > 0) / len(base) * 100, 1) if base else 0
+
+    pos_idx, neg_idx = [], []
+    pos_ret, neg_ret = [], []
+    for i in range(1, n):
+        p, c = slope[i - 1], slope[i]
+        if p is None or c is None:
+            continue
+        if p <= 0 < c:
+            pos_idx.append(i)
+            r = nxt_ret(i)
+            if r is not None:
+                pos_ret.append(r)
+        elif p >= 0 > c:
+            neg_idx.append(i)
+            r = nxt_ret(i)
+            if r is not None:
+                neg_ret.append(r)
+
+    def st(rs, direction):
+        if not rs:
+            return None
+        if direction > 0:
+            hit = sum(1 for r in rs if r > 0)
+        else:
+            hit = sum(1 for r in rs if r < 0)
+        return {"n": len(rs), "hit": round(hit / len(rs) * 100, 1),
+                "mean": round(sum(rs) / len(rs), 3)}
+
+    return {"slope": slope, "win": win,
+            "pos_idx": pos_idx, "neg_idx": neg_idx,
+            "stats": {"base_up": base_up, "base_n": len(base),
+                      "pos": st(pos_ret, +1), "neg": st(neg_ret, -1)}}
+
+
 def build_alert(high: float, low: float) -> tuple[str | None, dict]:
     """Return (telegram_message_or_None, summary). Message is non-None only
     when the current premium crosses a threshold or hits a 1-year extreme."""

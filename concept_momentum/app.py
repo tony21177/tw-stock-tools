@@ -2910,25 +2910,39 @@ def _render_adr_premium_page(period: str = "6mo", data: dict | None = None,
         twii_idx = json.dumps([round(r["twii"] / twii0 * 100, 2)
                                if twii0 and r.get("twii") else None
                                for r in ser])
-        # 折溢價斜率: rolling least-squares slope of premium over a trailing
-        # window (pp per day). >0 = 溢價擴大中, <0 = 收斂中. Window adapts to
-        # the period's point density (short windows for short ranges).
-        pvals = [r["premium"] for r in ser]
-        n = len(pvals)
+        # 折溢價斜率 + 轉折訊號 (module helper). Window adapts to point density.
+        n = len(ser)
         win = max(2, min(5, n // 3)) if n >= 6 else 2
-        slope = []
-        for i in range(n):
-            if i < win - 1:
-                slope.append(None)
-                continue
-            ys = pvals[i - win + 1:i + 1]
-            xm = (win - 1) / 2.0
-            ym = sum(ys) / win
-            num = sum((j - xm) * (ys[j] - ym) for j in range(win))
-            den = sum((j - xm) ** 2 for j in range(win))
-            slope.append(round(num / den, 3) if den else None)
+        sig = tw_adr_premium.slope_signals(ser, win=win)
+        slope = sig["slope"]
         slope_line = json.dumps(slope)
         slope_win = win
+        # marker datasets: plot the premium value at turn points (sit on the
+        # 折溢價 line). turn+ = green ▲, turn- = red ▼.
+        pos_set = set(sig["pos_idx"])
+        neg_set = set(sig["neg_idx"])
+        mark_pos = json.dumps([ser[i]["premium"] if i in pos_set else None
+                               for i in range(n)])
+        mark_neg = json.dumps([ser[i]["premium"] if i in neg_set else None
+                               for i in range(n)])
+        st = sig["stats"]
+        # stats box (this period's backtest of the turn signal)
+        def _stat_line(label, s, dirword, color):
+            if not s:
+                return f'<li>{label}：本區間無此訊號</li>'
+            return (f'<li>{label}（{s["n"]} 次）：隔日{dirword}命中 '
+                    f'<b style="color:{color}">{s["hit"]:.0f}%</b>，'
+                    f'平均隔日報酬 <b style="color:{color}">{s["mean"]:+.2f}%</b></li>')
+        stats_box = (
+            f'<div style="background:#f7faff;border:1px solid #d6e4f5;'
+            f'border-radius:6px;padding:10px 16px;margin:10px 0;">'
+            f'<b style="color:#0066cc">📐 斜率轉折 → 隔日 2330 統計（本區間回測）</b>'
+            f'<ul style="margin:6px 0 2px;padding-left:20px;line-height:1.7">'
+            f'{_stat_line("🟢 斜率剛轉正", st["pos"], "收紅", "#c30")}'
+            f'{_stat_line("🔴 斜率剛轉負", st["neg"], "收黑", "#060")}'
+            f'<li class="small" style="color:#888">基準：全區間隔日收紅率 '
+            f'{st["base_up"]:.0f}%（n={st["base_n"]}）。訊號命中率明顯高於基準才有參考價值。'
+            f'多數漲跌反映在開盤跳空 → 需趁開盤前後進場。</li></ul></div>')
         # table: most recent 20 rows (newest first)
         trows = "".join(
             f'<tr><td>{_esc(r["date"])}</td>'
@@ -2947,13 +2961,21 @@ def _render_adr_premium_page(period: str = "6mo", data: dict | None = None,
 </section>
 <section>
   <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">{card_html}</div>
+  {stats_box}
+  <div id="adr-toggles" style="display:flex;gap:14px;flex-wrap:wrap;
+       font-size:0.85em;margin-bottom:8px">
+    <label><input type="checkbox" data-ds="0" checked> 🔵 折溢價</label>
+    <label><input type="checkbox" data-ds="5" checked> ▲ 斜率轉正</label>
+    <label><input type="checkbox" data-ds="6" checked> ▼ 斜率轉負</label>
+    <label><input type="checkbox" data-ds="4" checked> 🟣 斜率線</label>
+    <label><input type="checkbox" data-ds="1"> 🔴 區間均值</label>
+    <label><input type="checkbox" data-ds="2"> 🟡 2330</label>
+    <label><input type="checkbox" data-ds="3"> 🟢 加權指數</label>
+  </div>
   <canvas id="adr-chart" height="150"></canvas>
   <p class="small" style="margin:6px 0 0">
-    🔵 折溢價(左軸) — 溢價 = 美股盤後出價高於台股 (隔日 2330 開盤跳空前瞻指標) /
-    折價；紅虛線=區間均值。🟡 2330 / 🟢 加權指數 (右軸，期初 rebase 到 100，
-    兩者同尺度可比) — 看溢價高低點與股價/大盤的相對位置。
-    🟣 折溢價斜率 (紫虛線，右軸 pp/日) — 溢價變化動能，&gt;0 擴大中、&lt;0 收斂中，
-    穿越 0 = 動能轉向。</p>
+    勾選方塊控制顯示哪些線。🔵 折溢價(左軸)；▲▼ = 斜率剛轉正/負的點 (標在折溢價線上)；
+    🟣 斜率(右軸 pp/日)；🟡 2330 / 🟢 加權指數(右軸 期初=100)；🔴 區間均值。</p>
 </section>
 <section>
   <h3>近 20 個交易日明細</h3>
@@ -2970,23 +2992,29 @@ def _render_adr_premium_page(period: str = "6mo", data: dict | None = None,
 <script>
 (function(){{
   var el=document.getElementById('adr-chart'); if(!el||typeof Chart==='undefined')return;
-  new Chart(el,{{type:'line',
+  var ch=new Chart(el,{{type:'line',
     data:{{labels:{labels},datasets:[
       {{label:'折溢價 %',data:{prem},borderColor:'#0066cc',
         borderWidth:1.5,pointRadius:0,tension:0.1,yAxisID:'y'}},
       {{label:'區間均值',data:{mean_line},borderColor:'#c30',
-        borderWidth:1,borderDash:[6,4],pointRadius:0,yAxisID:'y'}},
+        borderWidth:1,borderDash:[6,4],pointRadius:0,yAxisID:'y',hidden:true}},
       {{label:'2330 (期初=100)',data:{tw_idx},borderColor:'#e8a200',
-        borderWidth:1,pointRadius:0,tension:0.1,yAxisID:'y1',spanGaps:true}},
+        borderWidth:1,pointRadius:0,tension:0.1,yAxisID:'y1',spanGaps:true,hidden:true}},
       {{label:'加權指數 (期初=100)',data:{twii_idx},borderColor:'#0a0',
-        borderWidth:1,pointRadius:0,tension:0.1,yAxisID:'y1',spanGaps:true}},
+        borderWidth:1,pointRadius:0,tension:0.1,yAxisID:'y1',spanGaps:true,hidden:true}},
       {{label:'折溢價斜率 ({slope_win}日, pp/日)',data:{slope_line},
         borderColor:'#90c',borderWidth:1.5,borderDash:[3,2],pointRadius:0,
-        tension:0.1,yAxisID:'y2',spanGaps:true}}
+        tension:0.1,yAxisID:'y2',spanGaps:true}},
+      {{label:'斜率轉正',data:{mark_pos},yAxisID:'y',showLine:false,
+        pointStyle:'triangle',pointRadius:6,pointBackgroundColor:'#0a0',
+        pointBorderColor:'#0a0'}},
+      {{label:'斜率轉負',data:{mark_neg},yAxisID:'y',showLine:false,
+        pointStyle:'triangle',rotation:180,pointRadius:6,
+        pointBackgroundColor:'#c30',pointBorderColor:'#c30'}}
     ]}},
     options:{{responsive:true,interaction:{{mode:'index',intersect:false}},
-      plugins:{{title:{{display:true,
-        text:'折溢價 (左 %) vs 2330 & 加權 (右 期初=100) + 斜率 (紫,右)'}}}},
+      plugins:{{legend:{{display:false}},title:{{display:true,
+        text:'折溢價斜率轉折 (▲轉正 ▼轉負) → 隔日 2330 訊號'}}}},
       scales:{{x:{{ticks:{{maxTicksLimit:12,font:{{size:9}}}}}},
         y:{{position:'left',title:{{display:true,text:'折溢價 %'}},
             grid:{{color:function(c){{return c.tick.value===0?'#999':'#eee'}}}}}},
@@ -2994,6 +3022,12 @@ def _render_adr_premium_page(period: str = "6mo", data: dict | None = None,
             grid:{{drawOnChartArea:false}}}},
         y2:{{position:'right',title:{{display:true,text:'斜率 pp/日'}},
             grid:{{drawOnChartArea:false}}}}}}}}
+  }});
+  document.querySelectorAll('#adr-toggles input[data-ds]').forEach(function(cb){{
+    cb.addEventListener('change',function(){{
+      ch.setDatasetVisibility(parseInt(cb.dataset.ds), cb.checked);
+      ch.update();
+    }});
   }});
 }})();
 </script>"""
