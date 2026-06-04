@@ -2490,6 +2490,92 @@ def _holding_distribution_html(dist: dict | None) -> str:
 </script>"""
 
 
+def _history_commentary(history: dict) -> str:
+    """Auto-generate plain-language 解讀 bullets from the N-year matrix:
+    biggest accumulator / reducer / new entrants / exits / steady holders /
+    volatile holders. Returns an HTML box, or '' if nothing notable."""
+    years = history.get("years", [])
+    rows = history.get("rows", [])
+    if len(years) < 2 or not rows:
+        return ""
+    ynew, yold = years[-1], years[0]
+
+    def stats(r):
+        by = r["by_year"]
+        pres = [y for y in years if y in by]
+        vals = [by[y] for y in pres]
+        first, last = by[pres[0]], by[pres[-1]]
+        return {
+            "name": r["name"], "by": by, "pres": pres,
+            "first": first, "last": last, "latest": r["latest"],
+            "delta": (r["latest"] - first) if r["latest"] is not None else None,
+            "vol": (max(vals) - min(vals)) if len(vals) >= 2 else 0.0,
+            "peak": max(vals), "peak_y": pres[vals.index(max(vals))],
+        }
+    S = [stats(r) for r in rows]
+    inq = [s for s in S if s["latest"] is not None]   # in newest year
+    bullets = []
+
+    # biggest accumulator (positive delta, in newest year)
+    acc = [s for s in inq if s["delta"] is not None and s["delta"] >= 0.5]
+    if acc:
+        b = max(acc, key=lambda s: s["delta"])
+        bullets.append(
+            f'🔴 <b>最大買盤</b>：{_esc(b["name"])} '
+            f'{b["first"]:.2f}%→{b["last"]:.2f}%（{yold}→{ynew} '
+            f'<span style="color:#c30">+{b["delta"]:.2f}pp</span>），期間持續加碼。')
+
+    # biggest reducer still on the list
+    red = [s for s in inq if s["delta"] is not None and s["delta"] <= -0.5]
+    if red:
+        b = min(red, key=lambda s: s["delta"])
+        bullets.append(
+            f'🟢 <b>最大減持（仍在榜）</b>：{_esc(b["name"])} '
+            f'{b["first"]:.2f}%→{b["last"]:.2f}%'
+            f'（<span style="color:#060">{b["delta"]:.2f}pp</span>）。')
+
+    # new entrants: in newest year, absent in oldest
+    newcomers = [s for s in inq if yold not in s["by"]
+                 and min(s["pres"]) == ynew]
+    if newcomers:
+        names = "、".join(f'{_esc(s["name"])}（{s["last"]:.2f}%）'
+                          for s in sorted(newcomers, key=lambda s: -s["last"])[:4])
+        bullets.append(f'★ <b>{ynew} 年新進榜</b>：{names}。')
+
+    # notable exits: gone by newest year, had a meaningful peak (>=2%)
+    exits = [s for s in S if s["latest"] is None and s["peak"] >= 2.0]
+    if exits:
+        names = "、".join(
+            f'{_esc(s["name"])}（{s["peak_y"]} 年曾 {s["peak"]:.2f}%）'
+            for s in sorted(exits, key=lambda s: -s["peak"])[:4])
+        bullets.append(f'⬇ <b>已退榜（曾為大股東）</b>：{names}。')
+
+    # steady holders: present all years, low volatility
+    steady = [s for s in inq if len(s["pres"]) == len(years) and s["vol"] <= 0.15]
+    if steady:
+        names = "、".join(f'{_esc(s["name"])}（≈{s["last"]:.2f}%）'
+                          for s in sorted(steady, key=lambda s: -s["last"])[:5])
+        bullets.append(f'⚓ <b>長期穩定（鐵桿）</b>：{names}。')
+
+    # volatile: big swing, peak not at an endpoint (進出明顯)
+    volatile = [s for s in S if s["vol"] >= 1.5
+                and s["peak_y"] not in (yold, ynew)]
+    if volatile:
+        b = max(volatile, key=lambda s: s["vol"])
+        bullets.append(
+            f'🔄 <b>大進大出</b>：{_esc(b["name"])} '
+            f'{b["peak_y"]} 年衝到 {b["peak"]:.2f}% 後又回落，部位不穩定。')
+
+    if not bullets:
+        return ""
+    lis = "".join(f'<li style="margin:4px 0;line-height:1.6">{b}</li>'
+                  for b in bullets)
+    return (f'<div style="background:#f7faff;border:1px solid #d6e4f5;'
+            f'border-radius:6px;padding:10px 16px;margin:12px 0;">'
+            f'<b style="color:#0066cc">💡 籌碼變化解讀（自動產生）</b>'
+            f'<ul style="margin:6px 0 2px;padding-left:20px">{lis}</ul></div>')
+
+
 def _shareholders_history_html(history: dict | None, code: str,
                                 hist_years: int) -> str:
     """Render the multi-year 前十大股東 matrix (holder × year, pct cells)."""
@@ -2570,6 +2656,7 @@ def _shareholders_history_html(history: dict | None, code: str,
 
     return form + f"""
   <canvas id="sh-hist-chart" height="150"></canvas>
+  {_history_commentary(history)}
   <div style="overflow-x:auto;margin-top:12px;">
   <table class="report-table" style="white-space:nowrap;">
     <thead><tr><th>股東名稱</th>{th}<th>{yold}→{ynew} 變化</th></tr></thead>
