@@ -3101,6 +3101,178 @@ def _render_adr_premium_page(period: str = "6mo", data: dict | None = None,
 </html>"""
 
 
+def _render_futures_basis_page(m: dict | None = None, error: str = "") -> str:
+    """Web page: 期現貨基差 + 外資期貨留倉監控 (依「留倉沒多空意義」一文)."""
+    body = ""
+    if error:
+        body = f'<div class="error">⚠ {html_lib.escape(error)}</div>'
+    elif m is not None and m.get("error"):
+        body = f'<div class="error">⚠ {html_lib.escape(m["error"])}</div>'
+    elif m is not None:
+        ser = m["series"]
+        L = m["latest"]
+        cost = m["arb_cost"]
+        three = m["three_signal"]
+        # 教育 banner (文章核心)
+        edu = (
+            '<section style="border-left:4px solid #c30;background:#fff8f8">'
+            '<h3>⚠ 先讀：外資期貨留倉淨額「沒有多空意義」</h3>'
+            '<p class="small" style="line-height:1.7">'
+            '期交所那張「外資大台留倉淨空 N 萬口」的圖 100% 正確、有公信力，'
+            '<b>但不值得拿來判斷行情</b>——因為它 98% 來自 6-8 家投行的'
+            '<b>期現貨套利對沖腳</b>（買一籃子現貨、空期貨），淨部位≈0、沒有方向。'
+            '把「果」當「因」在上面做文章，回測勝率連 5 成都不到。<br>'
+            '真正該看的是下面這幾項：<b>盤中正逆價差 vs 套利成本</b>、'
+            '<b>三訊號同步</b>、<b>大台+富台同向極端</b>、月底轉倉。</p></section>')
+
+        # 三訊號 + 同向極端 狀態卡
+        def yn(b):
+            return ('<b style="color:#c30">是</b>' if b
+                    else '<span style="color:#999">否</span>')
+        sig_box = (
+            f'<section><h3>🚦 即時訊號狀態（最新 {_esc(L["date"])}）</h3>'
+            f'<table class="report-table"><tbody>'
+            f'<tr><td>基差（TX 日盤 − 加權現貨）</td>'
+            f'<td class="num" style="color:{"#c30" if L["basis"]<0 else "#060"}">'
+            f'{L["basis"]:+.0f} 點 ({L["basis_pct"]:+.2f}%)</td>'
+            f'<td>套利成本 ±{cost}%｜超過 = {yn(m["basis_extreme"])}</td></tr>'
+            f'<tr><td>三訊號同步（跌+逆價差+台幣貶）</td>'
+            f'<td class="num">跌 {yn(three["twii_down"])}／逆價差 '
+            f'{yn(three["backwardation"])}／台幣貶 {yn(three["twd_weak"])}</td>'
+            f'<td>三者同時 = {yn(three["all"])} '
+            f'{"→ 可認定外資大賣超(但賣超≠做空)" if three["all"] else ""}</td></tr>'
+            f'<tr><td>大台(TX) + 富台(XIF) 同向極端</td>'
+            f'<td class="num">TX 淨 {m["tx_net"]:+,} 口／XIF 淨 '
+            f'{m["xif_net"]:+,} 口</td>'
+            f'<td>同向且都高 = {yn(m["same_dir_extreme"])} '
+            f'{"→ 投行水庫滿載，真的要留意" if m["same_dir_extreme"] else "→ 不同向，遊戲繼續、別腦補崩盤"}</td>'
+            f'</tr></tbody></table>'
+            f'<p class="small">⚠ FinMind 期貨為日收盤；文章強調「盤中 9:00-13:25」'
+            f'基差最準，本頁為日盤收盤基準。逆價差 &gt; 成本 + 指數破底 → 套利客'
+            f'一腳踹下、跌時特別兇。</p></section>')
+
+        # 圖表資料
+        labels = json.dumps([r["date"] for r in ser])
+        basis_pct = json.dumps([r["basis_pct"] for r in ser])
+        cost_hi = json.dumps([cost] * len(ser))
+        cost_lo = json.dumps([-cost] * len(ser))
+        tx_oi = json.dumps([r.get("fx_net") for r in ser])
+        xif_oi = json.dumps([r.get("xif_net") for r in ser])
+        # 明細表
+        trows = "".join(
+            f'<tr><td>{_esc(r["date"])}</td>'
+            f'<td class="num">{r["tx"]:.0f}</td>'
+            f'<td class="num">{r["spot"]:.0f}</td>'
+            f'<td class="num" style="color:{"#c30" if r["basis"]<0 else "#060"}">'
+            f'{r["basis"]:+.0f} ({r["basis_pct"]:+.2f}%)</td>'
+            f'<td class="num">{r["fx_net"]:+,}</td>'
+            f'<td class="num">{(("%+.2f%%" % r["twii_chg"]) if r["twii_chg"] is not None else "—")}</td>'
+            f'<td class="num">{(("%+.2f%%" % r["fx_chg"]) if r["fx_chg"] is not None else "—")}</td></tr>'
+            for r in reversed(ser[-15:]))
+        body = edu + sig_box + f"""
+<section>
+  <h3>📈 基差走勢（vs ±{cost}% 套利成本帶）</h3>
+  <canvas id="basis-chart" height="130"></canvas>
+  <p class="small">綠=正價差(期貨貴)，紅=逆價差(現貨貴)。落在 ±{cost}% 帶內 =
+    套利無肉；逆價差跌破 -{cost}% = 套利客有利可圖，破底殺盤兇。</p>
+</section>
+<section>
+  <h3>📊 外資期貨留倉（TX 大台 vs XIF 富台）— 僅供觀察，無多空意義</h3>
+  <canvas id="oi-chart" height="120"></canvas>
+  <p class="small">⚠ 此為投行套利對沖腳的影子。重點不是「淨空幾萬口」，而是
+    <b>TX 與 XIF 是否同向且都極端</b>（同向高=水庫滿載才有事）。目前
+    TX {L.get("fx_net",0):+,} / XIF {m["xif_net"]:+,} →
+    {"同向極端" if m["same_dir_extreme"] else "未同向極端"}。</p>
+</section>
+<section>
+  <h3>近 15 日明細</h3>
+  <table class="report-table">
+    <thead><tr><th>日期</th><th class="num">TX 期</th><th class="num">加權現貨</th>
+      <th class="num">基差</th><th class="num">外資TX淨留倉</th>
+      <th class="num">加權漲跌</th><th class="num">台幣</th></tr></thead>
+    <tbody>{trows}</tbody>
+  </table>
+</section>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+(function(){{
+  if(typeof Chart==='undefined')return;
+  new Chart(document.getElementById('basis-chart'),{{type:'line',
+    data:{{labels:{labels},datasets:[
+      {{label:'基差 %',data:{basis_pct},borderColor:'#0066cc',borderWidth:1.5,
+        pointRadius:0,tension:0.1}},
+      {{label:'+{cost}% 成本',data:{cost_hi},borderColor:'#999',borderWidth:1,
+        borderDash:[4,3],pointRadius:0}},
+      {{label:'-{cost}% 成本',data:{cost_lo},borderColor:'#999',borderWidth:1,
+        borderDash:[4,3],pointRadius:0}}
+    ]}},
+    options:{{responsive:true,plugins:{{title:{{display:true,text:'期現貨基差 % (TX 日盤 vs 加權)'}}}},
+      scales:{{x:{{ticks:{{maxTicksLimit:12,font:{{size:9}}}}}},
+        y:{{title:{{display:true,text:'基差 %'}},
+            grid:{{color:function(c){{return c.tick.value===0?'#999':'#eee'}}}}}}}}}}
+  }});
+  new Chart(document.getElementById('oi-chart'),{{type:'line',
+    data:{{labels:{labels},datasets:[
+      {{label:'外資 TX 淨留倉(口)',data:{tx_oi},borderColor:'#c30',borderWidth:1.5,
+        pointRadius:0,tension:0.1,spanGaps:true,yAxisID:'y'}},
+      {{label:'外資 富台XIF 淨留倉(口)',data:{xif_oi},borderColor:'#0a0',borderWidth:1.5,
+        pointRadius:0,tension:0.1,spanGaps:true,yAxisID:'y1'}}
+    ]}},
+    options:{{responsive:true,interaction:{{mode:'index',intersect:false}},
+      plugins:{{title:{{display:true,text:'外資期貨留倉淨額 (無多空意義，看是否同向極端)'}}}},
+      scales:{{x:{{ticks:{{maxTicksLimit:12,font:{{size:9}}}}}},
+        y:{{position:'left',title:{{display:true,text:'TX 口'}}}},
+        y1:{{position:'right',title:{{display:true,text:'XIF 口'}},
+            grid:{{drawOnChartArea:false}}}}}}}}
+  }});
+}})();
+</script>"""
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>期現貨基差 / 外資留倉</title>
+<style>
+  body {{ font-family: -apple-system, "Segoe UI", "Microsoft JhengHei", sans-serif;
+         max-width: 1100px; margin: 1em auto; padding: 0 1em; background: #f7f7f9; color: #222; }}
+  h1 {{ font-size: 1.4em; margin: 0.5em 0; }}
+  nav a {{ margin-right:12px; color:#0066cc; text-decoration:none; }}
+  .error {{ background:#fee; border:1px solid #f99; padding:12px; border-radius:4px;
+           color:#c00; margin-bottom:12px; }}
+  section {{ background:white; padding:12px 16px; border-radius:6px; margin-bottom:12px;
+            box-shadow:0 1px 3px rgba(0,0,0,0.06); }}
+  section h3 {{ margin:0 0 8px 0; font-size:1.05em; color:#444; }}
+  table.report-table {{ width:100%; border-collapse:collapse; font-size:0.9em; }}
+  table.report-table th, table.report-table td {{ padding:6px 10px;
+        border-bottom:1px solid #eee; text-align:left; }}
+  table.report-table th {{ background:#fafafa; font-weight:600; color:#555; }}
+  table.report-table .num {{ text-align:right; font-variant-numeric:tabular-nums; }}
+  .small, small {{ font-size:0.85em; color:#666; }}
+</style></head>
+<body>
+<nav>
+  <a href="/">← 大盤 dashboard</a>
+  <a href="/chip-price">📋 籌碼價量</a>
+  <a href="/shareholders">👥 前十大股東</a>
+  <a href="/adr-premium">🇺🇸 ADR 折溢價</a>
+  <a href="/futures-basis">📐 期貨基差</a>
+</nav>
+<h1>📐 期現貨基差 / 外資期貨留倉監控</h1>
+{body}
+</body>
+</html>"""
+
+
+@app.route("/futures-basis")
+def futures_basis():
+    try:
+        import tw_futures_basis
+        m = tw_futures_basis.fetch_monitor(days=30)
+    except Exception as e:
+        return _render_futures_basis_page(error=f"{type(e).__name__}: {e}")
+    return _render_futures_basis_page(m=m)
+
+
 @app.route("/adr-premium")
 def adr_premium():
     import tw_adr_premium
