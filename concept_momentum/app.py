@@ -3101,13 +3101,35 @@ def _render_adr_premium_page(period: str = "6mo", data: dict | None = None,
 </html>"""
 
 
-def _render_futures_basis_page(m: dict | None = None, error: str = "") -> str:
+def _render_futures_basis_page(m: dict | None = None, error: str = "",
+                                intraday: dict | None = None) -> str:
     """Web page: 期現貨基差 + 外資期貨留倉監控 (依「留倉沒多空意義」一文)."""
-    body = ""
+    # 盤中即時基差框 (TAIFEX MIS)
+    intra_box = ""
+    if intraday and not intraday.get("error"):
+        ib = intraday
+        bc = "#c30" if ib["basis"] < 0 else "#060"
+        warn = ""
+        if ib["basis"] < 0 and abs(ib["basis_pct"]) > 0.38 and ib.get("near_low"):
+            warn = ('<div style="color:#c30;font-weight:700;margin-top:4px">'
+                    '⚡ 殺盤 setup：逆價差超成本 + 現貨接近今日低 → 套利客易一腳踹下</div>')
+        intra_box = (
+            f'<section style="border-left:4px solid {bc}">'
+            f'<h3>⚡ 盤中即時基差（TAIFEX，期 {_esc(ib["fut_time"])}/現 {_esc(ib["spot_time"])}）</h3>'
+            f'<div style="font-size:1.6em;font-weight:700;color:{bc}">'
+            f'基差 {ib["basis"]:+.0f} 點（{ib["basis_pct"]:+.2f}%）'
+            f'{"逆價差" if ib["basis"]<0 else "正價差"}</div>'
+            f'<p class="small">{_esc(ib["fut_name"])} {ib["future"]:.0f} vs '
+            f'臺指現貨 {ib["spot"]:.0f}｜今日 高 {ib.get("spot_high","-")} / '
+            f'低 {ib.get("spot_low","-")}（現貨距今日低 '
+            f'{"≤0.3% 接近破底" if ib.get("near_low") else "尚遠"}）｜'
+            f'套利成本 ±0.38%。盤中 (09:00-13:45) 即時更新，收盤後為最後一筆。{warn}</p>'
+            f'</section>')
+    body = intra_box
     if error:
-        body = f'<div class="error">⚠ {html_lib.escape(error)}</div>'
+        body += f'<div class="error">⚠ {html_lib.escape(error)}</div>'
     elif m is not None and m.get("error"):
-        body = f'<div class="error">⚠ {html_lib.escape(m["error"])}</div>'
+        body += f'<div class="error">⚠ {html_lib.escape(m["error"])}</div>'
     elif m is not None:
         ser = m["series"]
         L = m["latest"]
@@ -3169,7 +3191,7 @@ def _render_futures_basis_page(m: dict | None = None, error: str = "") -> str:
             f'<td class="num">{(("%+.2f%%" % r["twii_chg"]) if r["twii_chg"] is not None else "—")}</td>'
             f'<td class="num">{(("%+.2f%%" % r["fx_chg"]) if r["fx_chg"] is not None else "—")}</td></tr>'
             for r in reversed(ser[-15:]))
-        body = edu + sig_box + f"""
+        body = intra_box + edu + sig_box + f"""
 <section>
   <h3>📈 基差走勢（vs ±{cost}% 套利成本帶）</h3>
   <canvas id="basis-chart" height="130"></canvas>
@@ -3270,7 +3292,11 @@ def futures_basis():
         m = tw_futures_basis.fetch_monitor(days=30)
     except Exception as e:
         return _render_futures_basis_page(error=f"{type(e).__name__}: {e}")
-    return _render_futures_basis_page(m=m)
+    try:
+        intraday = tw_futures_basis.intraday_basis()
+    except Exception:
+        intraday = None
+    return _render_futures_basis_page(m=m, intraday=intraday)
 
 
 @app.route("/adr-premium")

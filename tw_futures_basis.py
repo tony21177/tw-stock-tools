@@ -187,6 +187,91 @@ def fetch_monitor(days: int = 30) -> dict:
     }
 
 
+TAIFEX_MIS = "https://mis.taifex.com.tw/futures/api/getQuoteList"
+
+
+def intraday_basis() -> dict:
+    """盤中即時基差，從 TAIFEX MIS 一次取得臺指現貨(TXF-S) + 近月臺指期。
+    盤中(09:00-13:45)為即時 (~5-20 秒延遲)；收盤後為最後一筆。
+
+    Returns {spot, future, basis, basis_pct, spot_low, spot_high, near_low
+    (現貨距今日低 ≤0.3%), fut_time, spot_time, date} or {"error":...}.
+    這是文章最推的「盤中正逆價差」，可在 09:00-13:25 期間判斷套利客動向。
+    """
+    body = json.dumps({
+        "MarketType": "0", "SymbolType": "F", "KindID": "1", "CID": "TXF",
+        "ExpireMonth": "", "RowSize": "全部", "PageNo": "",
+        "SortColumn": "", "AscDesc": "A",
+    }).encode()
+    req = urllib.request.Request(
+        TAIFEX_MIS, data=body, method="POST",
+        headers={"Content-Type": "application/json",
+                 "User-Agent": "Mozilla/5.0",
+                 "Origin": "https://mis.taifex.com.tw",
+                 "Referer": "https://mis.taifex.com.tw/"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode())
+    except Exception as e:
+        return {"error": f"TAIFEX MIS: {type(e).__name__}: {e}"}
+    qs = data.get("RtData", {}).get("QuoteList", [])
+    spot = next((q for q in qs if q.get("SymbolID") == "TXF-S"), None)
+    fut = next((q for q in qs if str(q.get("SymbolID", "")).endswith("-F")), None)
+    if not spot or not fut:
+        return {"error": "TAIFEX 無臺指現貨/近月期報價"}
+
+    def f(x):
+        try:
+            return float(x)
+        except (TypeError, ValueError):
+            return None
+    sp = f(spot.get("CLastPrice"))
+    fu = f(fut.get("CLastPrice"))
+    lo = f(spot.get("CLowPrice"))
+    hi = f(spot.get("CHighPrice"))
+    if sp is None or fu is None or sp <= 0:
+        return {"error": "TAIFEX 報價解析失敗"}
+    basis = fu - sp
+    near_low = (lo is not None and (sp - lo) / sp <= 0.003)
+
+    def hhmmss(t):
+        t = str(t or "").zfill(6)
+        return f"{t[:2]}:{t[2:4]}:{t[4:6]}" if len(t) >= 6 else t
+    return {
+        "spot": round(sp, 2), "future": round(fu, 1),
+        "basis": round(basis, 1), "basis_pct": round(basis / sp * 100, 3),
+        "spot_low": round(lo, 2) if lo else None,
+        "spot_high": round(hi, 2) if hi else None,
+        "near_low": near_low,
+        "fut_name": fut.get("DispCName", ""),
+        "fut_time": hhmmss(fut.get("CTime")),
+        "spot_time": hhmmss(spot.get("CTime")),
+        "date": str(spot.get("CDate", "")),
+    }
+
+
+def build_intraday_alert() -> tuple[str | None, dict]:
+    """盤中告警 (文章 #1 訊號): 逆價差超過套利成本 + 現貨接近今日低
+    → 套利客有利可圖、破底殺盤兇。只在這個 setup 觸發。"""
+    ib = intraday_basis()
+    if ib.get("error"):
+        return None, ib
+    bp = ib["basis_pct"]
+    # 觸發: 逆價差 (basis<0) 且絕對值 > 套利成本 且 現貨接近今日低
+    if not (ib["basis"] < 0 and abs(bp) > ARB_COST_PCT and ib["near_low"]):
+        return None, ib
+    msg = (
+        f"⚡ 盤中基差殺盤警示 ({ib['fut_time']})\n\n"
+        f"🔴 逆價差 {ib['basis']:+.0f} 點 ({bp:+.2f}%) 已超過套利成本 ±{ARB_COST_PCT}%"
+        f"，且現貨 {ib['spot']:.0f} 接近今日低 {ib['spot_low']:.0f}\n\n"
+        f"  近月期 {ib['future']:.0f} vs 現貨 {ib['spot']:.0f}\n"
+        f"  → 期貨低於現貨超過成本 + 指數準備破底，套利客有利可圖、會「一腳踹下」"
+        f"搶價差。這就是「漲時慢吞吞、跌時特別兇」的時刻。\n"
+        f"⚠ 這不是有人看空，是一群套利的人同時衝。賣超≠做空。"
+    )
+    return msg, ib
+
+
 def build_alert() -> tuple[str | None, dict]:
     """告警: 僅在「有意義」的訊號觸發 (基差逆價差極端 / 大台富台同向極端 /
     三訊號同步)。不對外資留倉淨額本身告警 (文章: 沒有多空意義)。"""
@@ -226,12 +311,41 @@ def build_alert() -> tuple[str | None, dict]:
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(description="期現貨基差 + 外資留倉監控")
-    ap.add_argument("--alert", action="store_true")
+    ap.add_argument("--alert", action="store_true", help="盤後告警 (EOD 結構訊號)")
+    ap.add_argument("--intraday", action="store_true",
+                    help="盤中告警 (即時逆價差+破底, TAIFEX MIS)")
     ap.add_argument("--telegram", action="store_true")
     ap.add_argument("--bot-token")
     ap.add_argument("--chat-id", default=DEFAULT_CHAT_ID)
     ap.add_argument("--days", type=int, default=30)
     args = ap.parse_args()
+
+    if args.intraday:
+        msg, ib = build_intraday_alert()
+        if ib.get("error"):
+            print("ERROR:", ib["error"], file=sys.stderr); sys.exit(1)
+        if not msg:
+            print(f"[OK] 盤中基差 {ib['basis']:+.0f} 點 ({ib['basis_pct']:+.2f}%) "
+                  f"@ {ib['fut_time']}，無殺盤 setup，不告警。")
+            sys.exit(0)
+        print(msg)
+        if args.telegram:
+            # 30 分鐘冷卻，避免殺盤 setup 持續時每 5 分鐘洗版
+            cd = os.path.join(HERE, ".intraday_basis_alert.marker")
+            import subprocess
+            try:
+                last = os.path.getmtime(cd) if os.path.exists(cd) else 0
+                now = float(subprocess.run(["date", "+%s"], capture_output=True,
+                                           text=True).stdout.strip())
+            except Exception:
+                last, now = 0, 1
+            if now - last < 1800:
+                print("[冷卻中] 30 分鐘內已告警過，略過推送。")
+                sys.exit(0)
+            tok = args.bot_token or os.environ.get("TG_BOT_TOKEN", "")
+            if tok and send_telegram(msg, tok, args.chat_id):
+                open(cd, "w").close()
+        sys.exit(0)
 
     if args.alert:
         msg, m = build_alert()
