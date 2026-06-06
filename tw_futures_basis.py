@@ -171,19 +171,28 @@ def fetch_monitor(days: int = 30) -> dict:
     three["all"] = all(three[k] for k in ("twii_down", "backwardation", "twd_weak"))
     # 基差是否超過套利成本
     basis_extreme = abs(latest["basis_pct"]) > ARB_COST_PCT
-    # 大台 vs 富台 同向極端
     tx_net = latest.get("fx_net")
     xif_net = latest.get("xif_net")
-    same_dir_extreme = False
-    if tx_net is not None and xif_net is not None:
-        same_sign = (tx_net < 0 and xif_net < 0) or (tx_net > 0 and xif_net > 0)
-        same_dir_extreme = same_sign and abs(tx_net) >= 50000 and abs(xif_net) >= 3000
+
+    # ⚠ 文章原本的「大台 vs 富台同向」交叉檢查【已不適用】：摩台期 2021 停掉
+    # (MSCI 移到 SGX)，富台期 XIF 全市場留倉僅 ~100 口、外資 ~-18 口，是死產品，
+    # 無法做這個交叉檢查。改用更忠實文章精神的【基差-留倉套利一致性】：
+    #   正價差 + 外資空單擴大 = 純套利 (賣貴期貨買現貨)，沒有方向意義
+    #   逆價差 + 外資空單仍大/續增 = 罕見，可能真有方向 (期貨便宜還一直空)
+    prev = series[-2] if len(series) >= 2 else None
+    oi_rising = (prev and tx_net is not None and prev.get("fx_net") is not None
+                 and tx_net < prev["fx_net"])   # 淨空更負 = 空單擴大
+    arb_consistent = (latest["basis"] > 0 and (tx_net or 0) < -30000)
+    directional_warn = (latest["basis"] < -ARB_COST_PCT / 100 * latest["spot"]
+                        and (tx_net or 0) < -30000 and oi_rising)
 
     return {
         "series": series, "latest": latest, "arb_cost": ARB_COST_PCT,
         "three_signal": three, "basis_extreme": basis_extreme,
         "tx_net": tx_net, "xif_net": xif_net,
-        "same_dir_extreme": same_dir_extreme,
+        "oi_rising_short": oi_rising,
+        "arb_consistent": arb_consistent,        # 正價差+大空單 = 套利印證
+        "directional_warn": directional_warn,    # 逆價差+大空單續增 = 可能真方向
     }
 
 
@@ -273,19 +282,19 @@ def build_intraday_alert() -> tuple[str | None, dict]:
 
 
 def build_alert() -> tuple[str | None, dict]:
-    """告警: 僅在「有意義」的訊號觸發 (基差逆價差極端 / 大台富台同向極端 /
-    三訊號同步)。不對外資留倉淨額本身告警 (文章: 沒有多空意義)。"""
+    """告警: 僅在「有意義」的訊號觸發 (三訊號同步 / 逆價差超成本 / 罕見的
+    逆價差+大空單續增 方向警示)。不對外資留倉淨額本身告警 (沒有多空意義)。"""
     m = fetch_monitor(days=20)
     if m.get("error"):
         return None, m
     L = m["latest"]
     three = m["three_signal"]
     secs = []
-    if m["same_dir_extreme"]:
+    if m["directional_warn"]:
         secs.append(
-            f"🔴 大台+富台留倉同向極端\n"
-            f"  外資 TX 淨 {m['tx_net']:+,} 口 + 富台 XIF 淨 {m['xif_net']:+,} 口"
-            f" 同向且都高 → 投行套利水庫接近滿載，這才是真的要留意 (文章重點)。")
+            f"🔴 罕見：逆價差 + 外資空單續增\n"
+            f"  基差 {L['basis']:+.0f} 點 (逆價差) 但外資 TX 空單仍擴大到 "
+            f"{m['tx_net']:+,} 口 → 期貨折價還一直空，少見、可能真有方向 (非純套利)。")
     if three["all"]:
         secs.append(
             f"🔴 三訊號同步 = 外資大賣超 (但賣超≠做空)\n"
@@ -302,7 +311,8 @@ def build_alert() -> tuple[str | None, dict]:
         f"📐 期現貨基差/留倉警示 ({L['date']})\n\n"
         + "\n\n".join(secs) +
         f"\n\n基差 {L['basis']:+.0f} 點 ({L['basis_pct']:+.2f}%, 套利成本 ±{ARB_COST_PCT}%)\n"
-        f"外資 TX 留倉淨 {m['tx_net']:+,} 口 / 富台 XIF 淨 {m['xif_net']:+,} 口\n"
+        f"外資 TX 留倉淨 {m['tx_net']:+,} 口"
+        f"{'（正價差+大空單=純套利印證，無方向）' if m['arb_consistent'] else ''}\n"
         f"⚠ 外資留倉淨額 98% 是投行套利對沖腳，本身沒有多空意義；以上是「有意義」訊號。"
     )
     return msg, m
@@ -371,12 +381,14 @@ if __name__ == "__main__":
     print(f"期現貨基差監控 (最新 {L['date']}, {len(m['series'])} 交易日)")
     print(f"  TX 期貨日盤 {L['tx']} vs 加權現貨 {L['spot']} = 基差 {L['basis']:+.0f} 點"
           f" ({L['basis_pct']:+.2f}%)  [套利成本 ±{ARB_COST_PCT}%]")
-    print(f"  外資 TX 留倉淨 {m['tx_net']:+,} 口 | 富台 XIF 淨 {m['xif_net']:+,} 口")
+    print(f"  外資 TX 留倉淨 {m['tx_net']:+,} 口"
+          f"{'（正價差+大空單=純套利印證，無方向）' if m['arb_consistent'] else ''}")
     print(f"  ⚠ 外資留倉淨額 98% 是投行套利對沖腳，無多空意義")
     t = m["three_signal"]
     print(f"  三訊號 (跌/逆價差/台幣貶): {t['twii_down']}/{t['backwardation']}/{t['twd_weak']}"
           f" → 同步={t['all']}")
-    print(f"  大台富台同向極端: {m['same_dir_extreme']}")
+    print(f"  套利印證(正價差+大空單): {m['arb_consistent']} | 方向警示(逆價差+空單續增): {m['directional_warn']}")
+    print(f"  ⚠ 富台期已無流動性(XIF留倉~100口)，文章的大台富台交叉檢查已不適用")
     print("  近 8 日基差:")
     for r in m["series"][-8:]:
         print(f"    {r['date']}  TX {r['tx']:>8.0f}  現貨 {r['spot']:>8.0f}  "

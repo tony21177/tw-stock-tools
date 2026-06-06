@@ -3163,11 +3163,11 @@ def _render_futures_basis_page(m: dict | None = None, error: str = "",
             f'{yn(three["backwardation"])}／台幣貶 {yn(three["twd_weak"])}</td>'
             f'<td>三者同時 = {yn(three["all"])} '
             f'{"→ 可認定外資大賣超(但賣超≠做空)" if three["all"] else ""}</td></tr>'
-            f'<tr><td>大台(TX) + 富台(XIF) 同向極端</td>'
-            f'<td class="num">TX 淨 {m["tx_net"]:+,} 口／XIF 淨 '
-            f'{m["xif_net"]:+,} 口</td>'
-            f'<td>同向且都高 = {yn(m["same_dir_extreme"])} '
-            f'{"→ 投行水庫滿載，真的要留意" if m["same_dir_extreme"] else "→ 不同向，遊戲繼續、別腦補崩盤"}</td>'
+            f'<tr><td>基差-留倉套利一致性<br><span class="small">'
+            f'(取代文章的大台富台檢查，見下方說明)</span></td>'
+            f'<td class="num">外資 TX 淨 {m["tx_net"]:+,} 口<br>'
+            f'基差 {L["basis"]:+.0f} 點 ({"正價差" if L["basis"]>0 else "逆價差"})</td>'
+            f'<td>{"✅ 正價差 + 大空單 = 純套利印證，那串空單沒有方向意義" if m["arb_consistent"] else ("🔴 逆價差 + 空單續增 = 罕見，可能真有方向" if m["directional_warn"] else "—")}</td>'
             f'</tr></tbody></table>'
             f'<p class="small">⚠ FinMind 期貨為日收盤；文章強調「盤中 9:00-13:25」'
             f'基差最準，本頁為日盤收盤基準。逆價差 &gt; 成本 + 指數破底 → 套利客'
@@ -3199,12 +3199,15 @@ def _render_futures_basis_page(m: dict | None = None, error: str = "",
     套利無肉；逆價差跌破 -{cost}% = 套利客有利可圖，破底殺盤兇。</p>
 </section>
 <section>
-  <h3>📊 外資期貨留倉（TX 大台 vs XIF 富台）— 僅供觀察，無多空意義</h3>
+  <h3>📊 外資 TX 留倉 vs 基差 — 套利印證（取代壞掉的富台檢查）</h3>
   <canvas id="oi-chart" height="120"></canvas>
-  <p class="small">⚠ 此為投行套利對沖腳的影子。重點不是「淨空幾萬口」，而是
-    <b>TX 與 XIF 是否同向且都極端</b>（同向高=水庫滿載才有事）。目前
-    TX {L.get("fx_net",0):+,} / XIF {m["xif_net"]:+,} →
-    {"同向極端" if m["same_dir_extreme"] else "未同向極端"}。</p>
+  <p class="small">⚠ 外資 TX 淨空 {L.get("fx_net",0):+,} 口是投行套利對沖腳的影子，
+    <b>本身沒有多空意義</b>。<b>驗證方法</b>：紅線(外資TX淨空)往下擴大時，藍線
+    (基差)若維持<b>正價差</b> → 投行「賣貴期貨買現貨」套利，那串空單被基差完全解釋、
+    沒有方向。只有「逆價差還一直加空」才罕見、可能真有方向。<br>
+    <b>📌 文章原本的「大台 vs 富台同向」檢查已不適用</b>：摩台期 2021 停掉
+    (MSCI 移 SGX)、富台期 XIF 全市場留倉僅 ~100 口、外資 ~-18 口是死產品，
+    現在沒有第二個有大量外資部位的指數期貨可做交叉檢查。</p>
 </section>
 <section>
   <h3>近 15 日明細</h3>
@@ -3237,14 +3240,14 @@ def _render_futures_basis_page(m: dict | None = None, error: str = "",
     data:{{labels:{labels},datasets:[
       {{label:'外資 TX 淨留倉(口)',data:{tx_oi},borderColor:'#c30',borderWidth:1.5,
         pointRadius:0,tension:0.1,spanGaps:true,yAxisID:'y'}},
-      {{label:'外資 富台XIF 淨留倉(口)',data:{xif_oi},borderColor:'#0a0',borderWidth:1.5,
+      {{label:'基差 %',data:{basis_pct},borderColor:'#06c',borderWidth:1.5,
         pointRadius:0,tension:0.1,spanGaps:true,yAxisID:'y1'}}
     ]}},
     options:{{responsive:true,interaction:{{mode:'index',intersect:false}},
-      plugins:{{title:{{display:true,text:'外資期貨留倉淨額 (無多空意義，看是否同向極端)'}}}},
+      plugins:{{title:{{display:true,text:'外資TX淨空 vs 基差 — 空單擴大時基差正價差=純套利印證'}}}},
       scales:{{x:{{ticks:{{maxTicksLimit:12,font:{{size:9}}}}}},
-        y:{{position:'left',title:{{display:true,text:'TX 口'}}}},
-        y1:{{position:'right',title:{{display:true,text:'XIF 口'}},
+        y:{{position:'left',title:{{display:true,text:'外資TX淨留倉 口'}}}},
+        y1:{{position:'right',title:{{display:true,text:'基差 %'}},
             grid:{{drawOnChartArea:false}}}}}}}}
   }});
 }})();
