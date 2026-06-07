@@ -3173,6 +3173,32 @@ def _render_futures_basis_page(m: dict | None = None, error: str = "",
             f'基差最準，本頁為日盤收盤基準。逆價差 &gt; 成本 + 指數破底 → 套利客'
             f'一腳踹下、跌時特別兇。</p></section>')
 
+        # 富台(SGX TWN)手動記錄 OI
+        twn = m.get("twn_oi") or {}
+        if twn.get("latest_oi") is not None:
+            d = twn["latest_date"]
+            dfmt = f"{d[:4]}-{d[4:6]}-{d[6:]}" if len(d) == 8 else d
+            prev = twn.get("prev_oi")
+            delta = (f' <span style="color:{"#c30" if twn["latest_oi"]>prev else "#060"}">'
+                     f'Δ{twn["latest_oi"]-prev:+,}</span>' if prev is not None else "")
+            twn_box = (
+                f'<section><h3>🇸🇬 富台(SGX TWN)總留倉口數 — 手動記錄</h3>'
+                f'<table class="report-table"><tbody>'
+                f'<tr><td>最新總 OI</td><td class="num">{twn["latest_oi"]:,} 口{delta}</td>'
+                f'<td>記錄日 {_esc(dfmt)}</td></tr></tbody></table>'
+                f'<p class="small">⚠ SGX 富台(TWN)未平倉量為<b>付費資料</b>，'
+                f'且官網有 Akamai 反爬蟲（即使用真實 Chrome UA 仍 Access Denied），'
+                f'無法自動抓取。此處為手動記錄，每日於 SGX 官網查到後用 '
+                f'<code>tw_futures_basis.py --log-twn-oi &lt;口數&gt;</code> 登錄一個數字即可。'
+                f'</p></section>')
+        else:
+            twn_box = (
+                '<section><h3>🇸🇬 富台(SGX TWN)總留倉口數 — 手動記錄</h3>'
+                '<p class="small">尚無記錄。SGX 富台 OI 為付費資料 + Akamai 反爬蟲'
+                '（真實 Chrome UA 仍 Access Denied）無法自動抓取；於 SGX 官網查到後用 '
+                '<code>tw_futures_basis.py --log-twn-oi &lt;口數&gt;</code> 登錄即可。</p>'
+                '</section>')
+
         # 圖表資料
         labels = json.dumps([r["date"] for r in ser])
         basis_pct = json.dumps([r["basis_pct"] for r in ser])
@@ -3191,7 +3217,7 @@ def _render_futures_basis_page(m: dict | None = None, error: str = "",
             f'<td class="num">{(("%+.2f%%" % r["twii_chg"]) if r["twii_chg"] is not None else "—")}</td>'
             f'<td class="num">{(("%+.2f%%" % r["fx_chg"]) if r["fx_chg"] is not None else "—")}</td></tr>'
             for r in reversed(ser[-15:]))
-        body = intra_box + edu + sig_box + f"""
+        body = intra_box + edu + sig_box + twn_box + f"""
 <section>
   <h3>📈 基差走勢（vs ±{cost}% 套利成本帶）</h3>
   <canvas id="basis-chart" height="130"></canvas>

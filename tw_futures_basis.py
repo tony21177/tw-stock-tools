@@ -35,6 +35,50 @@ DEFAULT_CHAT_ID = "-5229750819"
 TG_API = "https://api.telegram.org/bot{token}/sendMessage"
 
 
+TWN_OI_STORE = os.path.join(HERE, "twn_oi_manual.json")
+
+
+def log_twn_oi(oi: int, date: str | None = None) -> dict:
+    """手動記錄富台(SGX TWN)總未平倉(OI)。SGX OI 是付費/網頁限定資料、無法
+    自動抓 (官網 Akamai 擋 headless)，故由使用者從券商海期軟體看一眼後記錄。
+    date 預設今天 (YYYYMMDD)。回存好的整份 store。"""
+    if date is None:
+        import subprocess
+        date = subprocess.run(["date", "+%Y%m%d"], capture_output=True,
+                              text=True).stdout.strip()
+    store = {}
+    if os.path.exists(TWN_OI_STORE):
+        try:
+            with open(TWN_OI_STORE, encoding="utf-8") as f:
+                store = json.load(f)
+        except Exception:
+            store = {}
+    store[date] = int(oi)
+    with open(TWN_OI_STORE, "w", encoding="utf-8") as f:
+        json.dump(store, f, ensure_ascii=False, indent=0, sort_keys=True)
+    return store
+
+
+def get_twn_oi() -> dict:
+    """讀手動記錄的富台 OI。回 {date→oi, latest_date, latest_oi, prev_oi,
+    stale_days} 或 {} 若無資料。"""
+    if not os.path.exists(TWN_OI_STORE):
+        return {}
+    try:
+        with open(TWN_OI_STORE, encoding="utf-8") as f:
+            store = json.load(f)
+    except Exception:
+        return {}
+    if not store:
+        return {}
+    dates = sorted(store.keys())
+    latest = dates[-1]
+    out = {"by_date": store, "latest_date": latest,
+           "latest_oi": store[latest],
+           "prev_oi": store[dates[-2]] if len(dates) >= 2 else None}
+    return out
+
+
 def _token() -> str:
     t = os.environ.get("FINMIND_TOKEN", "")
     if t:
@@ -186,6 +230,8 @@ def fetch_monitor(days: int = 30) -> dict:
     directional_warn = (latest["basis"] < -ARB_COST_PCT / 100 * latest["spot"]
                         and (tx_net or 0) < -30000 and oi_rising)
 
+    twn = get_twn_oi()   # 手動記錄的富台總 OI (SGX 付費資料，無法自動抓)
+
     return {
         "series": series, "latest": latest, "arb_cost": ARB_COST_PCT,
         "three_signal": three, "basis_extreme": basis_extreme,
@@ -193,6 +239,7 @@ def fetch_monitor(days: int = 30) -> dict:
         "oi_rising_short": oi_rising,
         "arb_consistent": arb_consistent,        # 正價差+大空單 = 套利印證
         "directional_warn": directional_warn,    # 逆價差+大空單續增 = 可能真方向
+        "twn_oi": twn,                           # 富台總 OI (手動)
     }
 
 
@@ -328,7 +375,18 @@ if __name__ == "__main__":
     ap.add_argument("--bot-token")
     ap.add_argument("--chat-id", default=DEFAULT_CHAT_ID)
     ap.add_argument("--days", type=int, default=30)
+    ap.add_argument("--log-twn-oi", type=int, metavar="OI",
+                    help="手動記錄富台(SGX TWN)總未平倉口數 (從券商海期軟體看)")
+    ap.add_argument("--date", help="搭配 --log-twn-oi 指定日期 YYYYMMDD (預設今天)")
     args = ap.parse_args()
+
+    if args.log_twn_oi is not None:
+        store = log_twn_oi(args.log_twn_oi, args.date)
+        d = sorted(store.keys())[-1]
+        prev = sorted(store.keys())[-2] if len(store) >= 2 else None
+        chg = f"（前次 {prev} {store[prev]:,} → Δ{store[d]-store[prev]:+,}）" if prev else ""
+        print(f"✅ 已記錄富台 OI: {d} = {store[d]:,} 口 {chg}")
+        sys.exit(0)
 
     if args.intraday:
         msg, ib = build_intraday_alert()
@@ -388,7 +446,13 @@ if __name__ == "__main__":
     print(f"  三訊號 (跌/逆價差/台幣貶): {t['twii_down']}/{t['backwardation']}/{t['twd_weak']}"
           f" → 同步={t['all']}")
     print(f"  套利印證(正價差+大空單): {m['arb_consistent']} | 方向警示(逆價差+空單續增): {m['directional_warn']}")
-    print(f"  ⚠ 富台期已無流動性(XIF留倉~100口)，文章的大台富台交叉檢查已不適用")
+    twn = m.get("twn_oi") or {}
+    if twn.get("latest_oi") is not None:
+        d = f"Δ{twn['latest_oi']-twn['prev_oi']:+,}" if twn.get("prev_oi") else ""
+        print(f"  富台(SGX TWN)總 OI: {twn['latest_oi']:,} 口 (手動記錄 {twn['latest_date']}) {d}")
+    else:
+        print(f"  富台(SGX TWN)總 OI: 尚無記錄 — 用 --log-twn-oi <口數> 記錄"
+              f" (SGX 付費資料無法自動抓)")
     print("  近 8 日基差:")
     for r in m["series"][-8:]:
         print(f"    {r['date']}  TX {r['tx']:>8.0f}  現貨 {r['spot']:>8.0f}  "
