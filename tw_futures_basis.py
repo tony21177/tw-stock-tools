@@ -378,7 +378,34 @@ if __name__ == "__main__":
     ap.add_argument("--log-twn-oi", type=int, metavar="OI",
                     help="手動記錄富台(SGX TWN)總未平倉口數 (從券商海期軟體看)")
     ap.add_argument("--date", help="搭配 --log-twn-oi 指定日期 YYYYMMDD (預設今天)")
+    ap.add_argument("--remind-twn-oi", action="store_true",
+                    help="推 Telegram 提醒去 SGX 抄富台 OI 登錄 (今天已登錄則略過)")
     args = ap.parse_args()
+
+    if args.remind_twn_oi:
+        import subprocess
+        today = subprocess.run(["date", "+%Y%m%d"], capture_output=True,
+                               text=True).stdout.strip()
+        twn = get_twn_oi()
+        if twn.get("latest_date") == today:
+            print(f"[OK] 今天 ({today}) 已登錄富台 OI {twn['latest_oi']:,} 口，略過提醒。")
+            sys.exit(0)
+        last = (f"（上次記錄 {twn['latest_date']} = {twn['latest_oi']:,} 口）"
+                if twn.get("latest_oi") is not None else "（目前尚無任何記錄）")
+        msg = (
+            "🇸🇬 <b>富台(SGX TWN)OI 登錄提醒</b>\n\n"
+            "今天還沒登錄富台未平倉量。SGX OI 為付費資料 + Akamai 反爬蟲無法自動抓，"
+            "請手動更新:\n\n"
+            "1. 開 SGX 富台期貨報價頁看 Open Int.\n"
+            "2. 跑 <code>tw_futures_basis.py --log-twn-oi &lt;口數&gt;</code>\n\n"
+            f"{last}")
+        print(msg)
+        if args.telegram:
+            tok = args.bot_token or os.environ.get("TG_BOT_TOKEN", "")
+            if not tok:
+                print("[ERROR] 需要 TG_BOT_TOKEN", file=sys.stderr); sys.exit(1)
+            send_telegram(msg, tok, args.chat_id)
+        sys.exit(0)
 
     if args.log_twn_oi is not None:
         store = log_twn_oi(args.log_twn_oi, args.date)
