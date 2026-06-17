@@ -3213,6 +3213,58 @@ def _render_futures_basis_page(m: dict | None = None, error: str = "",
                 '<code>tw_futures_basis.py --log-twn-oi &lt;口數&gt;</code></p>'
                 '</section>')
 
+        # 外資/法人 近月 vs 遠月 台指部位
+        lt = m.get("large_trader")
+        ob = m.get("oi_by_month")
+        def _net(v):
+            if v is None:
+                return "—"
+            col = "#c30" if v < 0 else ("#060" if v > 0 else "#666")
+            tag = "淨空" if v < 0 else ("淨多" if v > 0 else "")
+            return f'<span style="color:{col}">{v:+,} 口 {tag}</span>'
+        if lt or ob:
+            parts = ['<section><h3>🧭 外資/法人 台指 近月 vs 遠月 部位</h3>']
+            if lt:
+                nl = lt.get("near_label") or "近月"
+                parts.append(
+                    '<p class="small"><b>特定法人前十大未沖銷淨部位</b>'
+                    '（TAIFEX 大額交易人表，特定法人＝外資＋投信＋自營大戶，'
+                    '<b>非純外資</b>）：</p>'
+                    '<table class="report-table"><tbody>'
+                    f'<tr><td>近月（{_esc(nl)}）</td><td class="num">'
+                    f'{_net(lt["spec_near_net"])}</td>'
+                    f'<td class="small">買 {lt["spec_near_buy"]:,} / 賣 {lt["spec_near_sell"]:,}</td></tr>'
+                    f'<tr><td>遠月（次月以後）</td><td class="num">{_net(lt["spec_far_net"])}</td>'
+                    f'<td class="small">= 全契約 − 近月 − 週契約</td></tr>'
+                    f'<tr><td>週契約</td><td class="num">{_net(lt["spec_week_net"])}</td>'
+                    f'<td class="small">最近到期週選</td></tr>'
+                    f'<tr><td><b>全契約合計</b></td><td class="num">{_net(lt["spec_all_net"])}</td>'
+                    f'<td class="small">買 {lt["spec_all_buy"]:,} / 賣 {lt["spec_all_sell"]:,}</td></tr>'
+                    '</tbody></table>')
+            if ob:
+                bm = "、".join(f'{m_[:4]}/{m_[4:]} {oi_:,}' for m_, oi_ in ob["by_month"][:4])
+                roll = ("次月已超過近月 → 轉倉過半"
+                        if ob["next_oi"] > ob["near_oi"] else "部位仍集中近月")
+                parts.append(
+                    '<p class="small"><b>市場逐月未平倉（全市場 OI，看轉倉）</b>：</p>'
+                    '<table class="report-table"><tbody>'
+                    f'<tr><td>近月 {ob["near"][:4]}/{ob["near"][4:]}</td>'
+                    f'<td class="num">{ob["near_oi"]:,} 口</td>'
+                    f'<td class="small">{_esc(roll)}</td></tr>'
+                    + (f'<tr><td>次月 {ob["next"][:4]}/{ob["next"][4:]}</td>'
+                       f'<td class="num">{ob["next_oi"]:,} 口</td><td></td></tr>' if ob["next"] else '')
+                    + f'<tr><td>遠月合計</td><td class="num">{ob["far_oi"]:,} 口</td><td></td></tr>'
+                    f'<tr><td><b>總 OI</b></td><td class="num">{ob["total"]:,} 口</td><td></td></tr>'
+                    '</tbody></table>')
+            parts.append(
+                '<p class="small">📌 <b>怎麼看</b>：特定法人空單若集中在<b>遠月</b>＝法人對'
+                '中長線偏空的押注（近月易受結算/套利干擾，遠月較反映方向觀點）。結算日'
+                '（每月第 3 個週三）前後近月 OI 會驟降、轉到次月＝<b>轉倉</b>，屬正常換月不是'
+                '減碼。⚠ 純外資分月免費資料拿不到，此處特定法人為其 proxy。</p></section>')
+            lt_box = "".join(parts)
+        else:
+            lt_box = ''
+
         # 圖表資料
         labels = json.dumps([r["date"] for r in ser])
         basis_pct = json.dumps([r["basis_pct"] for r in ser])
@@ -3231,7 +3283,7 @@ def _render_futures_basis_page(m: dict | None = None, error: str = "",
             f'<td class="num">{(("%+.2f%%" % r["twii_chg"]) if r["twii_chg"] is not None else "—")}</td>'
             f'<td class="num">{(("%+.2f%%" % r["fx_chg"]) if r["fx_chg"] is not None else "—")}</td></tr>'
             for r in reversed(ser[-15:]))
-        body = intra_box + edu + sig_box + twn_box + f"""
+        body = intra_box + edu + sig_box + twn_box + lt_box + f"""
 <section>
   <h3>📈 基差走勢（vs ±{cost}% 套利成本帶）</h3>
   <canvas id="basis-chart" height="130"></canvas>

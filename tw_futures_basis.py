@@ -132,6 +132,106 @@ def subprocess_today() -> str:
                           text=True).stdout.strip()
 
 
+# ── 外資/法人 近月 vs 遠月 台指部位 ──────────────────────────────
+# 來源 1：TAIFEX 大額交易人未沖銷部位表（特定法人=外資+投信+自營大戶 proxy），
+#         分「近月月契約 / 週契約 / 所有契約」，遠月 = 所有 − 近月 − 週。
+# 來源 2：TaiwanFuturesDaily 逐月 OI（市場層級，看轉倉）。
+TAIFEX_LT_URL = "https://www.taifex.com.tw/cht/3/largeTraderFutQry"
+
+
+def _paren_pair(cell: str) -> tuple[int, int]:
+    """'X (Y)' → (X 全大戶, Y 特定法人)。"""
+    import re
+    nums = re.findall(r"-?\d+", cell.replace(",", ""))
+    tot = int(nums[0]) if nums else 0
+    spec = int(nums[1]) if len(nums) > 1 else 0
+    return tot, spec
+
+
+def fetch_tx_large_trader(date_yyyymmdd: str) -> dict | None:
+    """抓 TAIFEX 大額交易人未沖銷部位，解析臺股期貨(TX+MTX/4+TMF/20) 的
+    特定法人前十大 近月/週/全契約 淨部位。回 dict 或 None。"""
+    import re
+    d = f"{date_yyyymmdd[:4]}/{date_yyyymmdd[4:6]}/{date_yyyymmdd[6:]}"
+    body = urllib.parse.urlencode({
+        "queryStartDate": d, "queryEndDate": d, "commodityId": "TXF"}).encode()
+    req = urllib.request.Request(TAIFEX_LT_URL, data=body, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            h = r.read().decode("utf-8", "ignore")
+    except Exception:
+        return None
+    import html as _html
+    tabs = [t for t in re.findall(r"<table.*?</table>", h, re.S)
+            if "臺股期貨" in t and "前十大" in t]
+    if not tabs:
+        return None
+    rows = []
+    for r in re.findall(r"<tr.*?</tr>", tabs[0], re.S):
+        c = re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", r, re.S)
+        c = [re.sub(r"\s+", " ", _html.unescape(re.sub(r"<[^>]+>", "", x))).strip()
+             for x in c]
+        c = [x for x in c if x != ""]
+        if c:
+            rows.append(c)
+    # 臺股期貨 block：名稱列(週契約) → 近月月契約列(YYYY MM) → 所有契約列
+    try:
+        i = next(k for k, c in enumerate(rows) if c[0].startswith("臺股期貨(TX"))
+    except StopIteration:
+        return None
+    week_net = month_net = all_net = 0
+    near_label = ""
+    market_oi = None
+    near_buy = near_sell = all_buy = all_sell = 0
+    for c in rows[i:i + 6]:
+        head = c[0]
+        if head.startswith("臺股期貨(TX"):           # 週契約列：11 欄
+            b10 = _paren_pair(c[4])[1]; s10 = _paren_pair(c[8])[1]
+            week_net = b10 - s10
+        elif re.match(r"\d{4}\s*\d{2}$", head):        # 近月月契約 YYYY MM：10 欄
+            near_buy = _paren_pair(c[3])[1]; near_sell = _paren_pair(c[7])[1]
+            month_net = near_buy - near_sell
+            near_label = head.replace(" ", "")
+        elif head == "所有契約":                        # 全契約：10 欄
+            all_buy = _paren_pair(c[3])[1]; all_sell = _paren_pair(c[7])[1]
+            all_net = all_buy - all_sell
+            market_oi = int(c[9].replace(",", "")) if c[9].replace(",", "").isdigit() else None
+            break
+    far_net = all_net - month_net - week_net
+    return {"date": date_yyyymmdd, "near_label": near_label,
+            "spec_near_net": month_net, "spec_week_net": week_net,
+            "spec_far_net": far_net, "spec_all_net": all_net,
+            "spec_near_buy": near_buy, "spec_near_sell": near_sell,
+            "spec_all_buy": all_buy, "spec_all_sell": all_sell,
+            "market_oi": market_oi}
+
+
+def fetch_tx_oi_by_month(token: str, date_yyyymmdd: str) -> dict | None:
+    """從 TaiwanFuturesDaily 取 TX 各月契約日盤 OI（市場層級）。
+    回 {by_month:[(YYYYMM, oi)], near, near_oi, next_oi, far_oi, total}。"""
+    d = f"{date_yyyymmdd[:4]}-{date_yyyymmdd[4:6]}-{date_yyyymmdd[6:]}"
+    rows = _fm("TaiwanFuturesDaily", "TX", d, d, token)
+    if not rows:
+        return None
+    from collections import defaultdict
+    oi = defaultdict(int)
+    for x in rows:
+        cd = str(x.get("contract_date", ""))
+        if len(cd) == 6 and x.get("trading_session") == "position":
+            oi[cd] += int(x.get("open_interest") or 0)
+    if not oi:
+        return None
+    months = sorted(oi)
+    near = months[0]
+    nxt = months[1] if len(months) > 1 else None
+    far_oi = sum(oi[m] for m in months[2:])
+    return {"by_month": [(m, oi[m]) for m in months], "near": near,
+            "near_oi": oi[near], "next": nxt, "next_oi": oi[nxt] if nxt else 0,
+            "far_oi": far_oi, "total": sum(oi.values())}
+
+
 def _token() -> str:
     t = os.environ.get("FINMIND_TOKEN", "")
     if t:
@@ -285,6 +385,11 @@ def fetch_monitor(days: int = 30) -> dict:
 
     twn = get_twn_oi()   # 富台近月 OI (TradingView 自動抓 SGX:TWN1!)
 
+    # 外資/法人 近月 vs 遠月 台指部位 (特定法人大戶 proxy + 市場逐月 OI)
+    _d8 = "".join(ch for ch in str(latest["date"]) if ch.isdigit())
+    large_trader = fetch_tx_large_trader(_d8)
+    oi_by_month = fetch_tx_oi_by_month(token, _d8)
+
     return {
         "series": series, "latest": latest, "arb_cost": ARB_COST_PCT,
         "three_signal": three, "basis_extreme": basis_extreme,
@@ -293,6 +398,8 @@ def fetch_monitor(days: int = 30) -> dict:
         "arb_consistent": arb_consistent,        # 正價差+大空單 = 套利印證
         "directional_warn": directional_warn,    # 逆價差+大空單續增 = 可能真方向
         "twn_oi": twn,                           # 富台總 OI (手動)
+        "large_trader": large_trader,            # 特定法人 近月/週/遠月/全 淨部位
+        "oi_by_month": oi_by_month,              # 市場逐月 OI (轉倉)
     }
 
 
