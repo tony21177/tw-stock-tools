@@ -3145,12 +3145,25 @@ def _render_futures_basis_page(m: dict | None = None, error: str = "",
             '<b>期現貨套利對沖腳</b>（買一籃子現貨、空期貨），淨部位≈0、沒有方向。'
             '把「果」當「因」在上面做文章，回測勝率連 5 成都不到。<br>'
             '真正該看的是下面這幾項：<b>盤中正逆價差 vs 套利成本</b>、'
-            '<b>三訊號同步</b>、<b>大台+富台同向極端</b>、月底轉倉。</p></section>')
+            '<b>三訊號同步</b>、<b>基差-留倉套利一致性</b>、'
+            '<b>富台 OI 規模佐證</b>、月底轉倉。</p></section>')
 
         # 三訊號 + 同向極端 狀態卡
         def yn(b):
             return ('<b style="color:#c30">是</b>' if b
                     else '<span style="color:#999">否</span>')
+        twn = m.get("twn_oi") or {}
+        if twn.get("latest_oi") is not None:
+            _tp = twn.get("prev_oi")
+            _tdelta = (f"（Δ{twn['latest_oi']-_tp:+,}）" if _tp is not None else "")
+            twn_row = (
+                f'<tr><td>富台(SGX TWN)近月 OI<br><span class="small">'
+                f'部位規模佐證（總 OI，非外資淨額）</span></td>'
+                f'<td class="num">{twn["latest_oi"]:,} 口{_tdelta}</td>'
+                f'<td>SGX 富台總未平倉。升=全市場在富台佈更多部位；與大台'
+                f'外資空單/基差一起看是否同步擴張（總 OI 無方向，僅規模佐證）</td></tr>')
+        else:
+            twn_row = ''
         sig_box = (
             f'<section><h3>🚦 即時訊號狀態（最新 {_esc(L["date"])}）</h3>'
             f'<table class="report-table"><tbody>'
@@ -3164,11 +3177,13 @@ def _render_futures_basis_page(m: dict | None = None, error: str = "",
             f'<td>三者同時 = {yn(three["all"])} '
             f'{"→ 可認定外資大賣超(但賣超≠做空)" if three["all"] else ""}</td></tr>'
             f'<tr><td>基差-留倉套利一致性<br><span class="small">'
-            f'(取代文章的大台富台檢查，見下方說明)</span></td>'
+            f'(大台外資淨額 × 基差，主訊號)</span></td>'
             f'<td class="num">外資 TX 淨 {m["tx_net"]:+,} 口<br>'
             f'基差 {L["basis"]:+.0f} 點 ({"正價差" if L["basis"]>0 else "逆價差"})</td>'
             f'<td>{"✅ 正價差 + 大空單 = 純套利印證，那串空單沒有方向意義" if m["arb_consistent"] else ("🔴 逆價差 + 空單續增 = 罕見，可能真有方向" if m["directional_warn"] else "—")}</td>'
-            f'</tr></tbody></table>'
+            f'</tr>'
+            f'{twn_row}'
+            f'</tbody></table>'
             f'<p class="small">⚠ FinMind 期貨為日收盤；文章強調「盤中 9:00-13:25」'
             f'基差最準，本頁為日盤收盤基準。逆價差 &gt; 成本 + 指數破底 → 套利客'
             f'一腳踹下、跌時特別兇。</p></section>')
@@ -3224,15 +3239,16 @@ def _render_futures_basis_page(m: dict | None = None, error: str = "",
     套利無肉；逆價差跌破 -{cost}% = 套利客有利可圖，破底殺盤兇。</p>
 </section>
 <section>
-  <h3>📊 外資 TX 留倉 vs 基差 — 套利印證（取代壞掉的富台檢查）</h3>
+  <h3>📊 外資 TX 留倉 vs 基差 — 套利印證</h3>
   <canvas id="oi-chart" height="120"></canvas>
   <p class="small">⚠ 外資 TX 淨空 {L.get("fx_net",0):+,} 口是投行套利對沖腳的影子，
     <b>本身沒有多空意義</b>。<b>驗證方法</b>：紅線(外資TX淨空)往下擴大時，藍線
     (基差)若維持<b>正價差</b> → 投行「賣貴期貨買現貨」套利，那串空單被基差完全解釋、
     沒有方向。只有「逆價差還一直加空」才罕見、可能真有方向。<br>
-    <b>📌 文章原本的「大台 vs 富台同向」檢查已不適用</b>：摩台期 2021 停掉
-    (MSCI 移 SGX)、富台期 XIF 全市場留倉僅 ~100 口、外資 ~-18 口是死產品，
-    現在沒有第二個有大量外資部位的指數期貨可做交叉檢查。</p>
+    <b>📌 富台(SGX TWN)定位</b>：上方訊號表已接回富台近月 OI（TradingView 自動抓）。
+    但拿到的是<b>總 OI、非外資淨部位</b>（SGX 不免費公布法人淨額），所以無法做文章原本
+    「大台外資 vs 富台外資 同向」的方向交叉，只能當<b>部位規模佐證</b>：富台 OI 與大台
+    外資空單若同步擴張、基差又維持正價差 → 佐證投行跨市場套利/避險在加碼，仍非方向訊號。</p>
 </section>
 <section>
   <h3>近 15 日明細</h3>
