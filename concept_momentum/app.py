@@ -3173,7 +3173,7 @@ def _render_futures_basis_page(m: dict | None = None, error: str = "",
             f'基差最準，本頁為日盤收盤基準。逆價差 &gt; 成本 + 指數破底 → 套利客'
             f'一腳踹下、跌時特別兇。</p></section>')
 
-        # 富台(SGX TWN)手動記錄 OI
+        # 富台(SGX TWN)近月 OI — TradingView 自動抓 SGX:TWN1!
         twn = m.get("twn_oi") or {}
         if twn.get("latest_oi") is not None:
             d = twn["latest_date"]
@@ -3181,22 +3181,21 @@ def _render_futures_basis_page(m: dict | None = None, error: str = "",
             prev = twn.get("prev_oi")
             delta = (f' <span style="color:{"#c30" if twn["latest_oi"]>prev else "#060"}">'
                      f'Δ{twn["latest_oi"]-prev:+,}</span>' if prev is not None else "")
+            src = "TradingView 自動抓取" if twn.get("source") == "live" else "快取"
             twn_box = (
-                f'<section><h3>🇸🇬 富台(SGX TWN)總留倉口數 — 手動記錄</h3>'
+                f'<section><h3>🇸🇬 富台(SGX TWN)近月未平倉口數</h3>'
                 f'<table class="report-table"><tbody>'
-                f'<tr><td>最新總 OI</td><td class="num">{twn["latest_oi"]:,} 口{delta}</td>'
-                f'<td>記錄日 {_esc(dfmt)}</td></tr></tbody></table>'
-                f'<p class="small">⚠ SGX 富台(TWN)未平倉量為<b>付費資料</b>，'
-                f'且官網有 Akamai 反爬蟲（即使用真實 Chrome UA 仍 Access Denied），'
-                f'無法自動抓取。此處為手動記錄，每日於 SGX 官網查到後用 '
-                f'<code>tw_futures_basis.py --log-twn-oi &lt;口數&gt;</code> 登錄一個數字即可。'
-                f'</p></section>')
+                f'<tr><td>最新 OI（近月 TWN1!）</td>'
+                f'<td class="num">{twn["latest_oi"]:,} 口{delta}</td>'
+                f'<td>{src}・{_esc(dfmt)}</td></tr></tbody></table>'
+                f'<p class="small">資料來源：TradingView SGX:TWN1!（近月連續合約）即時 OI。'
+                f'SGX 官網本身有 Akamai 反爬蟲擋自動化，改由 TradingView scanner '
+                f'端點取得，每次更新自動記錄建立歷史。</p></section>')
         else:
             twn_box = (
-                '<section><h3>🇸🇬 富台(SGX TWN)總留倉口數 — 手動記錄</h3>'
-                '<p class="small">尚無記錄。SGX 富台 OI 為付費資料 + Akamai 反爬蟲'
-                '（真實 Chrome UA 仍 Access Denied）無法自動抓取；於 SGX 官網查到後用 '
-                '<code>tw_futures_basis.py --log-twn-oi &lt;口數&gt;</code> 登錄即可。</p>'
+                '<section><h3>🇸🇬 富台(SGX TWN)近月未平倉口數</h3>'
+                '<p class="small">TradingView 端點暫時抓不到。可手動補：'
+                '<code>tw_futures_basis.py --log-twn-oi &lt;口數&gt;</code></p>'
                 '</section>')
 
         # 圖表資料

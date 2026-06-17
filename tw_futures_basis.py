@@ -59,9 +59,55 @@ def log_twn_oi(oi: int, date: str | None = None) -> dict:
     return store
 
 
-def get_twn_oi() -> dict:
-    """讀手動記錄的富台 OI。回 {date→oi, latest_date, latest_oi, prev_oi,
-    stale_days} 或 {} 若無資料。"""
+# TradingView scanner: 免費、無 CAPTCHA/Cloudflare、純 HTTP 回 JSON 的 OI 端點。
+# SGX:TWN1! = SGX FTSE Taiwan Index Futures 近月連續合約。
+TWN_OI_TV_URL = ("https://scanner.tradingview.com/symbol?symbol=SGX:TWN1!"
+                 "&fields=open_interest,close,volume,description&no_404=true")
+
+
+def fetch_twn_oi_live() -> dict | None:
+    """從 TradingView 自動抓富台(SGX TWN)近月 OI。回
+    {oi, close, volume} 或 None (失敗)。取代舊的手動登錄。"""
+    req = urllib.request.Request(TWN_OI_TV_URL, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            d = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return None
+    oi = d.get("open_interest")
+    if oi is None:
+        return None
+    return {"oi": int(oi), "close": d.get("close"), "volume": d.get("volume")}
+
+
+def _record_twn_oi(oi: int, date: str) -> dict:
+    """寫一筆 OI 進 store (自動或手動共用)。回整份 store。"""
+    store = {}
+    if os.path.exists(TWN_OI_STORE):
+        try:
+            with open(TWN_OI_STORE, encoding="utf-8") as f:
+                store = json.load(f)
+        except Exception:
+            store = {}
+    store[date] = int(oi)
+    with open(TWN_OI_STORE, "w", encoding="utf-8") as f:
+        json.dump(store, f, ensure_ascii=False, indent=0, sort_keys=True)
+    return store
+
+
+def get_twn_oi(auto: bool = True) -> dict:
+    """取得富台 OI。auto=True 先嘗試 TradingView 即時抓 (並記錄今天一筆建立
+    歷史)，失敗才退回 store。回 {by_date, latest_date, latest_oi, prev_oi,
+    source} 或 {} 若無資料。source = 'live' | 'cache'。"""
+    source = "cache"
+    if auto:
+        live = fetch_twn_oi_live()
+        if live:
+            today = subprocess_today()
+            _record_twn_oi(live["oi"], today)
+            source = "live"
     if not os.path.exists(TWN_OI_STORE):
         return {}
     try:
@@ -75,8 +121,15 @@ def get_twn_oi() -> dict:
     latest = dates[-1]
     out = {"by_date": store, "latest_date": latest,
            "latest_oi": store[latest],
-           "prev_oi": store[dates[-2]] if len(dates) >= 2 else None}
+           "prev_oi": store[dates[-2]] if len(dates) >= 2 else None,
+           "source": source}
     return out
+
+
+def subprocess_today() -> str:
+    import subprocess
+    return subprocess.run(["date", "+%Y%m%d"], capture_output=True,
+                          text=True).stdout.strip()
 
 
 def _token() -> str:
@@ -230,7 +283,7 @@ def fetch_monitor(days: int = 30) -> dict:
     directional_warn = (latest["basis"] < -ARB_COST_PCT / 100 * latest["spot"]
                         and (tx_net or 0) < -30000 and oi_rising)
 
-    twn = get_twn_oi()   # 手動記錄的富台總 OI (SGX 付費資料，無法自動抓)
+    twn = get_twn_oi()   # 富台近月 OI (TradingView 自動抓 SGX:TWN1!)
 
     return {
         "series": series, "latest": latest, "arb_cost": ARB_COST_PCT,
@@ -383,21 +436,19 @@ if __name__ == "__main__":
     args = ap.parse_args()
 
     if args.remind_twn_oi:
-        import subprocess
-        today = subprocess.run(["date", "+%Y%m%d"], capture_output=True,
-                               text=True).stdout.strip()
-        twn = get_twn_oi()
-        if twn.get("latest_date") == today:
-            print(f"[OK] 今天 ({today}) 已登錄富台 OI {twn['latest_oi']:,} 口，略過提醒。")
+        # 改為自動抓取 (TradingView)。get_twn_oi(auto=True) 會即時抓並記錄今天一筆。
+        today = subprocess_today()
+        twn = get_twn_oi(auto=True)
+        if twn.get("source") == "live" and twn.get("latest_date") == today:
+            print(f"[OK] 已自動抓取富台 OI {twn['latest_oi']:,} 口 ({today}, TradingView)。")
             sys.exit(0)
+        # 自動抓失敗才退回手動提醒
         last = (f"（上次記錄 {twn['latest_date']} = {twn['latest_oi']:,} 口）"
                 if twn.get("latest_oi") is not None else "（目前尚無任何記錄）")
         msg = (
-            "🇸🇬 <b>富台(SGX TWN)OI 登錄提醒</b>\n\n"
-            "今天還沒登錄富台未平倉量。SGX OI 為付費資料 + Akamai 反爬蟲無法自動抓，"
-            "請手動更新:\n\n"
-            "1. 開 SGX 富台期貨報價頁看 Open Int.\n"
-            "2. 跑 <code>tw_futures_basis.py --log-twn-oi &lt;口數&gt;</code>\n\n"
+            "🇸🇬 <b>富台(SGX TWN)OI 自動抓取失敗</b>\n\n"
+            "TradingView 端點今天抓不到富台 OI，請手動補:\n"
+            "<code>tw_futures_basis.py --log-twn-oi &lt;口數&gt;</code>\n\n"
             f"{last}")
         print(msg)
         if args.telegram:
@@ -476,10 +527,10 @@ if __name__ == "__main__":
     twn = m.get("twn_oi") or {}
     if twn.get("latest_oi") is not None:
         d = f"Δ{twn['latest_oi']-twn['prev_oi']:+,}" if twn.get("prev_oi") else ""
-        print(f"  富台(SGX TWN)總 OI: {twn['latest_oi']:,} 口 (手動記錄 {twn['latest_date']}) {d}")
+        src = "TradingView 自動" if twn.get("source") == "live" else "cache"
+        print(f"  富台(SGX TWN)近月 OI: {twn['latest_oi']:,} 口 ({src} {twn['latest_date']}) {d}")
     else:
-        print(f"  富台(SGX TWN)總 OI: 尚無記錄 — 用 --log-twn-oi <口數> 記錄"
-              f" (SGX 付費資料無法自動抓)")
+        print(f"  富台(SGX TWN)近月 OI: 抓取失敗 — 用 --log-twn-oi <口數> 手動補")
     print("  近 8 日基差:")
     for r in m["series"][-8:]:
         print(f"    {r['date']}  TX {r['tx']:>8.0f}  現貨 {r['spot']:>8.0f}  "
