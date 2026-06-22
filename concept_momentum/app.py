@@ -3395,6 +3395,155 @@ def futures_basis():
     return _render_futures_basis_page(m=m, intraday=intraday)
 
 
+def _render_concept_backtest_page(data: dict | None = None, error: str = "") -> str:
+    nav = ('<nav><a href="/">← 大盤 dashboard</a>'
+           '<a href="/chip-price">📋 籌碼價量</a>'
+           '<a href="/shareholders">👥 前十大股東</a>'
+           '<a href="/adr-premium">🇺🇸 ADR 折溢價</a>'
+           '<a href="/futures-basis">📐 期貨基差</a>'
+           '<a href="/concept-backtest">🧪 族群策略回測</a></nav>')
+    css = """<style>
+  body { font-family: -apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
+         max-width:1100px; margin:1em auto; padding:0 1em; background:#f7f7f9; color:#222; }
+  h1 { font-size:1.4em; margin:.4em 0; } nav a { margin-right:12px; color:#0066cc; text-decoration:none; }
+  section { background:#fff; padding:12px 16px; border-radius:6px; margin-bottom:12px;
+            box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  section h3 { margin:0 0 8px 0; font-size:1.05em; color:#444; }
+  table.report-table { width:100%; border-collapse:collapse; font-size:.9em; }
+  table.report-table th,table.report-table td { padding:6px 10px; border-bottom:1px solid #eee; text-align:left; }
+  table.report-table th { background:#fafafa; font-weight:600; color:#555; }
+  table.report-table .num { text-align:right; font-variant-numeric:tabular-nums; }
+  .pos { color:#060; } .neg { color:#c30; }
+  .small,small { font-size:.85em; color:#666; }
+  .error { background:#fee; border:1px solid #f99; padding:12px; border-radius:4px; color:#c00; }
+  .cards { display:flex; gap:10px; flex-wrap:wrap; }
+  .card { flex:1; min-width:130px; background:#fafbff; border:1px solid #e6e9f5; border-radius:6px; padding:10px 12px; }
+  .card .v { font-size:1.4em; font-weight:700; } .card .k { font-size:.8em; color:#777; }
+</style>"""
+    head = (f'<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+            f'<title>族群資金流向策略回測</title>{css}</head><body>{nav}'
+            f'<h1>🧪 族群資金流向策略 — 回測</h1>')
+    tail = '</body></html>'
+    if error:
+        return head + f'<div class="error">{_esc(error)}</div>' + tail
+    if not data:
+        return head + ('<section><p>尚無回測結果。請先跑：<br>'
+                       '<code>tw_concept_backtest.py --json-out '
+                       'concept_momentum/cache/concept_backtest.json</code></p></section>') + tail
+
+    s = data["strategy"]; b = data.get("benchmark")
+    p = data["params"]
+    hs = [str(h) for h in p["horizons"]]
+    # 摘要卡 (以最長 horizon 為主)
+    hmax = hs[-1]
+    sh = s["horizons"][hmax]
+    def cls(v): return "pos" if v is not None and v > 0 else "neg"
+    cards = (
+        '<div class="cards">'
+        f'<div class="card"><div class="k">IC (H={hmax}d)</div>'
+        f'<div class="v {cls(sh["ic"])}">{sh["ic"]:+.2f}</div>'
+        f'<div class="small">>0 比例 {sh["ic_pos"]:.0f}%</div></div>'
+        f'<div class="card"><div class="k">多空價差</div>'
+        f'<div class="v {cls(sh["spread"])}">{sh["spread"]:+.1f}%</div></div>'
+        f'<div class="card"><div class="k">高分組命中率</div>'
+        f'<div class="v">{sh["hit"]:.0f}%</div></div>'
+        f'<div class="card"><div class="k">選股淨超額</div>'
+        f'<div class="v {cls(sh["l2"])}">{sh["l2"]:+.1f}%</div>'
+        f'<div class="small">勝率 {sh["l2_win"]:.0f}% · 扣{p["cost"]}%</div></div>'
+        '</div>')
+    meta = (f'<p class="small">回測區間 {s["start"]}~{s["end"]}・{s["n_rebalance"]} 個 '
+            f'rebalance 點（每 {p["rebalance"]} 日）・前 {p["topk"]} 名族群選股・'
+            f'生成 {_esc(data["generated"])}</p>')
+
+    # 指標比較表
+    def row(name, sv, bv, fmt="{:+.2f}", pct=""):
+        bcell = (f'<td class="num">{fmt.format(bv)}{pct}</td>' if bv is not None else '<td class="num">—</td>')
+        return (f'<tr><td>{name}</td><td class="num">{fmt.format(sv)}{pct}</td>{bcell}</tr>')
+    tbl_rows = ""
+    for h in hs:
+        sv = s["horizons"][h]; bv = b["horizons"][h] if b else None
+        tbl_rows += f'<tr><th colspan="3" style="background:#f0f3ff">持有 {h} 交易日</th></tr>'
+        tbl_rows += row("IC (Spearman)", sv["ic"], bv["ic"] if bv else None, "{:+.3f}")
+        tbl_rows += row("多空價差 (高−低)", sv["spread"], bv["spread"] if bv else None, "{:+.2f}", "%")
+        tbl_rows += row("高分前1/3 超額", sv["top_rs"], bv["top_rs"] if bv else None, "{:+.2f}", "%")
+        tbl_rows += row("低分後1/3 超額", sv["bot_rs"], bv["bot_rs"] if bv else None, "{:+.2f}", "%")
+        tbl_rows += row("高分組命中率", sv["hit"], bv["hit"] if bv else None, "{:.0f}", "%")
+        tbl_rows += row("選股淨超額", sv["l2"], bv["l2"] if bv else None, "{:+.2f}", "%")
+    table = (f'<section><h3>📊 策略 vs 純動能基準</h3>'
+             f'<table class="report-table"><thead><tr><th>指標</th>'
+             f'<th class="num">策略(複合分數)</th><th class="num">純 ret_20d</th></tr></thead>'
+             f'<tbody>{tbl_rows}</tbody></table></section>')
+
+    # 圖表資料
+    ic_s = json.dumps([s["horizons"][h]["ic"] for h in hs])
+    ic_b = json.dumps([b["horizons"][h]["ic"] for h in hs]) if b else "null"
+    sp_s = json.dumps([s["horizons"][h]["spread"] for h in hs])
+    sp_b = json.dumps([b["horizons"][h]["spread"] for h in hs]) if b else "null"
+    hlabels = json.dumps([f"{h}日" for h in hs])
+    eq = s["horizons"][hmax]["equity"]
+    eq_b = b["horizons"][hmax]["equity"] if b else []
+    eq_labels = json.dumps([e["date"] for e in eq])
+    eq_datasets = [{"label": "策略", "data": [e["cum"] for e in eq],
+                    "borderColor": "#3366cc", "borderWidth": 2,
+                    "pointRadius": 0, "tension": 0.1}]
+    if eq_b:
+        eq_datasets.append({"label": "純動能", "data": [e["cum"] for e in eq_b],
+                            "borderColor": "#cc8800", "borderWidth": 1.5,
+                            "pointRadius": 0, "borderDash": [5, 4], "tension": 0.1})
+    eq_datasets_json = json.dumps(eq_datasets, ensure_ascii=False)
+
+    charts = f"""
+<section><h3>📈 IC by 持有天數（越高越準，>0.1 算不錯）</h3>
+  <canvas id="ic" height="90"></canvas></section>
+<section><h3>📊 多空價差 by 持有天數（高分組−低分組 超額%）</h3>
+  <canvas id="sp" height="90"></canvas></section>
+<section><h3>💰 選股權益曲線（H={hmax}d 累積淨超額%，非複利）</h3>
+  <canvas id="eq" height="110"></canvas>
+  <p class="small">每個 rebalance 點買前 {p["topk"]} 名族群 Top5 領漲股、持有 {hmax} 日、
+    扣 {p["cost"]}% 成本後贏大盤的累計。對照線為純 ret_20d 動能。</p></section>"""
+
+    caveat = ('<section><h3>⚠ 解讀與限制</h3><p class="small">'
+              '1. <b>edge 主要來自動能</b>：純 ret_20d 基準在多數指標打平或略贏，'
+              '代表複合分數的廣度/量能/續航疊加未提升報酬。<br>'
+              '2. 樣本 ~16 個月、63 期，且此段多頭/動能行情友善，換盤整盤未必續強。<br>'
+              '3. 族群成員用當前 concepts.json 套過去 = 輕微 look-ahead。<br>'
+              '4. 成本固定 0.4%，小型 leaders 實際滑價可能更差。<br>'
+              '5. 僅比報酬未比風險；廣度/量能濾網的價值可能在降回撤（未測）。</p></section>')
+
+    js = f"""<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+const L={hlabels};
+function bar(id,sd,bd,title){{
+  const ds=[{{label:'策略',data:sd,backgroundColor:'#3366cc'}}];
+  if(bd) ds.push({{label:'純動能',data:bd,backgroundColor:'#cc8800'}});
+  new Chart(document.getElementById(id),{{type:'bar',
+    data:{{labels:L,datasets:ds}},
+    options:{{responsive:true,plugins:{{legend:{{position:'top'}}}}}}}});
+}}
+bar('ic',{ic_s},{ic_b});
+bar('sp',{sp_s},{sp_b});
+new Chart(document.getElementById('eq'),{{type:'line',
+  data:{{labels:{eq_labels},datasets:{eq_datasets_json}}},
+  options:{{responsive:true,plugins:{{legend:{{position:'top'}}}},
+    scales:{{y:{{title:{{display:true,text:'累積淨超額 %'}}}}}}}}}});
+</script>"""
+    return (head + cards + meta + table + charts + caveat + js + tail)
+
+
+@app.route("/concept-backtest")
+def concept_backtest():
+    path = os.path.join(HERE, "cache", "concept_backtest.json")
+    if not os.path.exists(path):
+        return _render_concept_backtest_page()
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        return _render_concept_backtest_page(error=f"{type(e).__name__}: {e}")
+    return _render_concept_backtest_page(data=data)
+
+
 @app.route("/adr-premium")
 def adr_premium():
     import tw_adr_premium

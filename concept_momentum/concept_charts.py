@@ -599,6 +599,7 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
     </form>
     <a href="/adr-premium" style="padding:6px 12px;background:#0a7;color:white;border-radius:4px;text-decoration:none;font-size:13px;">🇺🇸 ADR 折溢價</a>
     <a href="/futures-basis" style="padding:6px 12px;background:#a50;color:white;border-radius:4px;text-decoration:none;font-size:13px;">📐 期貨基差</a>
+    <a href="/concept-backtest" style="padding:6px 12px;background:#73c;color:white;border-radius:4px;text-decoration:none;font-size:13px;">🧪 族群策略回測</a>
   </div>
 </div>
 
@@ -631,6 +632,7 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
       <a class="tab" href="/shareholders" style="text-decoration:none;color:inherit;">👥 前十大股東</a>
       <a class="tab" href="/adr-premium" style="text-decoration:none;color:inherit;">🇺🇸 ADR 折溢價</a>
       <a class="tab" href="/futures-basis" style="text-decoration:none;color:inherit;">📐 期貨基差</a>
+      <a class="tab" href="/concept-backtest" style="text-decoration:none;color:inherit;">🧪 族群策略回測</a>
     </div>
   </div>
 </div>

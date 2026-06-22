@@ -213,7 +213,7 @@ def run_backtest(start, rebalance, horizons, topk, cost, which, label):
           f"{len(idxs)} 個 rebalance 點)\n{'='*60}")
 
     results = {h: {"ic": [], "top_rs": [], "bot_rs": [], "hit": [],
-                   "l2_ret": []} for h in horizons}
+                   "l2_ret": [], "l2_dates": []} for h in horizons}
 
     for t_i in idxs:
         t = dates[t_i]
@@ -263,8 +263,12 @@ def run_backtest(start, rebalance, horizons, topk, cost, which, label):
                         leg.append(r)
             if leg:
                 results[h]["l2_ret"].append(statistics.mean(leg) - tw - cost)
+                results[h]["l2_dates"].append(t)
 
-    # 輸出
+    # 摘要 + 輸出
+    summary = {"label": label, "start": dates[idxs[0]], "end": dates[idxs[-1]],
+               "n_rebalance": len(idxs), "topk": topk, "cost": cost,
+               "rebalance": rebalance, "horizons": {}}
     for h in horizons:
         R = results[h]
         if not R["ic"]:
@@ -275,9 +279,21 @@ def run_backtest(start, rebalance, horizons, topk, cost, which, label):
         top = statistics.mean(R["top_rs"])
         bot = statistics.mean(R["bot_rs"])
         hit = statistics.mean(R["hit"]) * 100
-        l2 = statistics.mean(R["l2_ret"]) if R["l2_ret"] else float("nan")
+        l2 = statistics.mean(R["l2_ret"]) if R["l2_ret"] else None
         l2_win = (sum(1 for x in R["l2_ret"] if x > 0) / len(R["l2_ret"]) * 100
-                  if R["l2_ret"] else float("nan"))
+                  if R["l2_ret"] else None)
+        # 權益曲線 (非複利累加 L2 每期淨超額)
+        eq, cum = [], 0.0
+        for dt, r in zip(R["l2_dates"], R["l2_ret"]):
+            cum += r
+            eq.append({"date": dt, "cum": round(cum, 2)})
+        summary["horizons"][h] = {
+            "n": len(R["ic"]), "ic": round(ic, 3), "ic_pos": round(ic_pos, 0),
+            "top_rs": round(top, 2), "bot_rs": round(bot, 2),
+            "spread": round(top - bot, 2), "hit": round(hit, 0),
+            "l2": round(l2, 2) if l2 is not None else None,
+            "l2_win": round(l2_win, 0) if l2_win is not None else None,
+            "equity": eq}
         print(f"\n【持有 {h} 交易日】 樣本 {len(R['ic'])} 期")
         print(f"  IC (Spearman)     : {ic:+.3f}   (>0 比例 {ic_pos:.0f}%)")
         print(f"  高分前1/3 超額報酬 : {top:+.2f}%")
@@ -285,7 +301,7 @@ def run_backtest(start, rebalance, horizons, topk, cost, which, label):
         print(f"  多空價差 (高−低)   : {top-bot:+.2f}%")
         print(f"  高分組贏大盤命中率 : {hit:.0f}%")
         print(f"  Layer2 選股淨超額  : {l2:+.2f}% (扣{cost}%成本, 勝率{l2_win:.0f}%)")
-    return results
+    return summary
 
 
 if __name__ == "__main__":
@@ -297,10 +313,20 @@ if __name__ == "__main__":
     ap.add_argument("--cost", type=float, default=0.4)
     ap.add_argument("--benchmark", action="store_true",
                     help="也跑純 ret_20d 對照基準")
+    ap.add_argument("--json-out", help="寫回測結果 JSON (給網頁圖表用)")
     args = ap.parse_args()
 
-    run_backtest(args.start, args.rebalance, args.horizon, args.topk, args.cost,
-                 "strategy", "sustainability_score (策略真訊號)")
-    if args.benchmark:
-        run_backtest(args.start, args.rebalance, args.horizon, args.topk, args.cost,
-                     "benchmark", "純 ret_20d 動能 (對照基準)")
+    strat = run_backtest(args.start, args.rebalance, args.horizon, args.topk,
+                         args.cost, "strategy", "sustainability_score (策略真訊號)")
+    bench = None
+    if args.benchmark or args.json_out:
+        bench = run_backtest(args.start, args.rebalance, args.horizon, args.topk,
+                             args.cost, "benchmark", "純 ret_20d 動能 (對照基準)")
+    if args.json_out:
+        with open(args.json_out, "w", encoding="utf-8") as f:
+            json.dump({"generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                       "params": {"start": args.start, "rebalance": args.rebalance,
+                                  "horizons": args.horizon, "topk": args.topk,
+                                  "cost": args.cost},
+                       "strategy": strat, "benchmark": bench}, f, ensure_ascii=False)
+        print(f"\n[json] 寫入 {args.json_out}", file=sys.stderr)
