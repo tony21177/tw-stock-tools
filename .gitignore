@@ -41,3 +41,4 @@ limitup_cache/
 dormant_cache/
 second_wave_cache/
 pdf_cache/*.pdf
+concept_momentum/cache/backtest_prices.json
