@@ -31,6 +31,10 @@ C="$ROOT/concept_momentum/cache"
 
 log() { echo "[catchup $(date '+%Y-%m-%d %H:%M')] $*" >> "$LOG"; }
 
+# 國定假日 (端午/清明/春節…) 不補跑 — 交易日守門 (週末已在上面擋掉)
+FINMIND_TOKEN="$FM" "$PY" "$ROOT/is_trading_day.py" "$TODAY" || {
+  log "非交易日 $TODAY，跳過 catchup"; exit 0; }
+
 # run_if_missing <輸出檔> <排程時 (過了才補)> <log 檔> -- <指令...>
 run_if_missing() {
   local out="$1" after="$2" jlog="$3"; shift 3; shift  # drop the "--"
