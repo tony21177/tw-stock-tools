@@ -187,24 +187,26 @@ def build_ignition_summary(results: list[dict], target_date: str,
 
 
 def build_summary(results: list[dict], target_date: str) -> str:
-    """Build main summary: high-momentum concepts with leaders 🟢 + laggards 🔴.
+    """Build main summary: 動能+門檻過濾 (C 策略) 選股 — 🟢 多 leaders / 🔴 空 laggards.
 
-    族群內配對交易視角：做多 leader / 放空 laggard。"""
+    選股規則：族群須通過 廣度≥50% 且 量比≥1.0 門檻，通過者按 ret_20d 排序，
+    推 ret_20d>0 的前 8 名。族群內配對交易視角：做多 leader / 放空 laggard。"""
     if not results:
         return f"概念動能監控 {target_date}\n\n無資料"
 
     lines = [f"概念動能監控 {target_date}"]
-    lines.append("高動能族群（評分 ≥70）— 🟢 多 leaders / 🔴 空 laggards")
+    lines.append("資金流入族群（過門檻+動能）— 🟢 多 leaders / 🔴 空 laggards")
+    lines.append("選股：廣度≥50%+量比≥1.0 → 按 20d 報酬排序")
     lines.append("━━━━━━━━━━━━")
-    high = [r for r in results if r["sustainability_score"] >= 70]
+    high = [r for r in results if r.get("passes_gate") and r["ret_20d"] > 0][:8]
     if not high:
-        lines.append("（今日無高動能族群）")
+        lines.append("（今日無通過門檻的資金流入族群）")
     else:
         for i, r in enumerate(high, 1):
-            lines.append(f"\n{i}. {r['name_zh']}  評分 {r['sustainability_score']:.0f}")
+            lines.append(f"\n{i}. {r['name_zh']}  20d {r['ret_20d']:+.1f}%")
             lines.append(
-                f"   20d: {r['ret_20d']:+.1f}%  廣度 {r['breadth_20d']:.0f}%  "
-                f"量比 {r['volume_ratio']:.1f}x  RS {r['rs_20d']:+.1f}%  持續 {r['duration']}天"
+                f"   廣度 {r['breadth_20d']:.0f}%  量比 {r['volume_ratio']:.1f}x  "
+                f"RS {r['rs_20d']:+.1f}%  持續 {r['duration']}天  (評分{r['sustainability_score']:.0f})"
             )
             leaders = r.get("leaders", [])
             laggards = r.get("laggards", [])
@@ -228,16 +230,17 @@ def build_summary(results: list[dict], target_date: str) -> str:
 def build_weak_summary(results: list[dict], target_date: str) -> str:
     """Secondary message: weak concepts."""
     lines = [f"弱勢族群監控 {target_date}"]
-    low = [r for r in results if r["sustainability_score"] < 30]
-    lines.append("評分 <30（資金流出，不建議進場）")
+    low = sorted([r for r in results if r["ret_20d"] < 0],
+                 key=lambda x: x["ret_20d"])[:8]
+    lines.append("20d 報酬 <0（資金流出，不建議進場）")
     lines.append("━━━━━━━━━━━━")
     if not low:
         lines.append("（無）")
     else:
         for r in low:
             lines.append(
-                f"• {r['name_zh']}  評分 {r['sustainability_score']:.0f}  "
-                f"20d: {r['ret_20d']:+.1f}%  RS {r['rs_20d']:+.1f}%  廣度 {r['breadth_20d']:.0f}%"
+                f"• {r['name_zh']}  20d {r['ret_20d']:+.1f}%  "
+                f"RS {r['rs_20d']:+.1f}%  廣度 {r['breadth_20d']:.0f}%  (評分{r['sustainability_score']:.0f})"
             )
     return "\n".join(lines)
 

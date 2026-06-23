@@ -186,6 +186,11 @@ def normalize(value: float, min_v: float, max_v: float) -> float:
 
 LEADER_MIN_RET_5D = -5.0  # %; threshold splitting leaders from laggards
 
+# 正式選股策略 = 「動能 + 廣度/量能門檻過濾」(回測 C 變體；原 sustainability_score
+# 加權法已淘汰，僅保留為參考欄)。族群須通過門檻才入選，通過者按 ret_20d 排序。
+FILTER_MIN_BREADTH = 50.0   # 廣度(5d+20d 平均) 下限 %
+FILTER_MIN_VOL = 1.0        # 量能比 下限
+
 
 def _score_concept_members(concept_stocks: list[dict]) -> list[dict]:
     """Compute per-stock metrics (5d/20d return, vol ratio) for ranking."""
@@ -307,6 +312,9 @@ def analyze_concept(theme_key: str, theme_info: dict, stocks_data: dict, taiex_r
         "ret_20d": ret_20d,
         "breadth_5d": breadth_5d,
         "breadth_20d": breadth_20d,
+        "breadth_avg": breadth_avg,
+        "passes_gate": (breadth_avg >= FILTER_MIN_BREADTH
+                        and vol_ratio >= FILTER_MIN_VOL),
         "duration": duration,
         "volume_ratio": vol_ratio,
         "rs_5d": rs_5d,
@@ -405,13 +413,15 @@ def add_score_history(concepts: dict, results: list[dict], stocks_data: dict, ta
 
 
 def analyze_all(concepts: dict, stocks_data: dict, taiex_rows: list[dict]) -> list[dict]:
-    """Analyze all themes. Returns sorted list by sustainability score."""
+    """Analyze all themes. 正式排序 = C 變體：先通過門檻(廣度/量能)者、
+    再按 ret_20d 由高到低；未通過門檻者排後面。sustainability_score 仍保留
+    為參考欄但不再決定排序。"""
     results = []
     for key, theme in concepts.get("themes", {}).items():
         result = analyze_concept(key, theme, stocks_data, taiex_rows)
         if result:
             results.append(result)
-    results.sort(key=lambda x: x["sustainability_score"], reverse=True)
+    results.sort(key=lambda x: (x["passes_gate"], x["ret_20d"]), reverse=True)
     return results
 
 
