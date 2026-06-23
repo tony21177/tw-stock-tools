@@ -3457,12 +3457,17 @@ def _render_concept_backtest_page(data: dict | None = None, error: str = "") -> 
             f'生成 {_esc(data["generated"])}</p>')
 
     f = data.get("filter")
-    # 三變體：(key, 標籤, 顏色)
-    variants = [("strategy", "複合分數(加權)", "#3366cc", s)]
+    # 變體：原複合分數(A)已淘汰不顯示，只留 純動能(B) + 門檻過濾(C，正式推送用)
+    variants = []
+    if f:
+        variants.append(("filter", "動能+門檻過濾 ⭐推送", "#2a9d4a", f))
     if b:
         variants.append(("benchmark", "純動能 ret_20d", "#cc8800", b))
-    if f:
-        variants.append(("filter", "動能+門檻過濾", "#2a9d4a", f))
+    if not variants:                               # 舊 JSON 無 B/C 時退回 A
+        variants = [("strategy", "複合分數(加權)", "#3366cc", s)]
+    # 摘要卡以正式推送變體(C)為主
+    primary = variants[0][3]
+    sh = primary["horizons"][hmax]
 
     # 風險調整後裁決 (用最長 horizon，數據驅動：報酬最高 + 風險調整最高各挑一)
     verdict = ""
