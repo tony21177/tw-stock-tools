@@ -3432,14 +3432,25 @@ def _render_concept_backtest_page(data: dict | None = None, error: str = "") -> 
                        '<code>tw_concept_backtest.py --json-out '
                        'concept_momentum/cache/concept_backtest.json</code></p></section>') + tail
 
-    s = data["strategy"]; b = data.get("benchmark")
+    s = data["strategy"]; b = data.get("benchmark"); f = data.get("filter")
     p = data["params"]
     hs = [str(h) for h in p["horizons"]]
-    # 摘要卡 (以最長 horizon 為主)
     hmax = hs[-1]
-    sh = s["horizons"][hmax]
+    # 變體：原複合分數(A)已淘汰不顯示，只留 動能+門檻過濾(C，正式推送) + 純動能(B)
+    variants = []
+    if f:
+        variants.append(("filter", "動能+門檻過濾 ⭐推送", "#2a9d4a", f))
+    if b:
+        variants.append(("benchmark", "純動能 ret_20d", "#cc8800", b))
+    if not variants:                               # 舊 JSON 無 B/C 時退回 A
+        variants = [("strategy", "複合分數(加權)", "#3366cc", s)]
+    # 摘要卡以正式推送變體(C)為主
+    primary = variants[0][3]
+    primary_label = variants[0][1]
+    sh = primary["horizons"][hmax]
     def cls(v): return "pos" if v is not None and v > 0 else "neg"
     cards = (
+        f'<p class="small" style="margin:.2em 0">摘要卡＝<b>{primary_label}</b>（H={hmax}d）</p>'
         '<div class="cards">'
         f'<div class="card"><div class="k">IC (H={hmax}d)</div>'
         f'<div class="v {cls(sh["ic"])}">{sh["ic"]:+.2f}</div>'
@@ -3455,19 +3466,6 @@ def _render_concept_backtest_page(data: dict | None = None, error: str = "") -> 
     meta = (f'<p class="small">回測區間 {s["start"]}~{s["end"]}・{s["n_rebalance"]} 個 '
             f'rebalance 點（每 {p["rebalance"]} 日）・前 {p["topk"]} 名族群選股・'
             f'生成 {_esc(data["generated"])}</p>')
-
-    f = data.get("filter")
-    # 變體：原複合分數(A)已淘汰不顯示，只留 純動能(B) + 門檻過濾(C，正式推送用)
-    variants = []
-    if f:
-        variants.append(("filter", "動能+門檻過濾 ⭐推送", "#2a9d4a", f))
-    if b:
-        variants.append(("benchmark", "純動能 ret_20d", "#cc8800", b))
-    if not variants:                               # 舊 JSON 無 B/C 時退回 A
-        variants = [("strategy", "複合分數(加權)", "#3366cc", s)]
-    # 摘要卡以正式推送變體(C)為主
-    primary = variants[0][3]
-    sh = primary["horizons"][hmax]
 
     # 風險調整後裁決 (用最長 horizon，數據驅動：報酬最高 + 風險調整最高各挑一)
     verdict = ""
@@ -3555,6 +3553,49 @@ def _render_concept_backtest_page(data: dict | None = None, error: str = "") -> 
   <p class="small">每個 rebalance 點買前 {p["topk"]} 名族群 Top5 領漲股、持有 {hmax} 日、
     扣 {p["cost"]}% 成本後贏大盤的累計。三條線 = 三種選股訊號。</p></section>"""
 
+    fb = p.get("filter_breadth", 50); fv = p.get("filter_vol", 1.0)
+    reb = p.get("rebalance", 5); tk = p.get("topk", 3); cst = p.get("cost", 0.4)
+    hlist = "、".join(f"{h}日" for h in hs)
+    method = (
+      '<section><h3>🔬 詳細回測方法</h3>'
+      '<div class="small" style="line-height:1.7">'
+      '<b>① 資料與重建手法</b><br>'
+      f'用 FinMind 歷史日線（自 {_esc(s["start"][:4])} 起）抓 34 族群全部成員股 + 加權指數。'
+      '每個交易日 t 的訊號都<b>只用 ≤ t 的資料</b> point-in-time 重建（直接呼叫正式程式的 '
+      '<code>compute_score_for_date</code> / 同口徑廣度量能函式），所以測的是「當下真的看得到的訊號」，'
+      '不是事後諸葛；也因此不受存檔天數限制，可回溯到價格資料起點。<br><br>'
+
+      '<b>② 三個比較變體</b><br>'
+      f'• <b>純動能</b>：族群成員等權近 20 日報酬(ret_20d) 直接排名。<br>'
+      f'• <b>動能+門檻過濾</b>（正式採用）：族群須先通過 <b>廣度≥{fb:.0f}%</b>（成員過 5/20 日均線比例平均）'
+      f'<b>且 量比≥{fv}</b>（近 5 日量 ÷ 近 20 日量），通過者再按 ret_20d 排名；沒過門檻剔除。'
+      '＝把廣度/量能當「排除項」而非加分項。<br>'
+      '（原複合分數加權法經回測較差，已淘汰、本頁不再顯示。）<br><br>'
+
+      '<b>③ 回測流程</b><br>'
+      f'從第 20 個交易日起（暖身夠算 20 日報酬），<b>每 {reb} 個交易日</b>取一個進場點 t：<br>'
+      '　1. 重算所有族群分數、排名<br>'
+      f'　2. 看接下來 <b>{hlist}</b>（持有天數 H）各族群的報酬<br>'
+      '　3. 族群報酬減去同期加權指數報酬 = <b>超額報酬</b>（衡量贏不贏大盤）<br>'
+      f'　4. 選股(Layer2)：買<b>前 {tk} 名</b>族群的 Top5 領漲股、等權、持有 H 日、'
+      f'扣 <b>{cst}% 來回成本</b><br><br>'
+
+      '<b>④ 指標定義</b><br>'
+      '• <b>IC（資訊係數）</b>：當期「分數排名」與「之後超額報酬排名」的 Spearman 等級相關，'
+      '−1~+1，>0.1 算不錯；旁邊 % 是 63 期裡 IC 為正的比例（穩定度）。<br>'
+      '• <b>多空價差</b>：高分前1/3族群平均超額 − 低分後1/3族群平均超額，越大代表分數越能分辨強弱。<br>'
+      '• <b>命中率</b>：高分組之後贏大盤的期數比例。<br>'
+      '• <b>選股單期淨超額</b>：Layer2 每次進場、扣成本後贏大盤的平均 %。<br>'
+      '• <b>累積淨超額</b>：把每期淨超額累加（非複利）。<br>'
+      '• <b>最大回撤 MaxDD</b>：累積曲線從歷史高點回落的最大跌幅。<br>'
+      '• <b>報酬/波動</b>：單期淨超額 ÷ 單期報酬標準差（類 Sharpe，越高越穩）。<br>'
+      '• <b>Calmar</b>：總報酬 ÷ 最大回撤（每承受 1 單位回撤換到多少報酬）。<br><br>'
+
+      '<b>⑤ 成本與假設</b><br>'
+      f'來回成本固定 {cst}%（手續費+稅+滑價粗估）。族群指數/報酬為成員等權。'
+      '選股 leaders 取 ret_5d>−5%、按 ret_20d 排序的前 5 名。'
+      '</div></section>')
+
     caveat = ('<section><h3>⚠ 解讀與限制</h3><p class="small">'
               '1. 廣度/量能<b>當加權評分</b>會稀釋動能；<b>當門檻過濾</b>才有提升'
               '（報酬+報酬/波動），但會放大回撤。<br>'
@@ -3579,7 +3620,7 @@ new Chart(document.getElementById('eq'),{{type:'line',
   options:{{responsive:true,plugins:{{legend:{{position:'top'}}}},
     scales:{{y:{{title:{{display:true,text:'累積淨超額 %'}}}}}}}}}});
 </script>"""
-    return (head + cards + meta + verdict + table + charts + caveat + js + tail)
+    return (head + cards + meta + verdict + table + charts + method + caveat + js + tail)
 
 
 @app.route("/concept-backtest")
