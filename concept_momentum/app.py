@@ -3456,67 +3456,89 @@ def _render_concept_backtest_page(data: dict | None = None, error: str = "") -> 
             f'rebalance 點（每 {p["rebalance"]} 日）・前 {p["topk"]} 名族群選股・'
             f'生成 {_esc(data["generated"])}</p>')
 
-    # 風險調整後裁決 (用最長 horizon，數據驅動)
-    verdict = ""
+    f = data.get("filter")
+    # 三變體：(key, 標籤, 顏色)
+    variants = [("strategy", "複合分數(加權)", "#3366cc", s)]
     if b:
-        bh = b["horizons"][hmax]
-        s_cal, b_cal = sh.get("calmar"), bh.get("calmar")
-        s_rr, b_rr = sh.get("ret_risk"), bh.get("ret_risk")
-        s_dd, b_dd = sh.get("max_dd"), bh.get("max_dd")
-        better_dd = s_dd is not None and b_dd is not None and s_dd < b_dd
-        better_risk = (s_cal is not None and b_cal is not None and s_cal > b_cal)
-        if better_risk:
-            txt = ("複合分數風險調整後（Calmar）優於純動能 → 廣度/量能濾網有降風險價值，值得保留。")
-            bg = "#eaf6ea"; bd = "#9c9"
-        else:
-            txt = (f"純動能在報酬與風險調整後（Calmar {b_cal} vs 策略 {s_cal}、"
-                   f"報酬/波動 {b_rr} vs {s_rr}）都勝出。複合分數雖然最大回撤略小"
-                   f"（-{s_dd}% vs -{b_dd}%），但代價是更低報酬，單位風險的報酬反而較差。"
-                   f"→ 廣度/量能/續航濾網沒有為自己賺到存在價值，純 ret_20d 排序更優。")
-            bg = "#fdf2e0"; bd = "#e0a040"
-        verdict = (f'<section style="background:{bg};border:1px solid {bd}"><h3>⚖️ 風險調整後裁決 '
-                   f'(H={hmax}d)</h3><p>{txt}</p></section>')
+        variants.append(("benchmark", "純動能 ret_20d", "#cc8800", b))
+    if f:
+        variants.append(("filter", "動能+門檻過濾", "#2a9d4a", f))
 
-    # 指標比較表
-    def row(name, sv, bv, fmt="{:+.2f}", pct=""):
-        bcell = (f'<td class="num">{fmt.format(bv)}{pct}</td>' if bv is not None else '<td class="num">—</td>')
-        return (f'<tr><td>{name}</td><td class="num">{fmt.format(sv)}{pct}</td>{bcell}</tr>')
+    # 風險調整後裁決 (用最長 horizon，數據驅動：報酬最高 + 風險調整最高各挑一)
+    verdict = ""
+    if b and f:
+        rows3 = [(lbl, v["horizons"].get(hmax, {})) for _, lbl, _, v in variants]
+        best_ret = max(rows3, key=lambda r: r[1].get("l2", -999))
+        best_rr = max(rows3, key=lambda r: r[1].get("ret_risk", -999))
+        best_cal = max(rows3, key=lambda r: r[1].get("calmar", -999))
+        fb = p.get("filter_breadth", 50); fv = p.get("filter_vol", 1.0)
+        txt = (f"原本把廣度/量能當<b>加權評分</b>會稀釋動能；改成<b>門檻過濾</b>"
+               f"（只選 廣度≥{fb:.0f}%、量能≥{fv} 的族群，再按 ret_20d 排）後，"
+               f"H={hmax}d 的單期淨超額 {f['horizons'][hmax]['l2']:+.2f}% 與報酬/波動 "
+               f"{f['horizons'][hmax]['ret_risk']} 是三者最高 → "
+               f"<b>廣度/量能當『排除項』有價值，當『加分項』沒有</b>。<br>"
+               f"但門檻過濾的最大回撤 -{f['horizons'][hmax]['max_dd']}% 也最深"
+               f"（通過門檻的多是同向強勢股、一起崩），Calmar {f['horizons'][hmax]['calmar']} "
+               f"未必最佳。<br>📌 報酬最高：<b>{best_ret[0]}</b>／報酬-波動最高："
+               f"<b>{best_rr[0]}</b>／Calmar 最高：<b>{best_cal[0]}</b>。")
+        verdict = (f'<section style="background:#eef4fb;border:1px solid #9bf"><h3>⚖️ '
+                   f'三變體裁決 (H={hmax}d)</h3><p>{txt}</p></section>')
+
+    # 指標比較表 (3 欄)
+    def fmtv(v, fmt, pct):
+        return f'{fmt.format(v)}{pct}' if v is not None else '—'
+    def row(name, key, fmt="{:+.2f}", pct="", neg=False):
+        cells = ""
+        for _, _, _, v in variants:
+            hv = v["horizons"].get(hrow, {})
+            val = hv.get(key)
+            if neg and val is not None:
+                val = -val
+            cells += f'<td class="num">{fmtv(val, fmt, pct)}</td>'
+        return f'<tr><td>{name}</td>{cells}</tr>'
     tbl_rows = ""
+    ncol = len(variants) + 1
     for h in hs:
-        sv = s["horizons"][h]; bv = b["horizons"][h] if b else None
-        tbl_rows += f'<tr><th colspan="3" style="background:#f0f3ff">持有 {h} 交易日</th></tr>'
-        tbl_rows += row("IC (Spearman)", sv["ic"], bv["ic"] if bv else None, "{:+.3f}")
-        tbl_rows += row("多空價差 (高−低)", sv["spread"], bv["spread"] if bv else None, "{:+.2f}", "%")
-        tbl_rows += row("高分前1/3 超額", sv["top_rs"], bv["top_rs"] if bv else None, "{:+.2f}", "%")
-        tbl_rows += row("低分後1/3 超額", sv["bot_rs"], bv["bot_rs"] if bv else None, "{:+.2f}", "%")
-        tbl_rows += row("高分組命中率", sv["hit"], bv["hit"] if bv else None, "{:.0f}", "%")
-        tbl_rows += row("選股單期淨超額", sv["l2"], bv["l2"] if bv else None, "{:+.2f}", "%")
-        tbl_rows += row("累積淨超額(總)", sv.get("total"), bv.get("total") if bv else None, "{:+.1f}", "%")
-        tbl_rows += row("最大回撤 MaxDD", -sv.get("max_dd", 0), -bv.get("max_dd", 0) if bv else None, "{:.1f}", "%")
-        tbl_rows += row("報酬/波動", sv.get("ret_risk"), bv.get("ret_risk") if bv else None, "{:.2f}")
-        tbl_rows += row("Calmar(總/MaxDD)", sv.get("calmar"), bv.get("calmar") if bv else None, "{:.2f}")
-    table = (f'<section><h3>📊 策略 vs 純動能基準</h3>'
-             f'<table class="report-table"><thead><tr><th>指標</th>'
-             f'<th class="num">策略(複合分數)</th><th class="num">純 ret_20d</th></tr></thead>'
-             f'<tbody>{tbl_rows}</tbody></table></section>')
+        hrow = h
+        tbl_rows += f'<tr><th colspan="{ncol}" style="background:#f0f3ff">持有 {h} 交易日</th></tr>'
+        tbl_rows += row("IC (Spearman)", "ic", "{:+.3f}")
+        tbl_rows += row("多空價差 (高−低)", "spread", "{:+.2f}", "%")
+        tbl_rows += row("高分組命中率", "hit", "{:.0f}", "%")
+        tbl_rows += row("選股單期淨超額", "l2", "{:+.2f}", "%")
+        tbl_rows += row("累積淨超額(總)", "total", "{:+.1f}", "%")
+        tbl_rows += row("最大回撤 MaxDD", "max_dd", "{:.1f}", "%", neg=True)
+        tbl_rows += row("報酬/波動", "ret_risk", "{:.2f}")
+        tbl_rows += row("Calmar(總/MaxDD)", "calmar", "{:.2f}")
+    th = "".join(f'<th class="num">{lbl}</th>' for _, lbl, _, _ in variants)
+    table = (f'<section><h3>📊 三變體比較</h3>'
+             f'<table class="report-table"><thead><tr><th>指標</th>{th}</tr></thead>'
+             f'<tbody>{tbl_rows}</tbody></table>'
+             f'<p class="small">門檻過濾變體因部分期間通過門檻的族群 &lt;6 個而略過，'
+             f'樣本期數可能少於另兩者。</p></section>')
 
-    # 圖表資料
-    ic_s = json.dumps([s["horizons"][h]["ic"] for h in hs])
-    ic_b = json.dumps([b["horizons"][h]["ic"] for h in hs]) if b else "null"
-    sp_s = json.dumps([s["horizons"][h]["spread"] for h in hs])
-    sp_b = json.dumps([b["horizons"][h]["spread"] for h in hs]) if b else "null"
+    # 圖表
     hlabels = json.dumps([f"{h}日" for h in hs])
-    eq = s["horizons"][hmax]["equity"]
-    eq_b = b["horizons"][hmax]["equity"] if b else []
-    eq_labels = json.dumps([e["date"] for e in eq])
-    eq_datasets = [{"label": "策略", "data": [e["cum"] for e in eq],
-                    "borderColor": "#3366cc", "borderWidth": 2,
-                    "pointRadius": 0, "tension": 0.1}]
-    if eq_b:
-        eq_datasets.append({"label": "純動能", "data": [e["cum"] for e in eq_b],
-                            "borderColor": "#cc8800", "borderWidth": 1.5,
-                            "pointRadius": 0, "borderDash": [5, 4], "tension": 0.1})
-    eq_datasets_json = json.dumps(eq_datasets, ensure_ascii=False)
+    def series(key):
+        return [{"label": lbl, "color": col,
+                 "data": [v["horizons"][h][key] for h in hs]}
+                for _, lbl, col, v in variants]
+    ic_ds = json.dumps([{"label": d["label"], "data": d["data"],
+                         "backgroundColor": d["color"]} for d in series("ic")], ensure_ascii=False)
+    sp_ds = json.dumps([{"label": d["label"], "data": d["data"],
+                         "backgroundColor": d["color"]} for d in series("spread")], ensure_ascii=False)
+    # 權益曲線 — 統一日期軸 (各變體 date 集合可能不同，缺的補 null)
+    all_dates = sorted({e["date"] for _, _, _, v in variants
+                        for e in v["horizons"][hmax]["equity"]})
+    eq_labels = json.dumps(all_dates)
+    eq_ds = []
+    dash = {"strategy": [], "benchmark": [5, 4], "filter": [2, 3]}
+    for key, lbl, col, v in variants:
+        cum_by = {e["date"]: e["cum"] for e in v["horizons"][hmax]["equity"]}
+        eq_ds.append({"label": lbl, "borderColor": col, "borderWidth": 2,
+                      "pointRadius": 0, "tension": 0.1, "spanGaps": True,
+                      "borderDash": dash.get(key, []),
+                      "data": [cum_by.get(d) for d in all_dates]})
+    eq_ds_json = json.dumps(eq_ds, ensure_ascii=False)
 
     charts = f"""
 <section><h3>📈 IC by 持有天數（越高越準，>0.1 算不錯）</h3>
@@ -3524,32 +3546,31 @@ def _render_concept_backtest_page(data: dict | None = None, error: str = "") -> 
 <section><h3>📊 多空價差 by 持有天數（高分組−低分組 超額%）</h3>
   <canvas id="sp" height="90"></canvas></section>
 <section><h3>💰 選股權益曲線（H={hmax}d 累積淨超額%，非複利）</h3>
-  <canvas id="eq" height="110"></canvas>
+  <canvas id="eq" height="120"></canvas>
   <p class="small">每個 rebalance 點買前 {p["topk"]} 名族群 Top5 領漲股、持有 {hmax} 日、
-    扣 {p["cost"]}% 成本後贏大盤的累計。對照線為純 ret_20d 動能。</p></section>"""
+    扣 {p["cost"]}% 成本後贏大盤的累計。三條線 = 三種選股訊號。</p></section>"""
 
     caveat = ('<section><h3>⚠ 解讀與限制</h3><p class="small">'
-              '1. <b>edge 主要來自動能</b>：純 ret_20d 基準在多數指標打平或略贏，'
-              '代表複合分數的廣度/量能/續航疊加未提升報酬。<br>'
+              '1. 廣度/量能<b>當加權評分</b>會稀釋動能；<b>當門檻過濾</b>才有提升'
+              '（報酬+報酬/波動），但會放大回撤。<br>'
               '2. 樣本 ~16 個月、63 期，且此段多頭/動能行情友善，換盤整盤未必續強。<br>'
               '3. 族群成員用當前 concepts.json 套過去 = 輕微 look-ahead。<br>'
               '4. 成本固定 0.4%，小型 leaders 實際滑價可能更差。<br>'
-              '5. 僅比報酬未比風險；廣度/量能濾網的價值可能在降回撤（未測）。</p></section>')
+              '5. 權益曲線為重疊持倉的交易 P&L 流（rebalance 5日<持有天數），'
+              'MaxDD 為該 P&L 流的回撤，非單一資金複利曲線。</p></section>')
 
     js = f"""<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
 const L={hlabels};
-function bar(id,sd,bd,title){{
-  const ds=[{{label:'策略',data:sd,backgroundColor:'#3366cc'}}];
-  if(bd) ds.push({{label:'純動能',data:bd,backgroundColor:'#cc8800'}});
+function bar(id,ds){{
   new Chart(document.getElementById(id),{{type:'bar',
     data:{{labels:L,datasets:ds}},
     options:{{responsive:true,plugins:{{legend:{{position:'top'}}}}}}}});
 }}
-bar('ic',{ic_s},{ic_b});
-bar('sp',{sp_s},{sp_b});
+bar('ic',{ic_ds});
+bar('sp',{sp_ds});
 new Chart(document.getElementById('eq'),{{type:'line',
-  data:{{labels:{eq_labels},datasets:{eq_datasets_json}}},
+  data:{{labels:{eq_labels},datasets:{eq_ds_json}}},
   options:{{responsive:true,plugins:{{legend:{{position:'top'}}}},
     scales:{{y:{{title:{{display:true,text:'累積淨超額 %'}}}}}}}}}});
 </script>"""

@@ -34,7 +34,9 @@ CM = os.path.join(HERE, "concept_momentum")
 sys.path.insert(0, HERE)
 sys.path.insert(0, CM)
 
-from concept_momentum import compute_score_for_date, extract_leaders, _truncate_rows  # noqa: E402
+from concept_momentum import (compute_score_for_date, extract_leaders,  # noqa: E402
+                              _truncate_rows, compute_breadth,
+                              compute_volume_ratio)
 
 CONCEPTS = os.path.join(CM, "cache", "concepts.json")
 PRICE_CACHE = os.path.join(CM, "cache", "backtest_prices.json")
@@ -181,7 +183,34 @@ def ret_20d_score(theme_info: dict, stocks: dict, t: str) -> float:
     return statistics.mean(rets) if rets else 0.0
 
 
-def run_backtest(start, rebalance, horizons, topk, cost, which, label):
+def _theme_breadth_vol(theme_info: dict, stocks: dict, t: str) -> tuple[float, float]:
+    """as-of t 的 (breadth_avg%, vol_ratio)，與正式 score 同口徑。"""
+    trunc = []
+    for c in theme_info.get("stocks", []):
+        s = stocks.get(c)
+        if not s:
+            continue
+        rows = _truncate_rows(s["rows"], t)
+        if len(rows) >= 20:
+            trunc.append({**s, "rows": rows})
+    if len(trunc) < 3:
+        return 0.0, 0.0
+    breadth_avg = (compute_breadth(trunc, 5) + compute_breadth(trunc, 20)) / 2
+    return breadth_avg, compute_volume_ratio(trunc)
+
+
+def filter_momentum_score(theme_info: dict, stocks: dict, t: str,
+                          min_breadth: float, min_vol: float) -> float | None:
+    """變體：廣度/量能當『門檻過濾』而非加權。通過門檻才以 ret_20d 排名，
+    沒通過回 None（剔除）。"""
+    breadth, vol = _theme_breadth_vol(theme_info, stocks, t)
+    if breadth < min_breadth or vol < min_vol:
+        return None
+    return ret_20d_score(theme_info, stocks, t)
+
+
+def run_backtest(start, rebalance, horizons, topk, cost, which, label,
+                 min_breadth=50.0, min_vol=1.0):
     token = _token()
     if not token:
         print("[ERROR] 需要 FINMIND_TOKEN", file=sys.stderr)
@@ -198,10 +227,14 @@ def run_backtest(start, rebalance, horizons, topk, cost, which, label):
                 and len(_truncate_rows(stocks[c]["rows"], t)) >= 21)
         return n >= 3
 
-    # score function: 策略真訊號 vs 純動能對照
-    if which == "strategy":
+    # score function: 3 變體
+    if which == "strategy":                        # 原複合分數 (加權)
         def score_fn(info, t):
             return compute_score_for_date(info, stocks, taiex, t) if _valid(info, t) else None
+    elif which == "filter":                        # 動能 + 廣度/量能門檻過濾
+        def score_fn(info, t):
+            return (filter_momentum_score(info, stocks, t, min_breadth, min_vol)
+                    if _valid(info, t) else None)
     else:                                          # benchmark: 純 ret_20d
         def score_fn(info, t):
             return ret_20d_score(info, stocks, t) if _valid(info, t) else None
@@ -325,21 +358,32 @@ if __name__ == "__main__":
     ap.add_argument("--topk", type=int, default=3)
     ap.add_argument("--cost", type=float, default=0.4)
     ap.add_argument("--benchmark", action="store_true",
-                    help="也跑純 ret_20d 對照基準")
+                    help="也跑對照 (純動能 + 門檻過濾變體)")
+    ap.add_argument("--filter-breadth", type=float, default=50.0,
+                    help="門檻過濾變體：廣度下限 %% (預設 50)")
+    ap.add_argument("--filter-vol", type=float, default=1.0,
+                    help="門檻過濾變體：量能比下限 (預設 1.0)")
     ap.add_argument("--json-out", help="寫回測結果 JSON (給網頁圖表用)")
     args = ap.parse_args()
 
     strat = run_backtest(args.start, args.rebalance, args.horizon, args.topk,
-                         args.cost, "strategy", "sustainability_score (策略真訊號)")
-    bench = None
+                         args.cost, "strategy", "複合分數 (加權評分)")
+    bench = filt = None
     if args.benchmark or args.json_out:
         bench = run_backtest(args.start, args.rebalance, args.horizon, args.topk,
-                             args.cost, "benchmark", "純 ret_20d 動能 (對照基準)")
+                             args.cost, "benchmark", "純動能 ret_20d")
+        filt = run_backtest(args.start, args.rebalance, args.horizon, args.topk,
+                            args.cost, "filter",
+                            f"動能+門檻過濾 (廣度≥{args.filter_breadth:.0f}%,量能≥{args.filter_vol})",
+                            min_breadth=args.filter_breadth, min_vol=args.filter_vol)
     if args.json_out:
         with open(args.json_out, "w", encoding="utf-8") as f:
             json.dump({"generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
                        "params": {"start": args.start, "rebalance": args.rebalance,
                                   "horizons": args.horizon, "topk": args.topk,
-                                  "cost": args.cost},
-                       "strategy": strat, "benchmark": bench}, f, ensure_ascii=False)
+                                  "cost": args.cost,
+                                  "filter_breadth": args.filter_breadth,
+                                  "filter_vol": args.filter_vol},
+                       "strategy": strat, "benchmark": bench, "filter": filt},
+                      f, ensure_ascii=False)
         print(f"\n[json] 寫入 {args.json_out}", file=sys.stderr)
