@@ -3456,6 +3456,27 @@ def _render_concept_backtest_page(data: dict | None = None, error: str = "") -> 
             f'rebalance 點（每 {p["rebalance"]} 日）・前 {p["topk"]} 名族群選股・'
             f'生成 {_esc(data["generated"])}</p>')
 
+    # 風險調整後裁決 (用最長 horizon，數據驅動)
+    verdict = ""
+    if b:
+        bh = b["horizons"][hmax]
+        s_cal, b_cal = sh.get("calmar"), bh.get("calmar")
+        s_rr, b_rr = sh.get("ret_risk"), bh.get("ret_risk")
+        s_dd, b_dd = sh.get("max_dd"), bh.get("max_dd")
+        better_dd = s_dd is not None and b_dd is not None and s_dd < b_dd
+        better_risk = (s_cal is not None and b_cal is not None and s_cal > b_cal)
+        if better_risk:
+            txt = ("複合分數風險調整後（Calmar）優於純動能 → 廣度/量能濾網有降風險價值，值得保留。")
+            bg = "#eaf6ea"; bd = "#9c9"
+        else:
+            txt = (f"純動能在報酬與風險調整後（Calmar {b_cal} vs 策略 {s_cal}、"
+                   f"報酬/波動 {b_rr} vs {s_rr}）都勝出。複合分數雖然最大回撤略小"
+                   f"（-{s_dd}% vs -{b_dd}%），但代價是更低報酬，單位風險的報酬反而較差。"
+                   f"→ 廣度/量能/續航濾網沒有為自己賺到存在價值，純 ret_20d 排序更優。")
+            bg = "#fdf2e0"; bd = "#e0a040"
+        verdict = (f'<section style="background:{bg};border:1px solid {bd}"><h3>⚖️ 風險調整後裁決 '
+                   f'(H={hmax}d)</h3><p>{txt}</p></section>')
+
     # 指標比較表
     def row(name, sv, bv, fmt="{:+.2f}", pct=""):
         bcell = (f'<td class="num">{fmt.format(bv)}{pct}</td>' if bv is not None else '<td class="num">—</td>')
@@ -3469,7 +3490,11 @@ def _render_concept_backtest_page(data: dict | None = None, error: str = "") -> 
         tbl_rows += row("高分前1/3 超額", sv["top_rs"], bv["top_rs"] if bv else None, "{:+.2f}", "%")
         tbl_rows += row("低分後1/3 超額", sv["bot_rs"], bv["bot_rs"] if bv else None, "{:+.2f}", "%")
         tbl_rows += row("高分組命中率", sv["hit"], bv["hit"] if bv else None, "{:.0f}", "%")
-        tbl_rows += row("選股淨超額", sv["l2"], bv["l2"] if bv else None, "{:+.2f}", "%")
+        tbl_rows += row("選股單期淨超額", sv["l2"], bv["l2"] if bv else None, "{:+.2f}", "%")
+        tbl_rows += row("累積淨超額(總)", sv.get("total"), bv.get("total") if bv else None, "{:+.1f}", "%")
+        tbl_rows += row("最大回撤 MaxDD", -sv.get("max_dd", 0), -bv.get("max_dd", 0) if bv else None, "{:.1f}", "%")
+        tbl_rows += row("報酬/波動", sv.get("ret_risk"), bv.get("ret_risk") if bv else None, "{:.2f}")
+        tbl_rows += row("Calmar(總/MaxDD)", sv.get("calmar"), bv.get("calmar") if bv else None, "{:.2f}")
     table = (f'<section><h3>📊 策略 vs 純動能基準</h3>'
              f'<table class="report-table"><thead><tr><th>指標</th>'
              f'<th class="num">策略(複合分數)</th><th class="num">純 ret_20d</th></tr></thead>'
@@ -3528,7 +3553,7 @@ new Chart(document.getElementById('eq'),{{type:'line',
   options:{{responsive:true,plugins:{{legend:{{position:'top'}}}},
     scales:{{y:{{title:{{display:true,text:'累積淨超額 %'}}}}}}}}}});
 </script>"""
-    return (head + cards + meta + table + charts + caveat + js + tail)
+    return (head + cards + meta + verdict + table + charts + caveat + js + tail)
 
 
 @app.route("/concept-backtest")

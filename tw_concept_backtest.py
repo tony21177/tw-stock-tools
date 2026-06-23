@@ -282,25 +282,38 @@ def run_backtest(start, rebalance, horizons, topk, cost, which, label):
         l2 = statistics.mean(R["l2_ret"]) if R["l2_ret"] else None
         l2_win = (sum(1 for x in R["l2_ret"] if x > 0) / len(R["l2_ret"]) * 100
                   if R["l2_ret"] else None)
-        # 權益曲線 (非複利累加 L2 每期淨超額)
-        eq, cum = [], 0.0
+        # 權益曲線 (非複利累加 L2 每期淨超額) + 最大回撤
+        eq, cum, peak, max_dd = [], 0.0, 0.0, 0.0
         for dt, r in zip(R["l2_dates"], R["l2_ret"]):
             cum += r
+            peak = max(peak, cum)
+            max_dd = max(max_dd, peak - cum)     # 回撤 = 距前高的跌幅 (百分點)
             eq.append({"date": dt, "cum": round(cum, 2)})
+        total = eq[-1]["cum"] if eq else 0.0
+        vol = statistics.pstdev(R["l2_ret"]) if len(R["l2_ret"]) > 1 else 0.0
+        ret_risk = (l2 / vol) if (l2 is not None and vol) else None   # 單期報酬/波動
+        calmar = (total / max_dd) if max_dd else None                 # 總報酬/最大回撤
         summary["horizons"][h] = {
             "n": len(R["ic"]), "ic": round(ic, 3), "ic_pos": round(ic_pos, 0),
             "top_rs": round(top, 2), "bot_rs": round(bot, 2),
             "spread": round(top - bot, 2), "hit": round(hit, 0),
             "l2": round(l2, 2) if l2 is not None else None,
             "l2_win": round(l2_win, 0) if l2_win is not None else None,
+            "total": round(total, 1), "max_dd": round(max_dd, 1),
+            "vol": round(vol, 2),
+            "ret_risk": round(ret_risk, 2) if ret_risk is not None else None,
+            "calmar": round(calmar, 2) if calmar is not None else None,
             "equity": eq}
         print(f"\n【持有 {h} 交易日】 樣本 {len(R['ic'])} 期")
         print(f"  IC (Spearman)     : {ic:+.3f}   (>0 比例 {ic_pos:.0f}%)")
-        print(f"  高分前1/3 超額報酬 : {top:+.2f}%")
-        print(f"  低分後1/3 超額報酬 : {bot:+.2f}%")
         print(f"  多空價差 (高−低)   : {top-bot:+.2f}%")
         print(f"  高分組贏大盤命中率 : {hit:.0f}%")
         print(f"  Layer2 選股淨超額  : {l2:+.2f}% (扣{cost}%成本, 勝率{l2_win:.0f}%)")
+        print(f"  累積淨超額(總)     : {total:+.1f}%")
+        print(f"  最大回撤 (MaxDD)   : -{max_dd:.1f}%")
+        print(f"  單期波動 (std)     : {vol:.2f}%")
+        print(f"  報酬/波動          : {ret_risk:.2f}" if ret_risk is not None else "  報酬/波動          : —")
+        print(f"  Calmar (總/MaxDD)  : {calmar:.2f}" if calmar is not None else "  Calmar             : —")
     return summary
 
 
