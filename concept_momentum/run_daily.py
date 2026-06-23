@@ -22,7 +22,8 @@ LENDING_HISTORY_DIR = os.path.join(HERE, "cache", "lending_radar_history")
 RETREAT_HISTORY_DIR = os.path.join(HERE, "cache", "short_retreat_history")
 
 from data_fetcher import fetch_all_concepts, fetch_taiex
-from concept_momentum import analyze_all, add_score_history
+from concept_momentum import (analyze_all, add_score_history,
+                              FILTER_MIN_BREADTH, FILTER_MIN_VOL)
 from concept_charts import generate_png, generate_trend_png, generate_html
 from rerating_detector import compute_rerating, format_rerating_report
 from business_drift_detector import detect_drift, format_drift_report
@@ -98,21 +99,24 @@ def send_telegram_text(message: str, bot_token: str, chat_id: str) -> bool:
         return False
 
 
-def detect_ignition_events(results: list[dict], target_yyyymmdd: str,
-                            score_jump: float = 8.0,
-                            yest_max: float = 3.0,
-                            today_min: float = 10.0,
-                            lookback_days: int = 30) -> list[dict]:
-    """Find concepts whose sustainability_score jumped from dormant (<yest_max)
-    to strong (>=today_min) versus the most-recent prior trading day.
+def _c_active(d: dict) -> bool:
+    """C 策略『資金流入中』判定：過門檻(廣度≥50%+量比≥1.0) 且 20d 報酬>0。
+    從原始欄位算，舊 JSON(無 passes_gate)也適用。"""
+    breadth_avg = (d.get("breadth_5d", 0) + d.get("breadth_20d", 0)) / 2
+    gate = (breadth_avg >= FILTER_MIN_BREADTH
+            and d.get("volume_ratio", 0) >= FILTER_MIN_VOL)
+    return gate and d.get("ret_20d", 0) > 0
 
-    Loads the prior day's analysis_*.json from cache and computes per-theme
-    score delta. Returns list of ignition events sorted by delta desc.
-    """
+
+def detect_ignition_events(results: list[dict], target_yyyymmdd: str,
+                            min_ret_jump: float = 3.0) -> list[dict]:
+    """C 版點火偵測：族群昨日『休眠』(未過門檻 或 20d≤0) → 今日『點火』
+    (過門檻 且 20d>0)，且 20d 報酬較昨日跳升 ≥ min_ret_jump。
+
+    讀前一交易日 analysis_*.json 比對，回事件 (按 20d 報酬跳幅排序)。"""
     results_dir = os.path.join(HERE, "cache", "results")
     files = sorted(glob.glob(os.path.join(results_dir, "analysis_*.json")))
     today_file = os.path.join(results_dir, f"analysis_{target_yyyymmdd}.json")
-    # Find the most recent earlier file
     prior = None
     for fp in reversed(files):
         if os.path.basename(fp) == os.path.basename(today_file):
@@ -134,21 +138,25 @@ def detect_ignition_events(results: list[dict], target_yyyymmdd: str,
         y = yest.get(tk)
         if not y:
             continue
-        t_score = r.get("sustainability_score", 0)
-        y_score = y.get("sustainability_score", 0)
-        delta = t_score - y_score
-        if y_score < yest_max and t_score >= today_min and delta >= score_jump:
-            events.append({
-                "name_zh": r["name_zh"],
-                "yest_score": y_score,
-                "today_score": t_score,
-                "delta": delta,
-                "stock_count": r.get("stock_count", 0),
-                "breadth_5d": r.get("breadth_5d", 0),
-                "volume_ratio": r.get("volume_ratio", 0),
-                "leaders": r.get("leaders", [])[:3],
-            })
-    events.sort(key=lambda e: -e["delta"])
+        # 今日點火 + 昨日休眠
+        if not _c_active(r) or _c_active(y):
+            continue
+        t_ret = r.get("ret_20d", 0)
+        y_ret = y.get("ret_20d", 0)
+        ret_jump = t_ret - y_ret
+        if ret_jump < min_ret_jump:
+            continue
+        events.append({
+            "name_zh": r["name_zh"],
+            "yest_ret": y_ret,
+            "today_ret": t_ret,
+            "ret_jump": ret_jump,
+            "stock_count": r.get("stock_count", 0),
+            "breadth_5d": r.get("breadth_5d", 0),
+            "volume_ratio": r.get("volume_ratio", 0),
+            "leaders": r.get("leaders", [])[:3],
+        })
+    events.sort(key=lambda e: -e["ret_jump"])
     return events
 
 
@@ -157,7 +165,7 @@ def build_ignition_summary(results: list[dict], target_date: str,
     """Telegram summary of today's ignition events (休眠 → 轉強)."""
     events = detect_ignition_events(results, target_yyyymmdd)
     lines = [f"🔥 族群點火警示 {target_date}"]
-    lines.append("（休眠 score<3 → 今日 score≥10, Δ≥8）")
+    lines.append("（休眠：未過門檻或20d≤0 → 今日：過門檻+20d>0, 跳升≥3%）")
     lines.append("━━━━━━━━━━━━")
     if not events:
         lines.append("（今日無新點火族群）")
@@ -172,17 +180,17 @@ def build_ignition_summary(results: list[dict], target_date: str,
             tag = "⚠ 小族群假點火風險高"
         else:
             tag = "🟡 觀察 1-2 日確認"
-        lines.append(f"\n{e['name_zh']}  {e['yest_score']:.1f} → "
-                      f"{e['today_score']:.1f}  Δ +{e['delta']:.1f}")
+        lines.append(f"\n{e['name_zh']}  20d {e['yest_ret']:+.1f}% → "
+                      f"{e['today_ret']:+.1f}%  跳升 +{e['ret_jump']:.1f}%")
         lines.append(f"  子數 {e['stock_count']} / 廣度 {e['breadth_5d']:.0f}%"
                       f" / 量比 {e['volume_ratio']:.2f}x  {tag}")
         leaders_str = " / ".join(
             f"{L['code']} {L['name'][:6]}" for L in e["leaders"])
         if leaders_str:
             lines.append(f"  領漲: {leaders_str}")
-    lines.append("\n📊 歷史模式（過去 17 個交易日 5 個點火樣本）:")
-    lines.append("  • 子數 ≥7 + 量比 ≥0.95 → 全 4 個真點火 ×3-4 倍 sustained")
-    lines.append("  • 子數 ≤4 → 唯一假點火案例 (折疊螢幕 5/7 噴 40→0)")
+    lines.append("\n📊 真假點火判讀（歷史 5 樣本）:")
+    lines.append("  • 子數 ≥7 + 量比 ≥0.95 → 真點火機率高，多 ×3-4 倍 sustained")
+    lines.append("  • 子數 ≤4 → 假點火風險高（1 日 spike）")
     return "\n".join(lines)
 
 
