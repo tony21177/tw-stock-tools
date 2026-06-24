@@ -614,6 +614,7 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
       <div class="tab" onclick="showTab('leaders')">強勢族群領漲股</div>
       <div class="tab" onclick="showTab('full')">完整排行</div>
       <a class="tab" href="/concept-backtest" style="text-decoration:none;color:inherit;">🧪 策略回測</a>
+      <a class="tab" href="/second-wave-backtest" style="text-decoration:none;color:inherit;">🌊 第二波回測</a>
     </div>
   </div>
   <div class="tab-group g-flow" title="盤前 / 盤後資金流向監控 (各自有獨立 cron)">

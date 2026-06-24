@@ -3636,6 +3636,156 @@ def concept_backtest():
     return _render_concept_backtest_page(data=data)
 
 
+def _render_second_wave_backtest_page(data: dict | None = None, error: str = "") -> str:
+    nav = ('<nav><a href="/">← 大盤 dashboard</a>'
+           '<a href="/concept-backtest">🧪 族群策略回測</a>'
+           '<a href="/second-wave-backtest">🌊 第二波回測</a></nav>')
+    css = """<style>
+  body { font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
+         max-width:1100px; margin:1em auto; padding:0 1em; background:#f7f7f9; color:#222; }
+  h1 { font-size:1.4em; margin:.4em 0; } nav a { margin-right:12px; color:#0066cc; text-decoration:none; }
+  section { background:#fff; padding:12px 16px; border-radius:6px; margin-bottom:12px;
+            box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  section h3 { margin:0 0 8px 0; font-size:1.05em; color:#444; }
+  table.report-table { width:100%; border-collapse:collapse; font-size:.9em; }
+  table.report-table th,table.report-table td { padding:6px 10px; border-bottom:1px solid #eee; text-align:left; }
+  table.report-table th { background:#fafafa; font-weight:600; color:#555; }
+  table.report-table .num { text-align:right; font-variant-numeric:tabular-nums; }
+  .pos { color:#060; } .neg { color:#c30; } .small,small { font-size:.85em; color:#666; }
+  .error { background:#fee; border:1px solid #f99; padding:12px; border-radius:4px; color:#c00; }
+  .cards { display:flex; gap:10px; flex-wrap:wrap; }
+  .card { flex:1; min-width:130px; background:#f3faf5; border:1px solid #cfe8d8; border-radius:6px; padding:10px 12px; }
+  .card .v { font-size:1.4em; font-weight:700; } .card .k { font-size:.8em; color:#777; }
+</style>"""
+    head = (f'<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+            f'<title>強勢股第二波回測</title>{css}</head><body>{nav}'
+            f'<h1>🌊 強勢股第二波 — 回測（事件研究）</h1>')
+    tail = '</body></html>'
+    if error:
+        return head + f'<div class="error">{_esc(error)}</div>' + tail
+    if not data:
+        return head + ('<section><p>尚無回測結果。請先跑：<br>'
+                       '<code>tw_second_wave_backtest.py --json-out '
+                       'concept_momentum/cache/second_wave_backtest.json</code></p></section>') + tail
+    r = data["result"]; p = data["params"]
+    hs = [str(h) for h in p["horizons"]]
+    hmax = hs[-1]
+    H = r["horizons"]
+    def cls(v): return "pos" if v is not None and v > 0 else "neg"
+    hh = H[hmax]
+    cards = (
+        f'<p class="small" style="margin:.2em 0">摘要＝持有 {hmax} 交易日</p><div class="cards">'
+        f'<div class="card"><div class="k">絕對報酬(均)</div>'
+        f'<div class="v {cls(hh["abs_mean"])}">{hh["abs_mean"]:+.1f}%</div>'
+        f'<div class="small">賺錢率 {hh["win"]:.0f}%</div></div>'
+        f'<div class="card"><div class="k">淨超額 vs 大盤</div>'
+        f'<div class="v {cls(hh["net"])}">{hh["net"]:+.1f}%</div>'
+        f'<div class="small">贏大盤率 {hh["beat"]:.0f}%</div></div>'
+        f'<div class="card"><div class="k">訊號 edge</div>'
+        f'<div class="v {cls(hh["edge"])}">{hh["edge"]:+.1f}%</div>'
+        f'<div class="small">淨超額−基準</div></div>'
+        f'<div class="card"><div class="k">進場樣本</div>'
+        f'<div class="v">{r["n_episodes"]}</div>'
+        f'<div class="small">{r["n_signal_days"]} 訊號日去重</div></div></div>')
+    meta = (f'<p class="small">universe {r["universe"]} 檔（概念股子集）・'
+            f'{r["start"]}~{r["end"]}・扣 {r["cost"]}% 成本・生成 {_esc(data["generated"])}</p>')
+
+    def row(name, key, fmt="{:+.2f}", pct="%"):
+        cells = "".join(f'<td class="num">{fmt.format(H[h][key])}{pct}</td>' for h in hs)
+        return f'<tr><td>{name}</td>{cells}</tr>'
+    th = "".join(f'<th class="num">{h}日</th>' for h in hs)
+    tbl = (f'<section><h3>📊 各持有天數表現</h3>'
+           f'<table class="report-table"><thead><tr><th>指標</th>{th}</tr></thead><tbody>'
+           + row("絕對報酬(均)", "abs_mean")
+           + row("賺錢率", "win", "{:.0f}")
+           + row("超額 vs 大盤(均)", "exc_mean")
+           + row("超額 中位數", "exc_med")
+           + row("贏大盤率", "beat", "{:.0f}")
+           + row("扣成本淨超額", "net")
+           + row("基準(隨機股票日)", "baseline")
+           + row("⭐訊號 edge", "edge")
+           + '</tbody></table>'
+           '<p class="small">edge = 淨超額 − 基準（同期同universe隨機股票日的平均超額）。'
+           '正且夠大 = 訊號真的比「隨便買一檔概念股」好。</p></section>')
+
+    # 圖表
+    hlabels = json.dumps([f"{h}日" for h in hs])
+    edge_d = json.dumps([H[h]["edge"] for h in hs])
+    base_d = json.dumps([H[h]["baseline"] for h in hs])
+    net_d = json.dumps([H[h]["net"] for h in hs])
+    eq = H[hmax]["equity"]
+    eq_labels = json.dumps([e["date"] for e in eq])
+    eq_cum = json.dumps([e["cum"] for e in eq])
+    charts = f"""
+<section><h3>📈 訊號 edge vs 基準 by 持有天數</h3>
+  <canvas id="edge" height="90"></canvas>
+  <p class="small">綠=訊號淨超額、灰=基準、藍=edge(差)。第二波是慢熱型，
+    短天期接近基準，{hmax}日才拉開。</p></section>
+<section><h3>💰 進場權益曲線（H={hmax}d 累積淨超額%，非複利）</h3>
+  <canvas id="eq" height="110"></canvas>
+  <p class="small">每觸發一次第二波就買進、持有 {hmax} 日、扣 {r["cost"]}% 成本後贏大盤的累計。</p></section>"""
+
+    method = (
+      '<section><h3>🔬 詳細回測方法</h3><div class="small" style="line-height:1.7">'
+      '<b>① 為何用事件研究</b><br>'
+      '第二波是<b>每檔股票的型態訊號</b>（強漲→急殺15-25%→反彈啟動），不是族群排名。'
+      '所以不算 IC/多空，而是：每當某股某日觸發訊號，量它之後的報酬，比基準看有沒有 edge。<br><br>'
+      '<b>② 訊號重建</b><br>'
+      '直接 import 正式程式的 <code>detect_second_wave</code>（七項過濾：強勢底盤≥30%、'
+      '高點近60日、急跌15-25%、急跌5-15日、反彈≥5%、量能甦醒、未破前高），對每檔股票'
+      '<b>逐日 point-in-time</b> 跑（只用 ≤t 的資料）。<br><br>'
+      '<b>③ episode 去重</b><br>'
+      '同一波會連續觸發好幾天，只取<b>首次觸發</b>當進場點（避免重複樣本灌水）。'
+      f'本次 {r["n_signal_days"]} 個訊號日 → 去重成 {r["n_episodes"]} 個進場。<br><br>'
+      '<b>④ 三個比較對象</b><br>'
+      '• <b>絕對報酬</b>：買進後 H 日漲跌%。<br>'
+      '• <b>超額 vs 大盤</b>：減去同期加權指數，看贏不贏大盤。<br>'
+      '• <b>基準</b>：同期同universe<b>所有可評估股票日</b>的平均前向超額（＝隨便買一檔的期望）。'
+      '訊號要打贏這個才算真有用。<br><br>'
+      '<b>⑤ 成本/資料</b><br>'
+      f'扣 {r["cost"]}% 來回成本。universe = 概念股 {r["universe"]} 檔（重用族群回測的價格快取）。'
+      '</div></section>')
+
+    caveat = ('<section><h3>⚠ 解讀與限制</h3><p class="small">'
+              '1. <b>慢熱型</b>：5/10 日 edge 很小、贏大盤率 &lt;50%、中位數可能為負；'
+              '要到 20 日才有明顯 edge → 第二波是「抱一個月」的 setup，不是短打。<br>'
+              '2. 報酬右偏：均值 &gt;&gt; 中位數，靠少數大贏家拉高，多數只是接近大盤。<br>'
+              '3. universe 是概念股子集（正式 cron 掃全市場），且這段多頭友善，'
+              '全市場/空頭盤的 edge 可能不同。<br>'
+              '4. 成本固定 0.4%，急跌反彈股流動性差時滑價可能更大。</p></section>')
+
+    js = f"""<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+const L={hlabels};
+new Chart(document.getElementById('edge'),{{type:'bar',
+  data:{{labels:L,datasets:[
+    {{label:'淨超額',data:{net_d},backgroundColor:'#2a9d4a'}},
+    {{label:'基準',data:{base_d},backgroundColor:'#bbb'}},
+    {{label:'edge',data:{edge_d},backgroundColor:'#3366cc'}}]}},
+  options:{{responsive:true,plugins:{{legend:{{position:'top'}}}}}}}});
+new Chart(document.getElementById('eq'),{{type:'line',
+  data:{{labels:{eq_labels},datasets:[{{label:'第二波進場',data:{eq_cum},
+    borderColor:'#2a9d4a',borderWidth:2,pointRadius:0,tension:.1}}]}},
+  options:{{responsive:true,plugins:{{legend:{{position:'top'}}}},
+    scales:{{y:{{title:{{display:true,text:'累積淨超額 %'}}}}}}}}}});
+</script>"""
+    return head + cards + meta + tbl + charts + method + caveat + js + tail
+
+
+@app.route("/second-wave-backtest")
+def second_wave_backtest():
+    path = os.path.join(HERE, "cache", "second_wave_backtest.json")
+    if not os.path.exists(path):
+        return _render_second_wave_backtest_page()
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        return _render_second_wave_backtest_page(error=f"{type(e).__name__}: {e}")
+    return _render_second_wave_backtest_page(data=data)
+
+
 @app.route("/adr-premium")
 def adr_premium():
     import tw_adr_premium
