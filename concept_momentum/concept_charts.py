@@ -613,6 +613,7 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
       <div class="tab" onclick="showTab('trend')">📈 3 個月趨勢</div>
       <div class="tab" onclick="showTab('leaders')">強勢族群領漲股</div>
       <div class="tab" onclick="showTab('full')">完整排行</div>
+      <a class="tab" href="/concept-backtest" style="text-decoration:none;color:inherit;">🧪 策略回測</a>
     </div>
   </div>
   <div class="tab-group g-flow" title="盤前 / 盤後資金流向監控 (各自有獨立 cron)">
@@ -632,7 +633,6 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
       <a class="tab" href="/shareholders" style="text-decoration:none;color:inherit;">👥 前十大股東</a>
       <a class="tab" href="/adr-premium" style="text-decoration:none;color:inherit;">🇺🇸 ADR 折溢價</a>
       <a class="tab" href="/futures-basis" style="text-decoration:none;color:inherit;">📐 期貨基差</a>
-      <a class="tab" href="/concept-backtest" style="text-decoration:none;color:inherit;">🧪 族群策略回測</a>
     </div>
   </div>
 </div>
