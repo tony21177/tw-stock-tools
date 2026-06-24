@@ -13,7 +13,7 @@
 set -u
 cd "$(dirname "$0")"
 
-STOCKS=(3491 2313)
+STOCKS=(3491)
 
 for code in "${STOCKS[@]}"; do
     echo "=== $(date '+%Y-%m-%d %H:%M:%S') chip-price $code ==="
