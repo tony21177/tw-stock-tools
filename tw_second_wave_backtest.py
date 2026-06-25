@@ -20,13 +20,74 @@ import json
 import os
 import statistics
 import sys
+import time
+import urllib.parse
+import urllib.request
 from argparse import Namespace
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from tw_second_wave import detect_second_wave  # noqa: E402
+from tw_second_wave import detect_second_wave, load_universe  # noqa: E402
 
 PRICE_CACHE = os.path.join(HERE, "concept_momentum", "cache", "backtest_prices.json")
+PRICE_CACHE_ALL = os.path.join(HERE, "concept_momentum", "cache", "backtest_prices_all.json")
+FINMIND = "https://api.finmindtrade.com/api/v4/data"
+
+
+def _token() -> str:
+    t = os.environ.get("FINMIND_TOKEN", "")
+    if t:
+        return t
+    import subprocess
+    out = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        if "FINMIND_TOKEN=" in line:
+            return line.split("FINMIND_TOKEN=", 1)[1].split()[0]
+    return ""
+
+
+def _fm_rows(code: str, start: str, token: str) -> list[dict]:
+    q = urllib.parse.urlencode({"dataset": "TaiwanStockPrice", "data_id": code,
+                                "start_date": start, "token": token})
+    for _ in range(3):
+        try:
+            with urllib.request.urlopen(f"{FINMIND}?{q}", timeout=30) as r:
+                data = json.loads(r.read().decode()).get("data", [])
+            out = [{"date": x["date"].replace("-", ""), "close": float(x["close"]),
+                    "volume": float(x.get("Trading_Volume") or 0)}
+                   for x in data if x.get("close") and x["close"] > 0]
+            out.sort(key=lambda r: r["date"])
+            return out
+        except Exception:
+            time.sleep(2)
+    return []
+
+
+def build_all_market_cache(start: str) -> dict:
+    """抓全市場 2155 檔日線，快取到 backtest_prices_all.json。"""
+    if os.path.exists(PRICE_CACHE_ALL):
+        with open(PRICE_CACHE_ALL) as f:
+            c = json.load(f)
+        if c.get("start") == start:
+            print(f"[cache] 全市場快取 {len(c['stocks'])} 檔", file=sys.stderr)
+            return c
+    token = _token()
+    uni = load_universe("all")
+    print(f"[fetch] 全市場 {len(uni)} 檔，自 {start} … (約 10-25 分)", file=sys.stderr)
+    stocks = {}
+    for i, (code, name) in enumerate(uni):
+        rows = _fm_rows(code, start, token)
+        if len(rows) >= 60:
+            stocks[code] = {"code": code, "name": name, "rows": rows}
+        if (i + 1) % 100 == 0:
+            print(f"  {i+1}/{len(uni)} (有效 {len(stocks)})", file=sys.stderr)
+        time.sleep(0.05)
+    taiex = _fm_rows("TAIEX", start, token)
+    c = {"start": start, "stocks": stocks, "taiex": taiex}
+    with open(PRICE_CACHE_ALL, "w") as f:
+        json.dump(c, f)
+    print(f"[fetch] 完成，{len(stocks)} 檔有效，快取 {PRICE_CACHE_ALL}", file=sys.stderr)
+    return c
 
 # 與 tw_second_wave.py add_argument 預設一致
 DEFAULT_ARGS = Namespace(
@@ -37,9 +98,12 @@ DEFAULT_ARGS = Namespace(
 MIN_HISTORY = 135   # detect 需 rally_lookback(130)+ 緩衝
 
 
-def load_prices():
-    with open(PRICE_CACHE) as f:
-        d = json.load(f)
+def load_prices(universe="concepts", start="2025-01-01"):
+    if universe == "all":
+        d = build_all_market_cache(start)
+    else:
+        with open(PRICE_CACHE) as f:
+            d = json.load(f)
     return d["stocks"], d["taiex"]
 
 
@@ -52,8 +116,8 @@ def fwd_ret(rows_close: dict, dates: list, i: int, h: int) -> float | None:
     return (c1 / c0 - 1) * 100
 
 
-def run(horizons, cost, dedup=True):
-    stocks, taiex = load_prices()
+def run(horizons, cost, dedup=True, universe="concepts", start="2025-01-01"):
+    stocks, taiex = load_prices(universe, start)
     tx_close = {r["date"]: r["close"] for r in taiex}
     tx_dates = sorted(tx_close)
 
@@ -106,7 +170,9 @@ def run(horizons, cost, dedup=True):
     # 輸出
     summary = {"n_signal_days": n_signal_days, "n_episodes": n_episodes,
                "start": tx_dates[0], "end": tx_dates[-1], "cost": cost,
-               "universe": len(stocks), "horizons": {}}
+               "universe": len(stocks),
+               "universe_label": "全市場" if universe == "all" else "概念股子集",
+               "horizons": {}}
     print(f"\n{'='*60}\n強勢股第二波 回測（事件研究）"
           f"\n universe {len(stocks)} 檔・{tx_dates[0]}~{tx_dates[-1]}"
           f"\n 訊號觸發 {n_signal_days} 股票日 → 去重後 {n_episodes} 個進場 episode"
@@ -148,13 +214,18 @@ if __name__ == "__main__":
     ap.add_argument("--cost", type=float, default=0.4)
     ap.add_argument("--no-dedup", action="store_true",
                     help="不做 episode 去重 (每個觸發日都算進場)")
+    ap.add_argument("--universe", default="concepts",
+                    help="concepts (192檔快取) 或 all (全市場 2155 檔, 會抓資料)")
+    ap.add_argument("--start", default="2025-01-01")
     ap.add_argument("--json-out")
     args = ap.parse_args()
-    s = run(args.horizon, args.cost, dedup=not args.no_dedup)
+    s = run(args.horizon, args.cost, dedup=not args.no_dedup,
+            universe=args.universe, start=args.start)
     if args.json_out:
         from datetime import datetime
         with open(args.json_out, "w", encoding="utf-8") as f:
             json.dump({"generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                       "params": {"horizons": args.horizon, "cost": args.cost},
+                       "params": {"horizons": args.horizon, "cost": args.cost,
+                                  "universe": args.universe},
                        "result": s}, f, ensure_ascii=False)
         print(f"\n[json] 寫入 {args.json_out}", file=sys.stderr)

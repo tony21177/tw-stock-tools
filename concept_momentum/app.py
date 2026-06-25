@@ -3688,7 +3688,7 @@ def _render_second_wave_backtest_page(data: dict | None = None, error: str = "")
         f'<div class="card"><div class="k">進場樣本</div>'
         f'<div class="v">{r["n_episodes"]}</div>'
         f'<div class="small">{r["n_signal_days"]} 訊號日去重</div></div></div>')
-    meta = (f'<p class="small">universe {r["universe"]} 檔（概念股子集）・'
+    meta = (f'<p class="small">universe {r["universe"]} 檔（{r.get("universe_label","概念股子集")}）・'
             f'{r["start"]}~{r["end"]}・扣 {r["cost"]}% 成本・生成 {_esc(data["generated"])}</p>')
 
     def row(name, key, fmt="{:+.2f}", pct="%"):
@@ -3744,16 +3744,22 @@ def _render_second_wave_backtest_page(data: dict | None = None, error: str = "")
       '• <b>基準</b>：同期同universe<b>所有可評估股票日</b>的平均前向超額（＝隨便買一檔的期望）。'
       '訊號要打贏這個才算真有用。<br><br>'
       '<b>⑤ 成本/資料</b><br>'
-      f'扣 {r["cost"]}% 來回成本。universe = 概念股 {r["universe"]} 檔（重用族群回測的價格快取）。'
+      f'扣 {r["cost"]}% 來回成本。universe = {r.get("universe_label","概念股子集")} {r["universe"]} 檔。'
       '</div></section>')
 
+    is_all = p.get("universe") == "all" or r.get("universe_label") == "全市場"
+    uni_cav = ('3. universe 為<b>全市場</b>（含小型低液性股），與正式 cron 一致；'
+               '但這段多頭友善，空頭盤 edge 可能不同。<br>'
+               if is_all else
+               '3. universe 是概念股子集（正式 cron 掃全市場），且這段多頭友善，'
+               '全市場/空頭盤的 edge 可能不同。<br>')
     caveat = ('<section><h3>⚠ 解讀與限制</h3><p class="small">'
               '1. <b>慢熱型</b>：5/10 日 edge 很小、贏大盤率 &lt;50%、中位數可能為負；'
               '要到 20 日才有明顯 edge → 第二波是「抱一個月」的 setup，不是短打。<br>'
               '2. 報酬右偏：均值 &gt;&gt; 中位數，靠少數大贏家拉高，多數只是接近大盤。<br>'
-              '3. universe 是概念股子集（正式 cron 掃全市場），且這段多頭友善，'
-              '全市場/空頭盤的 edge 可能不同。<br>'
-              '4. 成本固定 0.4%，急跌反彈股流動性差時滑價可能更大。</p></section>')
+              + uni_cav +
+              '4. 成本固定 0.4%，急跌反彈股流動性差時滑價可能更大；'
+              '全市場含小型股時滑價影響更明顯。</p></section>')
 
     js = f"""<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>

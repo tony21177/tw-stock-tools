@@ -44,3 +44,4 @@ pdf_cache/*.pdf
 concept_momentum/cache/backtest_prices.json
 concept_momentum/cache/concept_backtest.json
 concept_momentum/cache/second_wave_backtest.json
+concept_momentum/cache/backtest_prices_all.json
