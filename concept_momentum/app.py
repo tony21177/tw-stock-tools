@@ -3395,6 +3395,39 @@ def futures_basis():
     return _render_futures_basis_page(m=m, intraday=intraday)
 
 
+# 回測術語說明 — 兩個回測頁共用
+_BACKTEST_GLOSSARY = {
+    "持有天數 (H)": "進場後抱幾個交易日才賣。5日≈一週、20日≈一個月。同一訊號在不同 H 下表現可能差很多。",
+    "事件研究": "event study。針對『每次訊號觸發』這個事件，量它之後的報酬分布，再跟基準比 — 適合『挑個股』型訊號(非排名)。",
+    "絕對報酬": "進場後 H 日單純的漲跌% (不減大盤)。看『有沒有賺到錢』，但沒扣掉大盤本身的漲跌。",
+    "超額報酬 (vs 大盤)": "個股/族群報酬 − 同期加權指數報酬。正=贏大盤。也叫 alpha。衡量「贏不贏大盤」。",
+    "淨超額": "超額報酬再扣掉來回交易成本 (本頁 0.4%)。這才是真正能放口袋的數字。",
+    "基準 (baseline)": "拿來對照的「隨便買」期望值 — 同期同universe所有可評估股票日的平均超額。訊號要贏這個才算有選股力。",
+    "edge": "量化/賭場術語=優勢。本頁定義 edge = 淨超額 − 基準 = 「比隨便買一檔好多少」，衡量純選股力(跟大盤強弱脫鉤)。⚠ edge 大 ≠ 很賺：若基準很爛(隨機股輸大盤)，edge 會被撐大；能不能賺仍看『淨超額(贏大盤)』。",
+    "alpha": "超額報酬，一般指 vs 大盤。≈本頁的「淨超額」。",
+    "賺錢率 / 勝率": "進場後絕對報酬>0 的比例 (有沒有賺錢，不管贏不贏大盤)。",
+    "贏大盤率 (beat rate)": "進場後超額報酬>0 的比例 (有沒有贏大盤)。",
+    "中位數 vs 均值": "均值被少數大贏家拉高。若『均值正、但中位數負』= 多數筆其實輸，靠少數飆股撐 → 報酬右偏，要分散才接得住。",
+    "IC (資訊係數)": "Spearman 等級相關：當期『分數排名』與『之後報酬排名』吻合度，−1~+1。>0.1 算不錯。旁邊 % = 為正的期數比例(穩定度)。",
+    "多空價差": "高分前1/3族群平均超額 − 低分後1/3族群平均超額。越大代表分數越能分辨強弱。",
+    "累積淨超額 / 權益曲線": "把每期淨超額逐筆累加(非複利)畫成線，看整體趨勢與回檔。",
+    "最大回撤 (MaxDD)": "權益曲線從歷史高點回落的最大跌幅。衡量最痛要忍受多少。",
+    "報酬/波動": "單期淨超額 ÷ 單期報酬標準差 (類 Sharpe)，越高=每單位波動換到越多報酬、越穩。",
+    "Calmar": "總報酬 ÷ 最大回撤。每承受 1 單位回撤換到多少報酬，越高越好。",
+    "point-in-time": "重建訊號時『只用當天(t)以前看得到的資料』，不偷看未來，確保測的是當下真能下的單。",
+    "episode 去重": "同一波型態會連續好幾天觸發，只取『首次』當進場，避免重複樣本灌水。",
+}
+
+
+def _glossary_section(keys: list[str], title: str = "📚 術語說明") -> str:
+    rows = "".join(
+        f'<tr><td style="white-space:nowrap;font-weight:600">{_esc(k)}</td>'
+        f'<td>{_BACKTEST_GLOSSARY[k]}</td></tr>'
+        for k in keys if k in _BACKTEST_GLOSSARY)
+    return (f'<section><h3>{title}</h3>'
+            f'<table class="report-table"><tbody>{rows}</tbody></table></section>')
+
+
 def _render_concept_backtest_page(data: dict | None = None, error: str = "") -> str:
     nav = ('<nav><a href="/">← 大盤 dashboard</a>'
            '<a href="/chip-price">📋 籌碼價量</a>'
@@ -3620,7 +3653,13 @@ new Chart(document.getElementById('eq'),{{type:'line',
   options:{{responsive:true,plugins:{{legend:{{position:'top'}}}},
     scales:{{y:{{title:{{display:true,text:'累積淨超額 %'}}}}}}}}}});
 </script>"""
-    return (head + cards + meta + verdict + table + charts + method + caveat + js + tail)
+    glossary = _glossary_section([
+        "持有天數 (H)", "IC (資訊係數)", "多空價差", "超額報酬 (vs 大盤)",
+        "淨超額", "alpha", "贏大盤率 (beat rate)", "賺錢率 / 勝率",
+        "累積淨超額 / 權益曲線", "最大回撤 (MaxDD)", "報酬/波動", "Calmar",
+        "point-in-time"])
+    return (head + cards + meta + verdict + table + charts + method
+            + glossary + caveat + js + tail)
 
 
 @app.route("/concept-backtest")
@@ -3776,7 +3815,12 @@ new Chart(document.getElementById('eq'),{{type:'line',
   options:{{responsive:true,plugins:{{legend:{{position:'top'}}}},
     scales:{{y:{{title:{{display:true,text:'累積淨超額 %'}}}}}}}}}});
 </script>"""
-    return head + cards + meta + tbl + charts + method + caveat + js + tail
+    glossary = _glossary_section([
+        "持有天數 (H)", "事件研究", "episode 去重", "絕對報酬", "超額報酬 (vs 大盤)",
+        "淨超額", "基準 (baseline)", "edge", "賺錢率 / 勝率",
+        "贏大盤率 (beat rate)", "中位數 vs 均值", "累積淨超額 / 權益曲線",
+        "point-in-time"])
+    return head + cards + meta + tbl + charts + method + glossary + caveat + js + tail
 
 
 @app.route("/second-wave-backtest")
