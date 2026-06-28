@@ -23,6 +23,7 @@ import json
 import os
 import random
 import sys
+import time
 
 import numpy as np
 
@@ -109,17 +110,19 @@ def run(n_test=800, k=40, cutoff=20260101, seed=42):
 
     if not recs:
         return {"error": "無有效測試點"}
+    return _summarize(recs, uncond_mean, k, cutoff, "市場技術池")
+
+
+def _summarize(recs, uncond_mean, k, cutoff, pool_label):
     A = np.array(recs, dtype=np.float64)
     med, act = A[:, 0], A[:, 1]
-    base_up = float(np.mean(act > 0)) * 100         # 實際上漲比例 = base rate
+    base_up = float(np.mean(act > 0)) * 100
     dir_hit = float(np.mean(A[:, 4])) * 100
-    # 只看「有方向信心」(|med|>中位絕對值)的子集
     conf = np.abs(med) > np.median(np.abs(med))
     dir_hit_conf = float(np.mean(A[conf, 4])) * 100 if conf.any() else None
     in2575 = float(np.mean(A[:, 2])) * 100
     in1090 = float(np.mean(A[:, 3])) * 100
     mae_a = float(np.mean(A[:, 5])); mae_0 = float(np.mean(A[:, 6])); mae_u = float(np.mean(A[:, 7]))
-    # 分位校準曲線：pred 中位數分 8 組，看實際平均
     order = np.argsort(med)
     nb = 8
     curve = []
@@ -129,7 +132,8 @@ def run(n_test=800, k=40, cutoff=20260101, seed=42):
             curve.append({"pred": round(float(np.mean(med[seg])), 3),
                           "actual": round(float(np.mean(act[seg])), 3), "n": len(seg)})
     return {
-        "n": len(recs), "k": k, "cutoff": cutoff, "uncond_mean": round(uncond_mean, 3),
+        "pool": pool_label, "n": len(recs), "k": k, "cutoff": cutoff,
+        "uncond_mean": round(uncond_mean, 3),
         "base_up_pct": round(base_up, 1), "dir_hit_pct": round(dir_hit, 1),
         "dir_hit_conf_pct": round(dir_hit_conf, 1) if dir_hit_conf else None,
         "cover_2575_pct": round(in2575, 1), "cover_1090_pct": round(in1090, 1),
@@ -139,28 +143,108 @@ def run(n_test=800, k=40, cutoff=20260101, seed=42):
     }
 
 
+# ── 個股自己池回測 (完整 14 特徵, 含籌碼) ──────────────
+def run_self(k=40, cutoff=20260101, max_stocks=160, per_stock=40,
+             start="2024-06-01", seed=42):
+    """對概念股 universe，每檔用自己歷史(含借券/融資/法人)做 walk-forward。"""
+    sys.path.insert(0, HERE)
+    import tw_intraday_sim as sim
+    cpath = os.path.join(CACHE, "concepts.json")
+    themes = json.load(open(cpath))["themes"]
+    codes = sorted({c for v in themes.values() for c in v.get("stocks", [])})
+    rng = random.Random(seed)
+    if len(codes) > max_stocks:
+        codes = rng.sample(codes, max_stocks)
+    tok = sim._token()
+    recs = []
+    all_act = []
+    done = 0
+    for ci, code in enumerate(codes):
+        try:
+            rows = sim.fetch_daily(code, start, tok)
+            if len(rows) < 150:
+                continue
+            chip = sim.build_chip_history(code, start, tok)
+            mat = sim.build_matrix(rows, chip)           # [{i,date,feat}]
+            if len(mat) < k * 3:
+                continue
+            st = sim._stats(mat)
+            Z = np.array([sim._zvec(m["feat"], st) for m in mat], dtype=np.float32)
+            idates = np.array([int(m["date"]) for m in mat])
+            irow = np.array([m["i"] for m in mat])
+            closes = np.array([r["close"] for r in rows])
+            # 測試點：date>=cutoff 且 隔天存在
+            tcand = [p for p in range(len(mat))
+                     if idates[p] >= cutoff and irow[p] + 1 < len(rows)]
+            if len(tcand) > per_stock:
+                tcand = rng.sample(tcand, per_stock)
+            for p in tcand:
+                td = idates[p]
+                cmask = (idates < td) & (np.abs(irow - irow[p]) > 3)
+                cand = np.where(cmask)[0]
+                if len(cand) < k * 2:
+                    continue
+                d = np.sum((Z[cand] - Z[p]) ** 2, axis=1)
+                nn = cand[np.argpartition(d, k)[:k]]
+                outs = []
+                for a in nn:
+                    ia = irow[a]
+                    if ia + 1 < len(rows) and closes[ia] > 0:
+                        outs.append((closes[ia + 1] / closes[ia] - 1) * 100)
+                if len(outs) < k // 2:
+                    continue
+                outs = np.array(outs)
+                med = float(np.median(outs))
+                p10, p25, p75, p90 = [float(np.percentile(outs, q)) for q in (10, 25, 75, 90)]
+                ip = irow[p]
+                act = (closes[ip + 1] / closes[ip] - 1) * 100
+                all_act.append(act)
+                recs.append((med, act, 1 if p25 <= act <= p75 else 0,
+                             1 if p10 <= act <= p90 else 0,
+                             1 if (med > 0) == (act > 0) else 0,
+                             abs(act - med), abs(act), 0.0))
+            done += 1
+        except Exception as e:
+            print(f"  跳過 {code}: {e}", file=sys.stderr)
+        if (ci + 1) % 20 == 0:
+            print(f"  {ci+1}/{len(codes)} 檔 (有效 {done}, 樣本 {len(recs)})", file=sys.stderr)
+        time.sleep(0.05)
+    if not recs:
+        return {"error": "無有效測試點"}
+    um = float(np.mean(all_act))
+    # 補 ae_uncond
+    recs = [(m, a, i1, i2, dh, aea, ae0, abs(a - um)) for (m, a, i1, i2, dh, aea, ae0, _z) in recs]
+    return _summarize(recs, um, k, cutoff, f"個股自己池(含籌碼, {done}檔)")
+
+
+def _print(r):
+    print(f"\n【{r['pool']}】 測試 {r['n']} 點")
+    print(f"  base rate(實際上漲) : {r['base_up_pct']}%  | 方向命中率 {r['dir_hit_pct']}% (信心子集 {r['dir_hit_conf_pct']}%)")
+    print(f"  信心帶 25-75% {r['cover_2575_pct']}% (目標50) / 10-90% {r['cover_1090_pct']}% (目標80)")
+    print(f"  MAE 相似日 {r['mae_analog']} vs 猜0% {r['mae_zero']} → skill {r['skill_vs_zero']}%")
+    for c in r["calib_curve"]:
+        print(f"    pred {c['pred']:+.2f}% → actual {c['actual']:+.2f}% (n={c['n']})")
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
+    ap.add_argument("--pool", default="both", choices=["market", "self", "both"])
     ap.add_argument("--n", type=int, default=800)
     ap.add_argument("--k", type=int, default=40)
     ap.add_argument("--cutoff", type=int, default=20260101)
+    ap.add_argument("--max-stocks", type=int, default=160)
     ap.add_argument("--json-out")
     args = ap.parse_args()
-    r = run(args.n, args.k, args.cutoff)
-    if r.get("error"):
-        print("ERROR:", r["error"]); sys.exit(1)
-    print(f"\n收盤層級校準回測（市場技術池, walk-forward）  測試 {r['n']} 點")
-    print(f"  base rate(實際上漲比例) : {r['base_up_pct']}%")
-    print(f"  方向命中率              : {r['dir_hit_pct']}%  (有信心子集 {r['dir_hit_conf_pct']}%)")
-    print(f"  信心帶校準 25-75%(目標50): {r['cover_2575_pct']}%")
-    print(f"  信心帶校準 10-90%(目標80): {r['cover_1090_pct']}%")
-    print(f"  MAE 相似日 {r['mae_analog']} vs 猜0% {r['mae_zero']} vs 無條件 {r['mae_uncond']}")
-    print(f"  ⭐ skill vs 猜0% : {r['skill_vs_zero']}%  (正=相似日有降誤差)")
-    print("  分位校準曲線 (pred→actual, 單調遞增=有方向訊息):")
-    for c in r["calib_curve"]:
-        print(f"    pred {c['pred']:+.2f}% → actual {c['actual']:+.2f}% (n={c['n']})")
+    out = {"generated": __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M")}
+    if args.pool in ("market", "both"):
+        rm = run(args.n, args.k, args.cutoff)
+        if not rm.get("error"):
+            out["result"] = rm; _print(rm)
+    if args.pool in ("self", "both"):
+        rs = run_self(args.k, args.cutoff, max_stocks=args.max_stocks)
+        if not rs.get("error"):
+            out["result_self"] = rs; _print(rs)
     if args.json_out:
         with open(args.json_out, "w", encoding="utf-8") as f:
-            json.dump({"generated": __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M"),
-                       "result": r}, f, ensure_ascii=False)
+            json.dump(out, f, ensure_ascii=False)
         print(f"[json] 寫入 {args.json_out}", file=sys.stderr)

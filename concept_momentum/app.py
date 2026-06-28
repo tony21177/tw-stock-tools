@@ -4046,62 +4046,67 @@ def _render_intraday_backtest_page(data: dict | None = None, error: str = "") ->
         return head + ('<section><p>尚無回測結果。請先跑：<br>'
                        '<code>tw_intraday_sim_backtest.py --json-out '
                        'concept_momentum/cache/intraday_sim_backtest.json</code></p></section>') + tail
-    r = data["result"]
-    # 數據驅動裁決
-    has_dir = r["dir_hit_pct"] > max(r["base_up_pct"], 100 - r["base_up_pct"]) + 2
-    has_skill = r["skill_vs_zero"] > 2
-    if has_dir or has_skill:
-        vtxt = "技術相似日法在收盤層級有些微預測力（見下方指標）。"
-        vbg = "#eaf6ea"; vbd = "#9c9"
-    else:
+    pools = []
+    if data.get("result"):
+        pools.append(("market", data["result"]))
+    if data.get("result_self"):
+        pools.append(("self", data["result_self"]))
+    if not pools:
+        return head + '<section>無有效結果</section>' + tail
+
+    js_charts = []
+    body = ""
+    for idx, (key, r) in enumerate(pools):
         naive = max(r["base_up_pct"], 100 - r["base_up_pct"])
-        vtxt = (f"<b>結論：市場技術相似日法在「收盤層級」幾乎沒有預測力。</b><br>"
-                f"方向命中率 {r['dir_hit_pct']}% ≈ 擲銅板，且輸給「總是猜跌」的 {naive:.0f}%；"
-                f"相似日中位數的誤差比「直接猜 0%」還大 (skill {r['skill_vs_zero']}%)；"
-                f"信心帶偏窄(過度自信)。→ <b>這系統適合當「情境/分布視覺化」，"
-                f"不該當「方向預測器」。</b>隔天開盤到收盤方向接近效率/隨機，符合預期。")
-        vbg = "#fdf2e0"; vbd = "#e0a040"
-    verdict = (f'<section style="background:{vbg};border:1px solid {vbd}">'
-               f'<h3>⚖️ 裁決</h3><p>{vtxt}</p></section>')
-    naive = max(r["base_up_pct"], 100 - r["base_up_pct"])
-    tbl = (f'<section><h3>📊 指標（市場技術池, walk-forward, {r["n"]} 測試點）</h3>'
-           f'<table class="report-table"><tbody>'
-           f'<tr><td>方向命中率</td><td class="num">{r["dir_hit_pct"]}%</td>'
-           f'<td class="small">對照「總是猜跌」{naive:.0f}%；≈50% 即無方向力</td></tr>'
-           f'<tr><td>　有信心子集</td><td class="num">{r.get("dir_hit_conf_pct")}%</td>'
-           f'<td class="small">|預測|較大時的命中率</td></tr>'
-           f'<tr><td>信心帶 25–75% 覆蓋</td><td class="num">{r["cover_2575_pct"]}%</td>'
-           f'<td class="small">目標 50%；偏低=帶太窄(過度自信)</td></tr>'
-           f'<tr><td>信心帶 10–90% 覆蓋</td><td class="num">{r["cover_1090_pct"]}%</td>'
-           f'<td class="small">目標 80%</td></tr>'
-           f'<tr><td>MAE 相似日 / 猜0% / 無條件</td>'
-           f'<td class="num">{r["mae_analog"]} / {r["mae_zero"]} / {r["mae_uncond"]}</td>'
-           f'<td class="small">相似日要更小才有用</td></tr>'
-           f'<tr><td>⭐ skill vs 猜0%</td><td class="num">{r["skill_vs_zero"]}%</td>'
-           f'<td class="small">正=相似日有降誤差；負=無技巧</td></tr>'
-           f'</tbody></table></section>')
-    curve = r["calib_curve"]
-    cl = json.dumps([c["pred"] for c in curve])
-    ca = json.dumps([c["actual"] for c in curve])
-    chart = ('<section><h3>📈 分位校準曲線</h3>'
-             '<canvas id="cc" height="110"></canvas>'
-             '<p class="small">把預測中位數由低到高分 8 組，點=各組(預測, 實際)平均。'
-             '若有方向訊息應沿 45° 線單調上升；散亂/水平=沒訊息。</p></section>')
-    method = ('<section><h3>🔬 方法</h3><p class="small">'
-              '走前測：對每個測試 (股票,日 t)，相似日<b>只取 &lt;t 的過去日</b>(無未來洩漏)，'
-              'K=40 技術最相似的歷史股票日 → 它們<b>隔天日線收盤</b>報酬的分布當預測，'
-              '跟該股<b>隔天實際收盤</b>報酬比。只用日線(零分鐘K)、零新抓取，'
-              f'測試池 date≥{r["cutoff"]}。⚠ 此為<b>市場技術池</b>(無籌碼)；'
-              '個股自己池(含借券/融資/法人)未測，可能略不同但先驗不強。'
-              '此測「收盤結果」，盤中路徑形狀的校準是更後面的事。</p></section>')
-    js = (f'<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>'
-          f'<script>new Chart(document.getElementById("cc"),{{type:"scatter",'
-          f'data:{{datasets:[{{label:"各組(預測,實際)",data:{cl}.map((p,i)=>({{x:p,y:{ca}[i]}})),'
-          f'backgroundColor:"#2980b9",pointRadius:5}}]}},'
-          f'options:{{plugins:{{legend:{{display:false}}}},'
-          f'scales:{{x:{{title:{{display:true,text:"預測中位數 %"}}}},'
-          f'y:{{title:{{display:true,text:"實際平均報酬 %"}}}}}}}}}});</script>')
-    return head + verdict + tbl + chart + method + js + tail
+        has_skill = r["skill_vs_zero"] > 2
+        has_dir = r["dir_hit_pct"] > naive + 2
+        if has_dir or has_skill:
+            vtxt = f"<b>{r['pool']}</b>：在收盤層級有些微預測力（skill {r['skill_vs_zero']}%、方向 {r['dir_hit_pct']}%）。"
+            vbg, vbd = "#eaf6ea", "#9c9"
+        else:
+            vtxt = (f"<b>{r['pool']}：收盤層級幾乎沒有預測力。</b> "
+                    f"方向命中 {r['dir_hit_pct']}% ≈ 擲銅板、輸給「總是猜{'跌' if r['base_up_pct']<50 else '漲'}」的 {naive:.0f}%；"
+                    f"相似日中位數誤差比「猜 0%」還{'大' if r['skill_vs_zero']<0 else '小'} (skill {r['skill_vs_zero']}%)；"
+                    f"信心帶偏窄(過度自信)。")
+            vbg, vbd = "#fdf2e0", "#e0a040"
+        body += (f'<section style="background:{vbg};border:1px solid {vbd}">'
+                 f'<h3>⚖️ {r["pool"]}（{r["n"]} 測試點）</h3><p class="small">{vtxt}</p>'
+                 f'<table class="report-table"><tbody>'
+                 f'<tr><td>方向命中率</td><td class="num">{r["dir_hit_pct"]}%</td>'
+                 f'<td class="small">對照「總是猜{"跌" if r["base_up_pct"]<50 else "漲"}」{naive:.0f}%；≈50%=無方向力</td></tr>'
+                 f'<tr><td>　有信心子集</td><td class="num">{r.get("dir_hit_conf_pct")}%</td><td></td></tr>'
+                 f'<tr><td>信心帶 25–75% 覆蓋</td><td class="num">{r["cover_2575_pct"]}%</td>'
+                 f'<td class="small">目標 50%；偏低=帶太窄</td></tr>'
+                 f'<tr><td>信心帶 10–90% 覆蓋</td><td class="num">{r["cover_1090_pct"]}%</td>'
+                 f'<td class="small">目標 80%</td></tr>'
+                 f'<tr><td>MAE 相似日 / 猜0%</td><td class="num">{r["mae_analog"]} / {r["mae_zero"]}</td>'
+                 f'<td class="small">相似日要更小才有用</td></tr>'
+                 f'<tr><td>⭐ skill vs 猜0%</td><td class="num">{r["skill_vs_zero"]}%</td>'
+                 f'<td class="small">正=有降誤差；負=無技巧</td></tr>'
+                 f'</tbody></table>'
+                 f'<canvas id="cc{idx}" height="100"></canvas>'
+                 f'<p class="small">分位校準：預測中位數分 8 組的(預測,實際)平均，'
+                 f'單調沿 45°=有方向訊息；散亂=沒。</p></section>')
+        cl = json.dumps([c["pred"] for c in r["calib_curve"]])
+        ca = json.dumps([c["actual"] for c in r["calib_curve"]])
+        js_charts.append(f'new Chart(document.getElementById("cc{idx}"),{{type:"scatter",'
+                         f'data:{{datasets:[{{data:{cl}.map((p,i)=>({{x:p,y:{ca}[i]}})),'
+                         f'backgroundColor:"#2980b9",pointRadius:5}}]}},'
+                         f'options:{{plugins:{{legend:{{display:false}}}},'
+                         f'scales:{{x:{{title:{{display:true,text:"預測%"}}}},'
+                         f'y:{{title:{{display:true,text:"實際%"}}}}}}}}}});')
+    method = ('<section><h3>🔬 方法 + 結論</h3><p class="small">'
+              '走前測：每個測試 (股票,日 t)，相似日<b>只取 &lt;t 過去日</b>(無未來洩漏)，'
+              'K=40 最相似歷史日 → 它們<b>隔天日線收盤</b>報酬分布當預測，跟<b>實際隔天收盤</b>比。'
+              '<b>市場技術池</b>=全市場、6 技術特徵、無籌碼；<b>個股自己池</b>=該股自己歷史、'
+              '14 特徵(含借券/融資/法人)。<br>'
+              '📌 兩池結論一致：<b>隔天「開盤→收盤」方向接近隨機，籌碼也沒救</b>'
+              '(符合市場效率)。→ 本模擬系統請當<b>「情境/分布視覺化」</b>用，'
+              '看「類似情況歷史走過哪些範圍」，<b>別當方向預測器</b>。<br>'
+              '此測收盤結果；盤中路徑形狀校準是更後面的事。</p></section>')
+    js = ('<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>'
+          '<script>' + "".join(js_charts) + '</script>')
+    return head + body + method + js + tail
 
 
 @app.route("/intraday-sim-backtest")
