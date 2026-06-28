@@ -629,6 +629,7 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
     <div class="tab-group-label">單檔查詢 · 即時</div>
     <div class="tab-group-items">
       <a class="tab" href="/chip-price" style="text-decoration:none;color:inherit;">📋 籌碼價量</a>
+      <a class="tab" href="/intraday-sim" style="text-decoration:none;color:inherit;">📉 盤中走勢模擬</a>
       <a class="tab" href="/contract-liabilities" style="text-decoration:none;color:inherit;">💰 合約負債</a>
       <a class="tab" href="/inventory" style="text-decoration:none;color:inherit;">📦 存貨</a>
       <a class="tab" href="/shareholders" style="text-decoration:none;color:inherit;">👥 前十大股東</a>

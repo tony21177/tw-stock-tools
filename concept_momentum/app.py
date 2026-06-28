@@ -8,6 +8,7 @@ Also serves /chip-price form + on-demand analysis for any stock.
 import glob
 import html as html_lib
 import json
+import math
 import os
 import sys
 from datetime import datetime
@@ -3834,6 +3835,167 @@ def second_wave_backtest():
     except Exception as e:
         return _render_second_wave_backtest_page(error=f"{type(e).__name__}: {e}")
     return _render_second_wave_backtest_page(data=data)
+
+
+def _render_intraday_sim_page(code: str = "", data: dict | None = None,
+                              error: str = "") -> str:
+    nav = ('<nav><a href="/">← 大盤 dashboard</a>'
+           '<a href="/concept-backtest">🧪 族群策略回測</a>'
+           '<a href="/second-wave-backtest">🌊 第二波回測</a></nav>')
+    css = """<style>
+  body { font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
+         max-width:1200px; margin:1em auto; padding:0 1em; background:#f7f7f9; color:#222; }
+  h1 { font-size:1.4em; margin:.4em 0; } nav a { margin-right:12px; color:#0066cc; text-decoration:none; }
+  section { background:#fff; padding:12px 16px; border-radius:6px; margin-bottom:12px;
+            box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  section h3 { margin:0 0 4px 0; font-size:1.02em; color:#444; }
+  .small,small { font-size:.85em; color:#666; }
+  .error { background:#fee; border:1px solid #f99; padding:12px; border-radius:4px; color:#c00; }
+  form { display:flex; gap:6px; align-items:center; }
+  input[type=text]{ width:90px; padding:6px 8px; border:1px solid #ccc; border-radius:4px; }
+  button{ padding:6px 14px; background:#0066cc; color:#fff; border:none; border-radius:4px; cursor:pointer; }
+  .grid3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
+  @media (max-width:900px){ .grid3{ grid-template-columns:1fr; } }
+  .meth { font-size:.8em; color:#555; background:#f3f6fb; border-radius:4px; padding:5px 8px; margin:4px 0; }
+  table.report-table{ width:100%; border-collapse:collapse; font-size:.85em; }
+  table.report-table td,table.report-table th{ padding:4px 8px; border-bottom:1px solid #eee; text-align:left; }
+  .num{ text-align:right; font-variant-numeric:tabular-nums; }
+</style>"""
+    head = (f'<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+            f'<title>盤中走勢模擬</title>{css}</head><body>{nav}'
+            f'<h1>📉 股價盤中走勢模擬</h1>'
+            f'<section><form action="/intraday-sim" method="get">'
+            f'<input type="text" name="code" placeholder="股號" value="{_esc(code)}" required>'
+            f'<button type="submit">模擬下一交易日</button>'
+            f'<span class="small">輸入股號，模擬下一交易日 09:00–13:30 走勢</span>'
+            f'</form></section>')
+    tail = '</body></html>'
+    if error:
+        return head + f'<div class="error">{_esc(error)}</div>' + tail
+    if not data:
+        return head + ('<section class="small">輸入股號開始。根據該股<b>籌碼/型態/量價</b>'
+                       '找歷史相似日，看它們隔天怎麼走 → A 情境劇本 / B 信心帶 / '
+                       'C 蒙地卡羅三種模擬並列。<br>⚠ 盤中走勢本質不可精確預測，'
+                       '本系統是「情境參考」非預言。</section>') + tail
+
+    pc = data["prev_close"]
+    grid = data["grid"]
+    glabels = json.dumps([m if m.endswith(":00") or m.endswith(":30") else "" for m in grid])
+    # 統一 y 範圍
+    allvals = []
+    for s in (data.get("scenarios") or []):
+        if s.get("path"):
+            allvals += s["path"]
+    for key in ("band", "monte_carlo"):
+        b = data.get(key)
+        if b:
+            allvals += b["p10"] + b["p90"]
+    ymin = math.floor(min(allvals + [-1])) - 1
+    ymax = math.ceil(max(allvals + [1])) + 1
+
+    info = (f'<section class="small">{_esc(data["code"])}・基準前收 <b>{pc}</b>'
+            f'（{_esc(data["as_of"])} 收盤）・相似日樣本 <b>{data["n_analog"]}</b>'
+            f'（個股自己歷史池，平均距離 {data.get("avg_dist")}）<br>'
+            f'⚠ 盤中走勢不可精確預測；下列為「過去最像今天的日子隔天怎麼走」的情境參考，'
+            f'非預言。y 軸左=距前收%、右=換算股價。</section>')
+
+    # A 劇本表
+    scen = data.get("scenarios") or []
+    srows = "".join(
+        f'<tr><td>{_esc(s["name"])}</td><td class="num">{s["prob"]:.0f}%</td>'
+        f'<td class="num">n={s["count"]}</td>'
+        f'<td class="num">{("收 %+.1f%%" % s["path"][-1]) if s.get("path") else "—"}</td></tr>'
+        for s in scen)
+    scen_tbl = (f'<table class="report-table"><thead><tr><th>劇本</th>'
+                f'<th class="num">機率</th><th class="num">樣本</th>'
+                f'<th class="num">預估收盤</th></tr></thead><tbody>{srows}</tbody></table>')
+
+    charts = f"""
+<div class="grid3">
+  <section><h3>A 情境劇本</h3>
+    <div class="meth">用過去籌碼/型態最像今天的 {data['n_analog']} 天，
+      它們隔天走勢分成幾種具名劇本，每條=該劇本代表路徑(機率見圖例)。</div>
+    <canvas id="cA" height="150"></canvas>{scen_tbl}</section>
+  <section><h3>B 最可能路徑 + 信心帶</h3>
+    <div class="meth">{data['n_analog']} 個相似日隔天走勢的逐分鐘中位數(粗線)
+      + 25–75%(深帶) + 10–90%(淺帶)分布。</div>
+    <canvas id="cB" height="150"></canvas></section>
+  <section><h3>C 純蒙地卡羅(對照)</h3>
+    <div class="meth">不看籌碼，只用該股波動度+開盤跳空分布隨機模擬，
+      當「沒有資訊優勢」的對照基準。</div>
+    <canvas id="cC" height="150"></canvas></section>
+</div>"""
+
+    gloss = ('<section><h3>📚 怎麼看</h3><p class="small">'
+             '• <b>距前收%</b>：相對昨收的漲跌，0%＝平盤。右軸換算成股價。<br>'
+             '• <b>A 情境劇本</b>：相似日隔天「分群」後的代表走勢，機率=該群佔比。'
+             '看「哪種劇本機率高」+「劇本之間方向是否一致」。<br>'
+             '• <b>B 信心帶</b>：把所有相似日疊起來的分布，帶越窄=越多相似日走法一致、越可信。<br>'
+             '• <b>C 蒙地卡羅</b>：純隨機基準。若 A/B 的方向跟 C 差不多，代表「籌碼/型態沒給額外資訊」；'
+             '若 A/B 明顯偏一邊而 C 中性，才是相似日法真的看出東西。<br>'
+             '⚠ 全部是機率參考，不是預測那條線會長這樣。樣本少(相似日不足)時可信度低。</p></section>')
+
+    # JS 資料
+    def ser(arr):
+        return json.dumps([round(x, 3) for x in arr])
+    colors = ["#c0392b", "#e67e22", "#27ae60", "#2980b9", "#8e44ad", "#16a085", "#7f8c8d"]
+    a_ds = []
+    ci = 0
+    for s in scen:
+        if not s.get("path"):
+            continue
+        a_ds.append({"label": f'{s["name"]} {s["prob"]:.0f}%', "data": [round(x, 3) for x in s["path"]],
+                     "borderColor": colors[ci % len(colors)], "borderWidth": 2,
+                     "pointRadius": 0, "tension": 0.2})
+        ci += 1
+    a_ds_json = json.dumps(a_ds, ensure_ascii=False)
+    band = data.get("band") or {"median": [], "p25": [], "p75": [], "p10": [], "p90": []}
+    mc = data["monte_carlo"]
+
+    js = f"""<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+const G={glabels}, PC={pc}, YMIN={ymin}, YMAX={ymax};
+const yscales = {{
+  y:{{position:'left',min:YMIN,max:YMAX,title:{{display:true,text:'距前收 %'}}}},
+  yp:{{position:'right',min:YMIN,max:YMAX,grid:{{drawOnChartArea:false}},
+      title:{{display:true,text:'股價'}},
+      ticks:{{callback:v=>(PC*(1+v/100)).toFixed(1)}}}}
+}};
+const baseOpt={{responsive:true,interaction:{{mode:'index',intersect:false}},
+  plugins:{{legend:{{position:'top',labels:{{boxWidth:12,font:{{size:10}}}}}}}},
+  scales:yscales,elements:{{point:{{radius:0}}}}}};
+new Chart(document.getElementById('cA'),{{type:'line',
+  data:{{labels:G,datasets:{a_ds_json}}},options:baseOpt}});
+function mkBand(id,b,c){{
+  new Chart(document.getElementById(id),{{type:'line',
+   data:{{labels:G,datasets:[
+     {{label:'90%',data:b.p90,borderColor:'transparent',backgroundColor:c+'18',fill:'+1',pointRadius:0}},
+     {{label:'10%',data:b.p10,borderColor:'transparent',backgroundColor:'transparent',fill:false,pointRadius:0}},
+     {{label:'75%',data:b.p75,borderColor:'transparent',backgroundColor:c+'33',fill:'+1',pointRadius:0}},
+     {{label:'25%',data:b.p25,borderColor:'transparent',backgroundColor:'transparent',fill:false,pointRadius:0}},
+     {{label:'中位數',data:b.median,borderColor:c,borderWidth:2.5,pointRadius:0,tension:.15}}
+   ]}},options:{{...baseOpt,plugins:{{legend:{{display:false}}}}}}}});
+}}
+mkBand('cB',{json.dumps(band)},'#2980b9');
+mkBand('cC',{json.dumps(mc)},'#7f8c8d');
+</script>"""
+    return head + info + charts + gloss + js + tail
+
+
+@app.route("/intraday-sim")
+def intraday_sim():
+    code = (request.args.get("code") or "").strip()
+    if not code:
+        return _render_intraday_sim_page()
+    try:
+        import tw_intraday_sim
+        data = tw_intraday_sim.run(code)
+    except Exception as e:
+        return _render_intraday_sim_page(code=code, error=f"{type(e).__name__}: {e}")
+    if data.get("error"):
+        return _render_intraday_sim_page(code=code, error=data["error"])
+    return _render_intraday_sim_page(code=code, data=data)
 
 
 @app.route("/adr-premium")
