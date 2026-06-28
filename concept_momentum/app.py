@@ -3891,6 +3891,12 @@ def _render_intraday_sim_page(code: str = "", data: dict | None = None,
         b = data.get(key)
         if b:
             allvals += b["p10"] + b["p90"]
+    mkt = data.get("market") or {}
+    for s in (mkt.get("scenarios") or []):
+        if s.get("path"):
+            allvals += s["path"]
+    if mkt.get("band"):
+        allvals += mkt["band"]["p10"] + mkt["band"]["p90"]
     ymin = math.floor(min(allvals + [-1])) - 1
     ymax = math.ceil(max(allvals + [1])) + 1
 
@@ -3900,31 +3906,47 @@ def _render_intraday_sim_page(code: str = "", data: dict | None = None,
             f'⚠ 盤中走勢不可精確預測；下列為「過去最像今天的日子隔天怎麼走」的情境參考，'
             f'非預言。y 軸左=距前收%、右=換算股價。</section>')
 
-    # A 劇本表
-    scen = data.get("scenarios") or []
-    srows = "".join(
-        f'<tr><td>{_esc(s["name"])}</td><td class="num">{s["prob"]:.0f}%</td>'
-        f'<td class="num">n={s["count"]}</td>'
-        f'<td class="num">{("收 %+.1f%%" % s["path"][-1]) if s.get("path") else "—"}</td></tr>'
-        for s in scen)
-    scen_tbl = (f'<table class="report-table"><thead><tr><th>劇本</th>'
+    def scen_tbl(scen):
+        srows = "".join(
+            f'<tr><td>{_esc(s["name"])}</td><td class="num">{s["prob"]:.0f}%</td>'
+            f'<td class="num">n={s["count"]}</td>'
+            f'<td class="num">{("收 %+.1f%%" % s["path"][-1]) if s.get("path") else "—"}</td></tr>'
+            for s in scen)
+        return (f'<table class="report-table"><thead><tr><th>劇本</th>'
                 f'<th class="num">機率</th><th class="num">樣本</th>'
                 f'<th class="num">預估收盤</th></tr></thead><tbody>{srows}</tbody></table>')
 
+    scen = data.get("scenarios") or []
+    mscen = mkt.get("scenarios") or []
+    mn = mkt.get("n_analog", 0)
+    mkt_note = (f"全市場 {mn} 個相似日（技術/量價子集，<b>不含籌碼</b>；"
+                f"平均距離 {mkt.get('avg_dist')}）" if mn else
+                ("（" + _esc(mkt.get("error", "市場池資料不足")) + "）"))
+
     charts = f"""
+<h3 style="margin:6px 0">① 個股自己歷史池（完整特徵：籌碼+型態+量價）</h3>
 <div class="grid3">
   <section><h3>A 情境劇本</h3>
-    <div class="meth">用過去籌碼/型態最像今天的 {data['n_analog']} 天，
-      它們隔天走勢分成幾種具名劇本，每條=該劇本代表路徑(機率見圖例)。</div>
-    <canvas id="cA" height="150"></canvas>{scen_tbl}</section>
+    <div class="meth">過去籌碼/型態最像今天的 {data['n_analog']} 天，隔天走勢分群(機率見圖例)。</div>
+    <canvas id="cA" height="150"></canvas>{scen_tbl(scen)}</section>
   <section><h3>B 最可能路徑 + 信心帶</h3>
-    <div class="meth">{data['n_analog']} 個相似日隔天走勢的逐分鐘中位數(粗線)
-      + 25–75%(深帶) + 10–90%(淺帶)分布。</div>
+    <div class="meth">{data['n_analog']} 個相似日逐分鐘中位數(粗線) + 25–75%(深) + 10–90%(淺)。</div>
     <canvas id="cB" height="150"></canvas></section>
   <section><h3>C 純蒙地卡羅(對照)</h3>
-    <div class="meth">不看籌碼，只用該股波動度+開盤跳空分布隨機模擬，
-      當「沒有資訊優勢」的對照基準。</div>
+    <div class="meth">不看籌碼，只用該股波動度+開盤跳空隨機模擬，當「無資訊優勢」基準。</div>
     <canvas id="cC" height="150"></canvas></section>
+</div>
+<h3 style="margin:10px 0 6px">② 全市場池（技術+量價子集，無歷史籌碼）</h3>
+<div class="grid3">
+  <section><h3>A 情境劇本（全市場）</h3>
+    <div class="meth">{mkt_note}：技術型態最像今天的全市場股票日，隔天走勢分群。</div>
+    {'<canvas id="cAm" height="150"></canvas>' + scen_tbl(mscen) if mscen else '<p class="small">'+mkt_note+'</p>'}</section>
+  <section><h3>B 信心帶（全市場）</h3>
+    <div class="meth">全市場相似日逐分鐘中位數+信心帶。</div>
+    {'<canvas id="cBm" height="150"></canvas>' if mkt.get('band') else '<p class="small">無資料</p>'}</section>
+  <section><h3>C 蒙地卡羅</h3>
+    <div class="meth">同上方 C（純統計基準與池無關）。</div>
+    <p class="small">蒙地卡羅是純波動度模擬，跟用哪個池無關 → 見上方 ① 的 C。</p></section>
 </div>"""
 
     gloss = ('<section><h3>📚 怎麼看</h3><p class="small">'
@@ -3952,6 +3974,18 @@ def _render_intraday_sim_page(code: str = "", data: dict | None = None,
     a_ds_json = json.dumps(a_ds, ensure_ascii=False)
     band = data.get("band") or {"median": [], "p25": [], "p75": [], "p10": [], "p90": []}
     mc = data["monte_carlo"]
+    # 市場池 A 線
+    ma_ds = []
+    ci = 0
+    for s in mscen:
+        if not s.get("path"):
+            continue
+        ma_ds.append({"label": f'{s["name"]} {s["prob"]:.0f}%', "data": [round(x, 3) for x in s["path"]],
+                      "borderColor": colors[ci % len(colors)], "borderWidth": 2,
+                      "pointRadius": 0, "tension": 0.2})
+        ci += 1
+    ma_ds_json = json.dumps(ma_ds, ensure_ascii=False)
+    mband = mkt.get("band")
 
     js = f"""<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
@@ -3979,6 +4013,9 @@ function mkBand(id,b,c){{
 }}
 mkBand('cB',{json.dumps(band)},'#2980b9');
 mkBand('cC',{json.dumps(mc)},'#7f8c8d');
+if(document.getElementById('cAm')) new Chart(document.getElementById('cAm'),
+  {{type:'line',data:{{labels:G,datasets:{ma_ds_json}}},options:baseOpt}});
+{("if(document.getElementById('cBm')) mkBand('cBm'," + json.dumps(mband) + ",'#16a085');") if mband else ""}
 </script>"""
     return head + info + charts + gloss + js + tail
 
@@ -3990,7 +4027,7 @@ def intraday_sim():
         return _render_intraday_sim_page()
     try:
         import tw_intraday_sim
-        data = tw_intraday_sim.run(code)
+        data = tw_intraday_sim.run(code, pool="both")
     except Exception as e:
         return _render_intraday_sim_page(code=code, error=f"{type(e).__name__}: {e}")
     if data.get("error"):

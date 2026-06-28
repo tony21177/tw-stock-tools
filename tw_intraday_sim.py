@@ -376,7 +376,120 @@ def monte_carlo(rows: list[dict], n_sims: int = 500) -> dict:
     return _pct_band(sims)
 
 
-def run(code: str, k: int = 40, start: str = "2024-01-01") -> dict:
+# ── 全市場池（技術+量價子集，無歷史籌碼）────────────
+PRICE_ALL = os.path.join(CACHE, "backtest_prices_all.json")
+MKT_MATRIX = os.path.join(CACHE, "intraday_mkt_matrix.json")
+MKT_KEYS = ["dist_ma5", "dist_ma20", "dist_ma60", "ret5", "ret20", "volratio"]
+
+
+def _tech_feat_from_close(closes: list[float], vols: list[float], i: int) -> list[float] | None:
+    """只用 close+volume 的技術子集 (市場池)。回 6 維向量或 None。"""
+    if i < 60:
+        return None
+    c = closes[i]
+    out = []
+    for n in (5, 20, 60):
+        ma = sum(closes[i + 1 - n:i + 1]) / n
+        if ma <= 0:
+            return None
+        out.append((c / ma - 1) * 100)
+    out.append((c / closes[i - 5] - 1) * 100)
+    out.append((c / closes[i - 20] - 1) * 100)
+    vma = statistics.mean(vols[i - 19:i + 1]) if i >= 19 else 0
+    out.append((vols[i] / vma) if vma > 0 else 1.0)
+    return out
+
+
+_MKT_CACHE = None       # 記憶體快取矩陣
+_PRICE_ALL_CACHE = None
+
+
+def _load_price_all() -> dict:
+    global _PRICE_ALL_CACHE
+    if _PRICE_ALL_CACHE is None:
+        with open(PRICE_ALL) as f:
+            _PRICE_ALL_CACHE = json.load(f)["stocks"]
+    return _PRICE_ALL_CACHE
+
+
+def build_market_matrix(rebuild: bool = False) -> dict:
+    """從 backtest_prices_all.json 算全市場技術特徵矩陣，快取(檔案+記憶體)。
+    回 {keys, mu, sd, rows:[[code, date, z1..z6]]} (已標準化)。"""
+    global _MKT_CACHE
+    if _MKT_CACHE is not None and not rebuild:
+        return _MKT_CACHE
+    if os.path.exists(MKT_MATRIX) and not rebuild:
+        with open(MKT_MATRIX) as f:
+            _MKT_CACHE = json.load(f)
+        return _MKT_CACHE
+    allp = _load_price_all()
+    raw = []   # [code, date, vec(6)]
+    for code, s in allp.items():
+        rows = s["rows"]
+        closes = [r["close"] for r in rows]
+        vols = [r["volume"] for r in rows]
+        for i in range(60, len(rows)):
+            v = _tech_feat_from_close(closes, vols, i)
+            if v:
+                raw.append([code, rows[i]["date"], v])
+    # 標準化
+    cols = list(zip(*[r[2] for r in raw]))
+    mu = [statistics.mean(c) for c in cols]
+    sd = [statistics.pstdev(c) or 1.0 for c in cols]
+    rows_z = [[r[0], r[1]] + [(r[2][j] - mu[j]) / sd[j] for j in range(6)] for r in raw]
+    out = {"keys": MKT_KEYS, "mu": mu, "sd": sd, "rows": rows_z,
+           "n_stocks": len(allp)}
+    with open(MKT_MATRIX, "w") as f:
+        json.dump(out, f)
+    _MKT_CACHE = out
+    return out
+
+
+def run_market_pool(today_tech: list[float], k: int, token: str) -> dict:
+    """市場池：今天的技術向量 → 全市場相似日 → 隔天路徑 → A/B/C。"""
+    mat = build_market_matrix()
+    mu, sd = mat["mu"], mat["sd"]
+    tz = [(today_tech[j] - mu[j]) / sd[j] for j in range(6)]
+    scored = []
+    for r in mat["rows"]:
+        z = r[2:]
+        d = sum((tz[j] - z[j]) ** 2 for j in range(6))
+        scored.append((d, r[0], r[1]))
+    scored.sort(key=lambda x: x[0])
+    # 取最像的 k 檔股票日 (不同股票，避免同股連續日洗版：每股最多 2 筆)
+    picks = []
+    per_stock: dict[str, int] = {}
+    for d, code, date in scored:
+        if per_stock.get(code, 0) >= 2:
+            continue
+        per_stock[code] = per_stock.get(code, 0) + 1
+        picks.append((code, date, math.sqrt(d)))
+        if len(picks) >= k:
+            break
+    # 抓每個相似日「隔天」路徑
+    allp = _load_price_all()
+    paths = []
+    for code, date, dist in picks:
+        rows = allp[code]["rows"]
+        idx = next((ii for ii, rr in enumerate(rows) if rr["date"] == date), None)
+        if idx is None or idx + 1 >= len(rows):
+            continue
+        nxt = rows[idx + 1]["date"]
+        kb = fetch_kbar(code, nxt, token)
+        if not kb:
+            continue
+        p = rebase_path(kb, rows[idx]["close"])
+        if p:
+            paths.append(p)
+    out = {"n_analog": len(paths),
+           "avg_dist": round(statistics.mean([p[2] for p in picks]), 2) if picks else None}
+    if paths:
+        out["scenarios"] = cluster_scenarios(paths)
+        out["band"] = _pct_band(paths)
+    return out
+
+
+def run(code: str, k: int = 40, start: str = "2024-01-01", pool: str = "self") -> dict:
     tok = _token()
     rows = fetch_daily(code, start, tok)
     if len(rows) < 80:
@@ -401,6 +514,15 @@ def run(code: str, k: int = 40, start: str = "2024-01-01") -> dict:
     if paths:
         out["scenarios"] = cluster_scenarios(paths)
         out["band"] = _pct_band(paths)
+    # 全市場池（技術子集）
+    if pool in ("market", "both") and os.path.exists(PRICE_ALL):
+        closes = [r["close"] for r in rows]; vols = [r["volume"] for r in rows]
+        today_tech = _tech_feat_from_close(closes, vols, today_i)
+        if today_tech:
+            try:
+                out["market"] = run_market_pool(today_tech, k, tok)
+            except Exception as e:
+                out["market"] = {"error": f"{type(e).__name__}: {e}"}
     return out
 
 
