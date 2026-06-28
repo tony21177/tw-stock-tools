@@ -3840,8 +3840,9 @@ def second_wave_backtest():
 def _render_intraday_sim_page(code: str = "", data: dict | None = None,
                               error: str = "") -> str:
     nav = ('<nav><a href="/">← 大盤 dashboard</a>'
-           '<a href="/concept-backtest">🧪 族群策略回測</a>'
-           '<a href="/second-wave-backtest">🌊 第二波回測</a></nav>')
+           '<a href="/intraday-sim-backtest">🧪 此系統的校準回測</a>'
+           '<a href="/concept-backtest">族群策略回測</a>'
+           '<a href="/second-wave-backtest">第二波回測</a></nav>')
     css = """<style>
   body { font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
          max-width:1200px; margin:1em auto; padding:0 1em; background:#f7f7f9; color:#222; }
@@ -4018,6 +4019,102 @@ if(document.getElementById('cAm')) new Chart(document.getElementById('cAm'),
 {("if(document.getElementById('cBm')) mkBand('cBm'," + json.dumps(mband) + ",'#16a085');") if mband else ""}
 </script>"""
     return head + info + charts + gloss + js + tail
+
+
+def _render_intraday_backtest_page(data: dict | None = None, error: str = "") -> str:
+    nav = ('<nav><a href="/">← 大盤 dashboard</a>'
+           '<a href="/intraday-sim">📉 盤中走勢模擬</a></nav>')
+    css = """<style>
+  body{font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
+       max-width:900px;margin:1em auto;padding:0 1em;background:#f7f7f9;color:#222;}
+  h1{font-size:1.35em;margin:.4em 0;} nav a{margin-right:12px;color:#0066cc;text-decoration:none;}
+  section{background:#fff;padding:12px 16px;border-radius:6px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);}
+  section h3{margin:0 0 6px 0;font-size:1.05em;color:#444;}
+  table.report-table{width:100%;border-collapse:collapse;font-size:.9em;}
+  table.report-table td,table.report-table th{padding:6px 10px;border-bottom:1px solid #eee;text-align:left;}
+  .num{text-align:right;font-variant-numeric:tabular-nums;} .small,small{font-size:.85em;color:#666;}
+  .error{background:#fee;border:1px solid #f99;padding:12px;border-radius:4px;color:#c00;}
+</style>"""
+    head = (f'<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+            f'<title>盤中模擬回測</title>{css}</head><body>{nav}'
+            f'<h1>🧪 盤中走勢模擬 — 收盤層級校準回測</h1>')
+    tail = '</body></html>'
+    if error:
+        return head + f'<div class="error">{_esc(error)}</div>' + tail
+    if not data:
+        return head + ('<section><p>尚無回測結果。請先跑：<br>'
+                       '<code>tw_intraday_sim_backtest.py --json-out '
+                       'concept_momentum/cache/intraday_sim_backtest.json</code></p></section>') + tail
+    r = data["result"]
+    # 數據驅動裁決
+    has_dir = r["dir_hit_pct"] > max(r["base_up_pct"], 100 - r["base_up_pct"]) + 2
+    has_skill = r["skill_vs_zero"] > 2
+    if has_dir or has_skill:
+        vtxt = "技術相似日法在收盤層級有些微預測力（見下方指標）。"
+        vbg = "#eaf6ea"; vbd = "#9c9"
+    else:
+        naive = max(r["base_up_pct"], 100 - r["base_up_pct"])
+        vtxt = (f"<b>結論：市場技術相似日法在「收盤層級」幾乎沒有預測力。</b><br>"
+                f"方向命中率 {r['dir_hit_pct']}% ≈ 擲銅板，且輸給「總是猜跌」的 {naive:.0f}%；"
+                f"相似日中位數的誤差比「直接猜 0%」還大 (skill {r['skill_vs_zero']}%)；"
+                f"信心帶偏窄(過度自信)。→ <b>這系統適合當「情境/分布視覺化」，"
+                f"不該當「方向預測器」。</b>隔天開盤到收盤方向接近效率/隨機，符合預期。")
+        vbg = "#fdf2e0"; vbd = "#e0a040"
+    verdict = (f'<section style="background:{vbg};border:1px solid {vbd}">'
+               f'<h3>⚖️ 裁決</h3><p>{vtxt}</p></section>')
+    naive = max(r["base_up_pct"], 100 - r["base_up_pct"])
+    tbl = (f'<section><h3>📊 指標（市場技術池, walk-forward, {r["n"]} 測試點）</h3>'
+           f'<table class="report-table"><tbody>'
+           f'<tr><td>方向命中率</td><td class="num">{r["dir_hit_pct"]}%</td>'
+           f'<td class="small">對照「總是猜跌」{naive:.0f}%；≈50% 即無方向力</td></tr>'
+           f'<tr><td>　有信心子集</td><td class="num">{r.get("dir_hit_conf_pct")}%</td>'
+           f'<td class="small">|預測|較大時的命中率</td></tr>'
+           f'<tr><td>信心帶 25–75% 覆蓋</td><td class="num">{r["cover_2575_pct"]}%</td>'
+           f'<td class="small">目標 50%；偏低=帶太窄(過度自信)</td></tr>'
+           f'<tr><td>信心帶 10–90% 覆蓋</td><td class="num">{r["cover_1090_pct"]}%</td>'
+           f'<td class="small">目標 80%</td></tr>'
+           f'<tr><td>MAE 相似日 / 猜0% / 無條件</td>'
+           f'<td class="num">{r["mae_analog"]} / {r["mae_zero"]} / {r["mae_uncond"]}</td>'
+           f'<td class="small">相似日要更小才有用</td></tr>'
+           f'<tr><td>⭐ skill vs 猜0%</td><td class="num">{r["skill_vs_zero"]}%</td>'
+           f'<td class="small">正=相似日有降誤差；負=無技巧</td></tr>'
+           f'</tbody></table></section>')
+    curve = r["calib_curve"]
+    cl = json.dumps([c["pred"] for c in curve])
+    ca = json.dumps([c["actual"] for c in curve])
+    chart = ('<section><h3>📈 分位校準曲線</h3>'
+             '<canvas id="cc" height="110"></canvas>'
+             '<p class="small">把預測中位數由低到高分 8 組，點=各組(預測, 實際)平均。'
+             '若有方向訊息應沿 45° 線單調上升；散亂/水平=沒訊息。</p></section>')
+    method = ('<section><h3>🔬 方法</h3><p class="small">'
+              '走前測：對每個測試 (股票,日 t)，相似日<b>只取 &lt;t 的過去日</b>(無未來洩漏)，'
+              'K=40 技術最相似的歷史股票日 → 它們<b>隔天日線收盤</b>報酬的分布當預測，'
+              '跟該股<b>隔天實際收盤</b>報酬比。只用日線(零分鐘K)、零新抓取，'
+              f'測試池 date≥{r["cutoff"]}。⚠ 此為<b>市場技術池</b>(無籌碼)；'
+              '個股自己池(含借券/融資/法人)未測，可能略不同但先驗不強。'
+              '此測「收盤結果」，盤中路徑形狀的校準是更後面的事。</p></section>')
+    js = (f'<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>'
+          f'<script>new Chart(document.getElementById("cc"),{{type:"scatter",'
+          f'data:{{datasets:[{{label:"各組(預測,實際)",data:{cl}.map((p,i)=>({{x:p,y:{ca}[i]}})),'
+          f'backgroundColor:"#2980b9",pointRadius:5}}]}},'
+          f'options:{{plugins:{{legend:{{display:false}}}},'
+          f'scales:{{x:{{title:{{display:true,text:"預測中位數 %"}}}},'
+          f'y:{{title:{{display:true,text:"實際平均報酬 %"}}}}}}}}}});</script>')
+    return head + verdict + tbl + chart + method + js + tail
+
+
+@app.route("/intraday-sim-backtest")
+def intraday_sim_backtest():
+    path = os.path.join(HERE, "cache", "intraday_sim_backtest.json")
+    if not os.path.exists(path):
+        return _render_intraday_backtest_page()
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        return _render_intraday_backtest_page(error=f"{type(e).__name__}: {e}")
+    return _render_intraday_backtest_page(data=data)
 
 
 @app.route("/intraday-sim")
