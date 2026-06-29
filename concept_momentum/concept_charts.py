@@ -621,6 +621,7 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
     <div class="tab-group-label">資金/動向監控 · 各 cron</div>
     <div class="tab-group-items">
       <div class="tab" onclick="showTab('broker')">🎯 主力雷達 (18:00)</div>
+      <a class="tab" href="/broker-radar-backtest" style="text-decoration:none;color:inherit;">🧪 主力雷達回測</a>
       <div class="tab" onclick="showTab('premarket')">🌅 盤前訊號 (07:30/07:40)</div>
       <div class="tab" onclick="showTab('lending')">🌙 借券動向 (16:00/21:30)</div>
     </div>

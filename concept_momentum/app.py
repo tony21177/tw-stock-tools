@@ -4122,6 +4122,96 @@ def intraday_sim_backtest():
     return _render_intraday_backtest_page(data=data)
 
 
+def _render_broker_radar_backtest_page(data: dict | None = None, error: str = "") -> str:
+    nav = ('<nav><a href="/">← 大盤 dashboard</a>'
+           '<a href="/concept-backtest">族群策略回測</a>'
+           '<a href="/second-wave-backtest">第二波回測</a></nav>')
+    css = """<style>
+  body{font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
+       max-width:960px;margin:1em auto;padding:0 1em;background:#f7f7f9;color:#222;}
+  h1{font-size:1.35em;margin:.4em 0;} nav a{margin-right:12px;color:#0066cc;text-decoration:none;}
+  section{background:#fff;padding:12px 16px;border-radius:6px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);}
+  section h3{margin:0 0 6px 0;font-size:1.05em;color:#444;}
+  table.report-table{width:100%;border-collapse:collapse;font-size:.9em;}
+  table.report-table td,table.report-table th{padding:6px 10px;border-bottom:1px solid #eee;text-align:left;}
+  table.report-table th{background:#fafafa;font-weight:600;color:#555;}
+  .num{text-align:right;font-variant-numeric:tabular-nums;} .small,small{font-size:.85em;color:#666;}
+  .error{background:#fee;border:1px solid #f99;padding:12px;border-radius:4px;color:#c00;}
+  .pos{color:#060;} .neg{color:#c30;}
+</style>"""
+    head = (f'<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+            f'<title>主力雷達回測</title>{css}</head><body>{nav}'
+            f'<h1>🎯 主力雷達 — 回測（事件研究）</h1>')
+    tail = '</body></html>'
+    if error:
+        return head + f'<div class="error">{_esc(error)}</div>' + tail
+    if not data:
+        return head + ('<section><p>尚無回測結果。請先跑：<br>'
+                       '<code>tw_broker_radar_backtest.py --entry signal --json-out '
+                       'concept_momentum/cache/broker_radar_backtest.json</code></p></section>') + tail
+    rs = data.get("result", {})         # 訊號日進場
+    rn = data.get("result_next", {})    # 隔天進場
+    hs = ["5", "10", "20"]
+
+    def tbl(r, title):
+        H = r.get("horizons", {})
+        rows = ""
+        for h in hs:
+            v = H.get(h)
+            if not v:
+                continue
+            ec = "pos" if v["exc_mean"] > 0 else "neg"
+            mc = "pos" if v["exc_med"] > 0 else "neg"
+            rows += (f'<tr><td>{h} 日</td><td class="num">{v["n"]}</td>'
+                     f'<td class="num {ec}">{v["exc_mean"]:+.2f}%</td>'
+                     f'<td class="num {mc}">{v["exc_med"]:+.2f}%</td>'
+                     f'<td class="num">{v["beat"]:.0f}%</td>'
+                     f'<td class="num">{v["abs_mean"]:+.2f}%</td>'
+                     f'<td class="num">{v["edge"]:+.2f}%</td></tr>')
+        return (f'<section><h3>{title}（去重 {r.get("n_episodes")} 進場 / 原始 {r.get("n_events_raw")} 事件）</h3>'
+                f'<table class="report-table"><thead><tr><th>持有</th><th class="num">樣本</th>'
+                f'<th class="num">超額vs大盤</th><th class="num">超額中位</th>'
+                f'<th class="num">贏大盤率</th><th class="num">絕對報酬</th>'
+                f'<th class="num">edge</th></tr></thead><tbody>{rows}</tbody></table></section>')
+
+    v5 = rn.get("horizons", {}).get("5", {})
+    verdict = (
+        '<section style="background:#eef7ee;border:1px solid #9c9"><h3>⚖️ 裁決</h3>'
+        f'<p class="small"><b>主力雷達有「短線」正向 edge，是目前測過最有戲的訊號</b>'
+        f'（隔天進場、持有 5 日：超額大盤 <b>{v5.get("exc_mean","?")}%</b>、'
+        f'贏大盤率 <b>{v5.get("beat","?")}%</b>、中位數也正 {v5.get("exc_med","?")}%）。<br>'
+        '但 10-20 日就退化（中位數轉負、贏大盤率掉到 50% 以下＝靠少數飆股拉，多數其實平庸）。<br>'
+        '⚠ <b>樣本非常小</b>（55 進場、僅 7 週、單一多頭盤），統計上不夠硬，'
+        '可能是運氣；要再累積幾個月歷史才敢確定。<br>'
+        '⚠ edge 看起來大（+4~8%）有一半是因為<b>基準很爛</b>（這段中小型隨機股輸大盤 -1.5~-6.7%）；'
+        '真正「贏指數」是 5 日 +2.85% 那種等級。</p></section>')
+
+    method = ('<section><h3>🔬 方法 + 限制</h3><p class="small">'
+              '主力雷達靠<b>分點 BSR</b>，BSR 無歷史 API → 不能重算歷史訊號。'
+              '改用 cron 每天存下的<b>實際訊號輸出</b>(broker_radar_history/)做事件研究：'
+              '被點名的 (股,日) → 量之後 H 日報酬 vs 大盤 vs 同期隨機股票日基準。<br>'
+              '「訊號日進場」=理想化(收盤即買，但訊號 18:00 才出)；'
+              '「隔天進場」=較真實(訊號出後隔天買)。<br>'
+              '⚠ 近期事件因尚無完整 20 日後續，H=20 樣本更少。'
+              '⚠ 7 週單一盤、55 進場 → <b>僅供方向參考，非統計定論</b>。'
+              '累積到半年以上再回測才可信。</p></section>')
+    return head + verdict + tbl(rn, "🟢 隔天進場（較真實）") + tbl(rs, "理想化：訊號日進場") + method + tail
+
+
+@app.route("/broker-radar-backtest")
+def broker_radar_backtest():
+    path = os.path.join(HERE, "cache", "broker_radar_backtest.json")
+    if not os.path.exists(path):
+        return _render_broker_radar_backtest_page()
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        return _render_broker_radar_backtest_page(error=f"{type(e).__name__}: {e}")
+    return _render_broker_radar_backtest_page(data=data)
+
+
 @app.route("/intraday-sim")
 def intraday_sim():
     code = (request.args.get("code") or "").strip()
