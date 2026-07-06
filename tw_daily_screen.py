@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-每日兩層篩選工作流 (cron 19:00 Mon-Fri)
+每日兩層篩選工作流 (cron 07:30 Mon-Fri)
 
 Layer 1: tw_turnaround_screener.py
   毛利率改善 + 量能放大 + 借券回補 + 季線多頭 → 數百檔 → 數檔 candidates
@@ -109,6 +109,7 @@ def main():
         "--min-score", str(args.layer2_min),
         "--header", f"🎯 Layer 2 — ABCD 接力型訊號 (Layer 1 → 篩 {len(layer1)} 檔)",
         "--quiet",
+        "--mode", "premarket",
     ]
     if use_tg:
         cmd2.extend(["--telegram", "--bot-token", args.bot_token,

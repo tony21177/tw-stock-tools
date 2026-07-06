@@ -386,6 +386,12 @@ def fetch_histock_7d(code: str, target_date: str) -> dict:
         with open(cache_path) as f:
             return json.load(f)
 
+    today = datetime.now().strftime("%Y-%m-%d")
+    if target_date != today:
+        # HiStock branch.aspx 無日期參數，只能拿「現在」的 7 日視窗；
+        # 回看歷史日會拿到錯的籌碼 → 不給錯資料，回空
+        return {"buyers": [], "sellers": []}
+
     html = http_text(HISTOCK_URL.format(code=code, days=7))
     if not html:
         with open(cache_path, "w") as f:
@@ -409,29 +415,29 @@ def fetch_histock_7d(code: str, target_date: str) -> dict:
 # Step 3: signal scoring
 # ============================================================
 
-def signal_a_relay(px: list[dict]) -> tuple[bool, str]:
-    """A 漲停接力: 過去 3 日 (不含今日) 任一日漲幅 ≥ +5%
-    且前日收盤未跌破其開盤 4% 以上 (沒有黑K崩盤)。"""
-    # px ascending; last is today (the limit-up day). px[-2] = prior trading day.
-    if len(px) < 5:
+def signal_a_relay(px: list[dict], anchor: int | None = None) -> tuple[bool, str]:
+    """A 漲停接力: 被預測日 (anchor) 之前 3 根 K 棒任一日漲幅 ≥ +5%，
+    且 anchor 前一日盤中未崩 ≤ -4%。
+    anchor=None → len(px)-1 (盤後 standalone：px[-1] 是漲停日本身，行為同舊版)。
+    盤前模式傳 len(px)：「今天」還沒發生，最新 K 棒 (昨日) 是訊號來源之一。"""
+    if anchor is None:
+        anchor = len(px) - 1
+    if anchor < 4:
         return False, "(資料不足)"
-    # Check last 3 days (excluding today)
     gains = []
-    for i in (-2, -3, -4):
-        if abs(i) >= len(px):
+    for j in (anchor - 1, anchor - 2, anchor - 3):
+        if j - 1 < 0:
             break
-        c = px[i]["close"]
-        prev = px[i - 1]["close"] if abs(i - 1) <= len(px) else 0
+        c, prev = px[j]["close"], px[j - 1]["close"]
         if prev > 0 and c > 0:
-            gains.append((i, (c - prev) / prev * 100))
+            gains.append((c - prev) / prev * 100)
     if not gains:
         return False, "(無前日)"
-    max_gain = max(g for _, g in gains)
-    # Veto if prior-day collapsed
-    prev_open = px[-2].get("open") or px[-2]["close"]
-    prev_close = px[-2]["close"]
-    if prev_open > 0:
-        intraday = (prev_close - prev_open) / prev_open * 100
+    max_gain = max(gains)
+    ref = px[anchor - 1]
+    ref_open = ref.get("open") or ref["close"]
+    if ref_open > 0:
+        intraday = (ref["close"] - ref_open) / ref_open * 100
         if intraday <= -4.0:
             return False, f"前日盤中崩 {intraday:.1f}%"
     if max_gain >= 9.5:
@@ -489,24 +495,24 @@ def signal_c_chip_concentration(broker: dict) -> tuple[bool, str]:
     return False, f"{msg_f} {msg_d}"
 
 
-def signal_d_volume(px: list[dict]) -> tuple[bool, str]:
-    """D 量能蓄勢: 前日量 / 20d 均量 ≥ 1.0
-    或前日量 / 60d 均量 ≥ 1.5 (避免被近期瞬間爆量拉高均線)。"""
-    if len(px) < 22:
+def signal_d_volume(px: list[dict], anchor: int | None = None) -> tuple[bool, str]:
+    """D 量能蓄勢: anchor 前一日量 / 20d 均量 ≥ 1.0 或 / 60d 均量 ≥ 1.5。"""
+    if anchor is None:
+        anchor = len(px) - 1
+    if anchor < 22:
         return False, "(資料不足)"
-    prev_vol = px[-2].get("volume") or 0
-    avg20 = sum((r.get("volume") or 0) for r in px[-22:-2]) / 20
+    prev_vol = px[anchor - 1].get("volume") or 0
+    win20 = px[anchor - 21:anchor - 1]
+    avg20 = sum((r.get("volume") or 0) for r in win20) / 20
     if avg20 <= 0:
         return False, "(無均量)"
     ratio20 = prev_vol / avg20
-
-    avg60 = avg20
     ratio60 = ratio20
-    if len(px) >= 62:
-        avg60 = sum((r.get("volume") or 0) for r in px[-62:-2]) / 60
+    if anchor >= 62:
+        win60 = px[anchor - 61:anchor - 1]
+        avg60 = sum((r.get("volume") or 0) for r in win60) / 60
         if avg60 > 0:
             ratio60 = prev_vol / avg60
-
     if ratio20 >= 1.0:
         return True, f"前日量 {ratio20:.1f}x 20d / {ratio60:.1f}x 60d"
     if ratio60 >= 1.5:
@@ -515,7 +521,7 @@ def signal_d_volume(px: list[dict]) -> tuple[bool, str]:
 
 
 def score_stock(code: str, name: str, target_date: str, token: str,
-                quiet: bool = False) -> dict:
+                quiet: bool = False, mode: str = "postclose") -> dict:
     """Compute all 4 signals for a single stock. Returns dict with score and details."""
     if not quiet:
         print(f"  [掃] {code} {name} ...", file=sys.stderr)
@@ -524,10 +530,11 @@ def score_stock(code: str, name: str, target_date: str, token: str,
     sbl = fetch_short_balance(code, target_date, token)
     broker = fetch_histock_7d(code, target_date)
 
-    a_ok, a_msg = signal_a_relay(px)
+    anchor = len(px) if mode == "premarket" else None
+    a_ok, a_msg = signal_a_relay(px, anchor=anchor)
     b_ok, b_msg = signal_b_short_cover(sbl)
     c_ok, c_msg = signal_c_chip_concentration(broker)
-    d_ok, d_msg = signal_d_volume(px)
+    d_ok, d_msg = signal_d_volume(px, anchor=anchor)
 
     score = sum([a_ok, b_ok, c_ok, d_ok])
 
@@ -678,9 +685,18 @@ def main():
     p.add_argument("--quiet", action="store_true", help="不顯示掃描進度")
     p.add_argument("--limit", type=int, default=0, help="只掃前 N 檔 (0 = 全部，測試用)")
     p.add_argument("--json-out", help="將 Layer 2 ABCD 結果寫到 JSON 路徑（dashboard 用）")
+    p.add_argument("--mode", choices=["auto", "premarket", "postclose"], default="auto",
+                   help="訊號對齊模式: auto (有 --codes/--codes-file → premarket, 否則 postclose) / "
+                        "premarket (盤前，A/D anchor=len(px)) / postclose (盤後，預設行為)")
     args = p.parse_args()
 
     target = args.date or datetime.now().strftime("%Y-%m-%d")
+
+    # Resolve mode: auto → premarket if codes given, else postclose
+    if args.mode == "auto":
+        mode = "premarket" if (args.codes or args.codes_file) else "postclose"
+    else:
+        mode = args.mode
 
     # Two modes: --codes/--codes-file (Layer 2 over given list) OR scan limit-up (standalone)
     if args.codes or args.codes_file:
@@ -750,7 +766,7 @@ def main():
     with ThreadPoolExecutor(max_workers=6) as ex:
         futs = {
             ex.submit(score_stock, info["code"], info["name"], target,
-                      args.token, args.quiet): info
+                      args.token, args.quiet, mode): info
             for info in limitup
         }
         for fut in as_completed(futs):
@@ -800,7 +816,7 @@ def main():
             for _, s in scored
         ]
         with open(args.json_out, "w", encoding="utf-8") as _f:
-            json.dump({"date": date_str, "candidates": candidates}, _f,
+            json.dump({"date": date_str, "mode": mode, "candidates": candidates}, _f,
                       ensure_ascii=False, indent=2)
         print(f"[limitup_signal] wrote {args.json_out}", file=sys.stderr)
 
