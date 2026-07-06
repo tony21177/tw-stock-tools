@@ -1063,6 +1063,23 @@ warm cache 後續查詢秒級。
 
 ---
 
+## 回測共用工具
+
+**`backtest_lib.py`** — 所有回測腳本 (強勢股第二波、主力雷達、概念動能等) 共用的統計與成本模型。
+
+**成本模型 (cost_roundtrip_pct)**：買賣一趟成本 = 手續費 0.1425% × 2 × 折扣 + 證交稅 0.3% + 滑價。預設 6 折手續費、無滑價 → **0.471%**。支援調整折扣與單邊滑價（bp）。
+
+**統計顯著性**：
+- Percentile bootstrap 95% CI（均值）— 內建 5000 次重抽樣、seed 可設
+- Moving-block bootstrap — 處理自相關時間序列（用於 rolling 窗口回測）
+- t-stat — 超額報酬 t 統計量
+
+**Episode 去重（dedup_cooldown）**：觸發訊號後 N 根 K 棒內不再進場，避免同檔股票連續交易。
+
+**事件摘要（summarize_events）**：統一報告樣本數、絕對/超額報酬均值中位數、95% CI、t 統計、淨收益、勝率、成本；支援 edge sample（每事件 vs 同日隨機基準）的邊際收益分析。
+
+---
+
 ## 資料源文件
 
 ### TWSE 公開 API
