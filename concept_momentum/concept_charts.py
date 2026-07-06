@@ -624,6 +624,7 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
       <a class="tab" href="/broker-radar-backtest" style="text-decoration:none;color:inherit;">🧪 主力雷達回測</a>
       <div class="tab" onclick="showTab('premarket')">🌅 盤前訊號 (07:30/07:40)</div>
       <div class="tab" onclick="showTab('lending')">🌙 借券動向 (16:00/21:30)</div>
+      <a class="tab" href="/signal-outcomes" style="text-decoration:none;color:inherit;">📈 訊號成效 (週一)</a>
     </div>
   </div>
   <div class="tab-group g-stock" title="單檔查詢工具 (即時抓取, 非 cron)">
