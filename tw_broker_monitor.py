@@ -89,12 +89,13 @@ def get_top_margin_increase_stocks(top_n: int = 0) -> list[tuple[str, int, int]]
     return items if top_n <= 0 else items[:top_n]
 
 
-def get_strong_concept_stocks(min_score: float = 70.0) -> list[str]:
+def get_strong_concept_stocks(min_score: float = 70.0, top_themes: int = 8) -> list[str]:
     """Read latest concept_momentum analysis result, return unique stocks
-    in concepts whose sustainability_score >= min_score.
+    in concepts that pass the formal screening gate (passes_gate=true), ranked
+    by 20-day return and selecting top top_themes themes.
 
-    If no fresh result file (today's), falls back to concepts.json members
-    of concepts that scored ≥70 in the most recent saved result.
+    Falls back to legacy behavior (sustainability_score >= min_score) if the
+    result file lacks a passes_gate field.
     Returns [] silently if neither is available.
     """
     cm_dir = os.path.join(HERE, "concept_momentum", "cache")
@@ -113,8 +114,17 @@ def get_strong_concept_stocks(min_score: float = 70.0) -> list[str]:
     except Exception:
         return []
 
-    strong_themes = [r["theme_key"] for r in results
-                     if r.get("sustainability_score", 0) >= min_score]
+    # 正式選股 2026-06 起改 C 變體 (passes_gate + ret_20d)，sustainability_score
+    # 已降為參考欄 — 這裡跟進：取通過門檻族群按 ret_20d 前 top_themes 名。
+    gated = [r for r in results if r.get("passes_gate")]
+    if gated:
+        gated.sort(key=lambda r: r.get("ret_20d", 0), reverse=True)
+        strong_themes = [r["theme_key"] for r in gated[:top_themes]]
+    else:
+        # 舊結果檔沒有 passes_gate 欄位 → fallback 原邏輯
+        strong_themes = [r["theme_key"] for r in results
+                         if r.get("sustainability_score", 0) >= min_score]
+
     if not strong_themes:
         return []
 
@@ -254,6 +264,8 @@ def main():
                         action="store_false", help="關閉概念動能加入")
     parser.add_argument("--concept-min-score", type=float, default=70.0,
                         help="概念動能最低評分門檻，預設 70")
+    parser.add_argument("--concept-top-themes", type=int, default=8,
+                        help="從通過門檻族群取前 N 個（按 ret_20d 排序），預設 8")
     parser.add_argument("--days", type=int, default=5)
     parser.add_argument("--min-corr", type=float, default=0.5)
     parser.add_argument("--min-days", type=int, default=3)
@@ -285,8 +297,8 @@ def main():
 
     concept_codes = []
     if args.include_concept_strong:
-        concept_codes = get_strong_concept_stocks(args.concept_min_score)
-        print(f"  概念動能 ≥{args.concept_min_score:.0f} 分成份股: {len(concept_codes)} 檔",
+        concept_codes = get_strong_concept_stocks(args.concept_min_score, args.concept_top_themes)
+        print(f"  概念動能 Top {args.concept_top_themes} 族群成份股: {len(concept_codes)} 檔",
               file=sys.stderr)
 
     codes = list(dict.fromkeys(margin_codes + concept_codes))

@@ -402,9 +402,9 @@ TG_BOT_TOKEN=xxx FINMIND_TOKEN=xxx python3 ~/project/tw_stock_tools/tw_broker_mo
 
 預設每天掃兩組標的的聯集：
 1. **Top N 大融資餘額**（預設 200）：用 TWSE/TPEx OpenAPI 取得當日融資餘額排序前 N 檔
-2. **概念動能強勢族群成分股**（評分 ≥ 70）：讀 `concept_momentum/cache/results/analysis_{today}.json`，把當天評分達門檻的所有族群成分股加入掃描範圍
+2. **概念動能強勢族群成分股**（過門檻 + 20 日報酬 Top N）：讀 `concept_momentum/cache/results/analysis_{today}.json`，取通過正式選股門檻（`passes_gate=true`）的族群，按 20 日報酬 (`ret_20d`) 排序，選前 N 個（預設 8）族群的成分股加入掃描範圍。舊結果檔沒有 `passes_gate` 欄位時自動 fallback 評分 ≥ 70 的邏輯。
 
-效果：避免某檔不在融資 Top 200 但在強勢概念中的個股漏抓 BSR 快取。可用 `--no-concept-strong` 關閉、`--concept-min-score 80` 調整門檻。
+效果：避免某檔不在融資 Top 200 但在強勢概念中的個股漏抓 BSR 快取。可用 `--no-concept-strong` 關閉、`--concept-min-score` 調整評分門檻（fallback 用）、`--concept-top-themes` 調整強勢族群數（預設 8）。
 
 ### 排程
 ```
