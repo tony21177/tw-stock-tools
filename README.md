@@ -1055,6 +1055,8 @@ warm cache 後續查詢秒級。
 │   └── finmind_{code}_{date}.json
 ├── bsr_cache/                 # BSR 分點 cache（git ignore）
 │   └── {code}_{date}.json
+├── bt_cache/                  # 回測價格面板 v2（git ignore，backtest_prices.py 產出）
+│   └── backtest_prices_v2.json
 ├── lending_monitor.log        # 排程 log（git ignore）
 ├── broker_monitor.log         # 排程 log（git ignore）
 ├── README.md                  # 本文件
