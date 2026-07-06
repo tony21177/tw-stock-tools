@@ -176,8 +176,7 @@ def _render_sw_tercile_table(sw: dict) -> str:
 
 def _render_recent_signals(signals: list[dict], n: int = 20) -> str:
     """最近 n 筆訊號明細 (code / 策略 / 進場日 / T+5 超額)。"""
-    recent = signals[-n:] if len(signals) > n else signals
-    recent = list(reversed(recent))  # most recent first
+    recent = sorted(signals, key=lambda r: r.get("entry_date", ""), reverse=True)[:n]
 
     if not recent:
         return '<p style="color:#888">無訊號明細</p>'

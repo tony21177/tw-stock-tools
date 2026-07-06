@@ -104,7 +104,8 @@ def http_json(url: str, retries: int = 2):
 # ============================================================
 
 def fetch_quarterly_margins(code: str, token: str = "") -> list[dict]:
-    """Fetch last ~6 quarters of gross margin from FinMind. Cached 30 days.
+    """Fetch last ~6 quarters of gross margin from FinMind. Cached 3–21 days
+    (財報季 3 天, 平時 21 天; see _margin_cache_ttl).
     Returns [{date: 'YYYY-MM-DD', gross_margin: pct}, ...] sorted ascending."""
     cache_path = os.path.join(CACHE_DIR, f"margin_{code}.json")
     if os.path.exists(cache_path):

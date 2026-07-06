@@ -375,8 +375,11 @@ def main():
 
     # Save
     # Strip signal list for JSON size sanity (keep last 500)
+    # Sort by entry_date then strategy so tail contains mixed strategies (not strategy-major)
     save_obj = {k: v for k, v in outcomes.items() if k != "signals"}
-    save_obj["signals"] = outcomes["signals"][-500:]
+    # Secondary sort by code (not strategy) so same-date entries are interleaved across strategies
+    all_signals = sorted(outcomes["signals"], key=lambda r: (r.get("entry_date", ""), r.get("code", "")))
+    save_obj["signals"] = all_signals[-500:]
     with open(OUTCOMES_JSON, "w", encoding="utf-8") as f:
         json.dump(save_obj, f, ensure_ascii=False, indent=2)
     print(f"\n  Saved → {OUTCOMES_JSON}")

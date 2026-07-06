@@ -234,7 +234,7 @@ if __name__ == "__main__":
     if args.json_out:
         json.dump({"generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
                    "params": {"horizons": args.horizon, "cost": args.cost,
-                              "entry": args.entry, **TR_DEFAULTS},
+                              "start": args.start, "entry": args.entry, **TR_DEFAULTS},
                    "result": r},
                   open(args.json_out, "w", encoding="utf-8"), ensure_ascii=False)
         print(f"[json] 寫入 {args.json_out}", file=sys.stderr)

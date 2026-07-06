@@ -3402,7 +3402,7 @@ _BACKTEST_GLOSSARY = {
     "事件研究": "event study。針對『每次訊號觸發』這個事件，量它之後的報酬分布，再跟基準比 — 適合『挑個股』型訊號(非排名)。",
     "絕對報酬": "進場後 H 日單純的漲跌% (不減大盤)。看『有沒有賺到錢』，但沒扣掉大盤本身的漲跌。",
     "超額報酬 (vs 大盤)": "個股/族群報酬 − 同期加權指數報酬。正=贏大盤。也叫 alpha。衡量「贏不贏大盤」。",
-    "淨超額": "超額報酬再扣掉來回交易成本 (本頁 0.4%)。這才是真正能放口袋的數字。",
+    "淨超額": "超額報酬再扣掉來回交易成本 (成本值見各頁表格)。這才是真正能放口袋的數字。",
     "基準 (baseline)": "現版用<b>日期配對基準</b>（date-matched baseline）：與訊號<b>同一天</b>隨機抽 100 檔股票，算它們之後 H 日平均超額報酬，作為「那天隨便買」的比較基準。這樣才能排除「那段期間市場本來就漲/跌」的干擾。edge = 個股超額 − 此基準。⚠ 舊版用同 universe 所有股票日平均，兩者定義不同、數字不可比。",
     "edge": "量化/賭場術語=優勢。本頁定義：訊號超額 − 同日期隨機抽 100 檔股票的平均超額（date-matched 基準），衡量純選股力（排除「那天市場本來就漲/跌」的干擾）。⚠ edge 大 ≠ 很賺：edge 只說明比「同日亂買」強多少，賺不賺仍看「超額 vs 大盤 > 0」。",
     "alpha": "超額報酬，一般指 vs 大盤。≈本頁的「淨超額」。",
@@ -3866,7 +3866,16 @@ def _render_second_wave_backtest_page(data: dict | None = None, error: str = "")
     # 圖表
     hlabels = json.dumps([f"{h}日" for h in hs])
     edge_d = json.dumps([H[h].get("edge_mean", H[h].get("edge", 0)) for h in hs])
-    base_d = json.dumps([H[h].get("baseline", 0) for h in hs])
+    _base_vals = []
+    for _h in hs:
+        if "baseline" in H[_h]:
+            _base_vals.append(H[_h]["baseline"])
+        elif "net" in H[_h] and "edge_mean" in H[_h]:
+            _base_vals.append(H[_h]["net"] - H[_h]["edge_mean"])
+        else:
+            _base_vals.append(None)
+    _has_base = any(v is not None for v in _base_vals)
+    base_d = json.dumps([v if v is not None else 0 for v in _base_vals]) if _has_base else None
     net_d = json.dumps([H[h]["net"] for h in hs])
     eq = H[hmax]["equity"]
     eq_labels = json.dumps([e["date"] for e in eq])
@@ -3915,13 +3924,15 @@ def _render_second_wave_backtest_page(data: dict | None = None, error: str = "")
               f'4. 成本 {r["cost"]}%（手續費6折+證交稅，零滑價假設），急跌反彈股流動性差時滑價可能更大；'
               '全市場含小型股時滑價影響更明顯。</p></section>')
 
+    _base_dataset = (f"{{label:'基準',data:{base_d},backgroundColor:'#bbb'}},"
+                    if _has_base else "")
     js = f"""<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
 const L={hlabels};
 new Chart(document.getElementById('edge'),{{type:'bar',
   data:{{labels:L,datasets:[
     {{label:'淨超額',data:{net_d},backgroundColor:'#2a9d4a'}},
-    {{label:'基準',data:{base_d},backgroundColor:'#bbb'}},
+    {_base_dataset}
     {{label:'edge',data:{edge_d},backgroundColor:'#3366cc'}}]}},
   options:{{responsive:true,plugins:{{legend:{{position:'top'}}}}}}}});
 new Chart(document.getElementById('eq'),{{type:'line',
@@ -4316,7 +4327,7 @@ def _render_broker_radar_backtest_page(data: dict | None = None, error: str = ""
         f'隔天開盤進場、持有 5 日：超額大盤 <b>{v5.get("exc_mean","?")}%</b>、'
         f'贏大盤率 <b>{v5.get("beat","?")}%</b>、95%CI <b>{v5_ci_str}</b>。<br>'
         f'10-20 日 edge 漸增（date-matched 基準對比），但 CI 仍跨零。<br>'
-        '⚠ <b>樣本偏小</b>（63 進場），CI 很寬，結論僅供方向參考；'
+        f'⚠ <b>樣本偏小</b>（{rn.get("n_episodes", "?")} 進場），CI 很寬，結論僅供方向參考；'
         '累積半年以上歷史後再回測才可信。<br>'
         '⚠ <b>事件由已部署的訊號版本產生</b>，改訊號參數後歷史事件不可比。</p></section>')
 
