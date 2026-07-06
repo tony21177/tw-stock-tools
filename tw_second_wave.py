@@ -215,6 +215,21 @@ def fetch_yahoo_6mo(code: str) -> dict:
     return out
 
 
+def _ex_dates_cached(code: str, token: str) -> list[str]:
+    """快取 7 天避免每天 3000 次呼叫。"""
+    p = os.path.join(CACHE_DIR, f"div_{code}.json")
+    if os.path.exists(p) and time.time() - os.path.getmtime(p) < 7 * 86400:
+        with open(p) as f:
+            return json.load(f)
+    sys.path.insert(0, HERE)
+    import finmind_client
+    start = (datetime.now() - timedelta(days=300)).strftime("%Y-%m-%d")
+    ex = finmind_client.fetch_dividend_ex_dates(code, start, token)
+    with open(p, "w") as f:
+        json.dump(ex, f)
+    return ex
+
+
 # ============================================================
 # Pattern detection
 # ============================================================
@@ -311,12 +326,16 @@ def process_one(code: str, name: str, args) -> dict | None:
     sig = detect_second_wave(yh["rows"], args)
     if not sig:
         return None
-    return {
-        "code": code,
-        "name": name,
-        "market": yh.get("market", ""),
-        **sig,
-    }
+    # 除權息 guard：peak→今日 之間有除權息交易日 → 急跌可能是除權缺口，剔除
+    token = os.environ.get("FINMIND_TOKEN", "")
+    if token:
+        try:
+            ex = _ex_dates_cached(code, token)      # 新 helper，見下
+            if any(sig["peak_date"] <= d <= yh["rows"][-1]["date"] for d in ex):
+                return None
+        except Exception as e:
+            print(f"[WARN] dividend guard {code}: {e}", file=sys.stderr)
+    return {"code": code, "name": name, "market": yh.get("market", ""), **sig}
 
 
 # ============================================================

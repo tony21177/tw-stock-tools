@@ -53,6 +53,11 @@ class TestFinmindClient(unittest.TestCase):
         self.assertEqual(rows[0]["stock_id"], "2330")
         self.assertEqual(rows[0]["date"][:7], "2008-01")
 
+    def test_dividend_ex_dates_2330(self):
+        """2330 每年 3/6/9/12 月除息，2026 上半年至少一次。"""
+        dates = finmind_client.fetch_dividend_ex_dates("2330", "2026-01-01", TOKEN)
+        self.assertTrue(any(d.startswith("2026-") for d in dates), dates)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -158,3 +158,18 @@ def fetch_stock_price_tick(stock_id: str, date: str,
         "start_date": date,
         "end_date": date,
     }, token)
+
+
+def fetch_dividend_ex_dates(stock_id: str, start_date: str, token: str) -> list[str]:
+    """TaiwanStockDividend → 除權息「交易日」清單 (YYYY-MM-DD, 現金+股票合併去重)。"""
+    data = _call("TaiwanStockDividend", {
+        "data_id": stock_id,
+        "start_date": start_date,
+    }, token)
+    out = set()
+    for r in data:
+        for k in ("CashExDividendTradingDate", "StockExDividendTradingDate"):
+            v = (r.get(k) or "").strip()
+            if v:
+                out.add(v)
+    return sorted(out)
