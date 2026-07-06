@@ -119,6 +119,8 @@ def build_cache_v2(start: str = "2025-01-01", workers: int = 4, force: bool = Fa
               "open": float(r.get("open") or r.get("close") or 0),
               "close": float(r.get("close") or 0)}
              for r in tx if r.get("close")]
+    if not taiex:
+        raise RuntimeError("TAIEX 抓取失敗 (可能 rate limit)，不寫入快取 — 稍後重跑 build")
     c = {"schema": 2, "start": start, "stocks": stocks,
          "ex_dates": ex_dates, "taiex": taiex}
     with open(PANEL_PATH, "w") as f:
@@ -143,21 +145,31 @@ class PricePanel:
                 self._codes_on.setdefault(d, []).append((code, i))
 
     def fwd(self, code, date, h, entry="next_open"):
+        if h < 1:
+            return None
         rows, didx = self._by_code.get(code, (None, None))
         if rows is None or date not in didx or date not in self.tx_idx:
             return None
-        i, ti = didx[date], self.tx_idx[date]
-        if i + h >= len(rows) or ti + h >= len(self.tx_dates):
+        ti = self.tx_idx[date]
+        if ti + h >= len(self.tx_dates):
             return None
+        exit_date = self.tx_dates[ti + h]
+        j = didx.get(exit_date)
+        if j is None:
+            return None  # 個股在出場日停牌 → 窗口不對齊，剔除該事件
+        x = rows[j].get("aclose") or 0
+        tx1 = self.taiex[exit_date]["close"]
         if entry == "next_open":
-            e = rows[i + 1].get("aopen") or 0
-            tx_e = self.taiex[self.tx_dates[ti + 1]]
+            entry_date = self.tx_dates[ti + 1]
+            j0 = didx.get(entry_date)
+            if j0 is None:
+                return None
+            e = rows[j0].get("aopen") or 0
+            tx_e = self.taiex[entry_date]
             tx0 = tx_e.get("open") or tx_e["close"]
         else:  # signal_close
-            e = rows[i].get("aclose") or 0
+            e = rows[didx[date]].get("aclose") or 0
             tx0 = self.taiex[date]["close"]
-        x = rows[i + h].get("aclose") or 0
-        tx1 = self.taiex[self.tx_dates[ti + h]]["close"]
         if e <= 0 or x <= 0 or tx0 <= 0 or tx1 <= 0:
             return None
         return ((x / e - 1) * 100, (tx1 / tx0 - 1) * 100)
