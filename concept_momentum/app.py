@@ -4817,6 +4817,52 @@ def lending_backtest():
     return _render_lending_backtest_page(data=data)
 
 
+@app.route("/signal-outcomes")
+def signal_outcomes_page():
+    import signal_outcomes_renderer as sor
+    path = os.path.join(HERE, "cache", "signal_outcomes.json")
+    data = None
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            data = None
+    body = sor.render_tab(data)
+    css = """
+<style>
+body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+       background:#f5f5f7; margin:0; padding:16px; }
+h2 { font-size:1.4em; margin:0 0 4px; }
+h3 { font-size:1.05em; margin:16px 0 6px; }
+p.meta { font-size:0.85em; color:#666; margin:0 0 12px; }
+.table-scroll { overflow-x:auto; }
+table.market-breadth { width:100%; border-collapse:collapse; background:#fff;
+  border-radius:8px; overflow:hidden; margin-bottom:16px;
+  box-shadow:0 2px 8px rgba(0,0,0,0.05); font-size:0.88em; }
+table.market-breadth th,
+table.market-breadth td { padding:6px 10px; border-bottom:1px solid #eee;
+  text-align:right; }
+table.market-breadth th { background:#fafafa; font-weight:600; text-align:center; }
+table.market-breadth td:first-child,
+table.market-breadth th:first-child { text-align:left; }
+.pos { color:#0a7e0a; }
+.neg { color:#c30; }
+a { color:#007aff; text-decoration:none; }
+a:hover { text-decoration:underline; }
+</style>"""
+    html = f"""<!DOCTYPE html><html lang="zh-TW"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>📈 訊號成效追蹤</title>
+{css}
+</head><body>
+<p><a href="/">&larr; 返回主控板</a></p>
+{body}
+</body></html>"""
+    return html
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()

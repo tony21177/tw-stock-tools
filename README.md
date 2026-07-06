@@ -1616,6 +1616,74 @@ FINMIND_TOKEN=... python3 tw_chip_price.py 2313 --date 20260512 --no-fetch  # ca
 - **單一價位多 broker 同 vol coincidence** 在 G 段 cross-cell consistency 解之前是無解的：若該分點全部 cell 都缺乏 anchor (同 vol 多 candidates 而 cluster span 差不多)，centroid 無從建立 → 退回最大 vol candidate 當代表 (可能誤判)。這是公開資料 (BSR 沒分點 → tick mapping) 的根本上限
 - **Pattern B 密集 burst 填單無解** (case 4: 兆豐台南 \$50.20 8張 4 秒內 4+1+1+1+1) — broker 用市價/積極限價單秒級填單，跟其他 broker 的短 burst 無法區分。Mitigation: 工具自動顯示 alternatives 讓使用者用自己 trade 記憶手動 override。詳見上面 4 case 表
 
+## 訊號成效追蹤 (`concept_momentum/run_outcomes.py`)
+
+**自動後照鏡**：把 5 個推播策略每天存的 history JSON，自動配上 FinMind 還原價計算 T+1/5/10/20 的實際報酬 vs 大盤超額，每週一 08:10 推 Telegram 週報。
+
+### date 正規化表（各策略 entry 口徑）
+
+| 策略 dir | date 欄語意 | 進場日 (entry_date) 規則 |
+|----------|------------|--------------------------|
+| `turnaround_relay_history` | **資料日**（盤前資料，date = 前一交易日） | date 之後的**下一個**交易日（隔日開盤） |
+| `second_wave_history` | **執行日**（盤前 07:40，date = 當日） | ≥ date 的**第一個**交易日（當日開盤） |
+| `broker_radar_history` | 資料日（盤後 18:00） | date 之後的下一個交易日 |
+| `lending_radar_history` | 資料日（盤後 16:00） | date 之後的下一個交易日 |
+| `short_retreat_history` | 資料日（盤後 21:30） | date 之後的下一個交易日 |
+
+### entry 口徑
+
+- **進場價**：entry_date 的**還原開盤價**（TaiwanStockPriceAdj，開盤買最保守可實現口徑）
+- **出場**：`trading_dates[entry_idx + h - 1]` 的還原收盤。h=1 = 進場當日開→收，h=5 ≈ 1 週
+
+### T+h 慣例
+
+```
+h=1  : 進場日開盤 → 進場日收盤（持有當天）
+h=5  : 進場日開盤 → 進場後第 5 個交易日收盤（~1 週）
+h=10 : ~2 週
+h=20 : ~1 個月
+```
+
+成效 = `(T+h 還原收 / entry 還原開 − 1) × 100 − TAIEX 同窗報酬`
+
+### 產出
+
+- `concept_momentum/cache/signal_outcomes.json`：全訊號報酬記錄 + 5 策略彙總 + TR abcd 分桶 + SW score 三分位
+- `concept_momentum/cache/outcomes_px/`：TAIEX + 個股還原價 快取（1 天 TTL）
+- Dashboard：`/signal-outcomes` 獨立頁面（含 glossary）
+
+### Cron
+
+```
+10 8 * * 1   # 每週一 08:10（交易日） → 計算 + TG 週報
+```
+
+### 使用
+
+```bash
+# 手動跑（不推 TG）
+FINMIND_TOKEN=... python3 concept_momentum/run_outcomes.py
+
+# 手動跑 + 推 TG
+TG_BOT_TOKEN=... FINMIND_TOKEN=... python3 concept_momentum/run_outcomes.py --telegram
+```
+
+### 配額保護（FinMind）
+
+- 空回應不寫 cache
+- 每次 API 呼叫 sleep 0.03s
+- 個股失敗 → skip + n_px_failed 計數
+- >50% 個股失敗 → `[ABORT]` + sys.exit(3)
+
+### 已知限制
+
+- 回測窗口從 2026-04-01 起算（各 history dir 的最早落地日），樣本僅 ~60 天
+- lending_radar 日均 50+ 檔訊號，個別 n 很大但訊號稀釋度也高
+- 還原價使用 TaiwanStockPriceAdj，除權息前後日的跳空已消除，但盤中操作無法還原
+- 今日訊號（entry_date = today）T+h 出場尚未發生，不計入統計
+
+---
+
 ### 未來改進 (TODO / wishlist)
 
 1. **分點行為 profile 跨檔聚合** — 同一 broker_id (e.g., 1480 高盛) 在 N 檔股票橫向看其行為一致性，建立 `broker_profile/{broker_id}.json` 持久檔案。可知該分點主要型態：定點主力 vs 散戶 vs algo vs 市場做市。當前每日分析孤立，不利累積長期 broker 知識。
@@ -1638,3 +1706,17 @@ FINMIND_TOKEN=... python3 tw_chip_price.py 2313 --date 20260512 --no-fetch  # ca
 9. **歷史 tick data 持久化** — FinMind sponsor 每次抓 tick 都拉一次 (~3 秒)。可以在 18:00 cron backfill 時也 cache `tick_cache/{code}_{date}.json`，讓 web UI 查歷史日子瞬間返回 (現在歷史日 backfill 沒 cache tick)。
 
 10. **TLDR / executive summary section** — 報告 7 段內容資訊密度高，第一眼難消化。可加 section 0：「3 行判讀」(主力方向 / 量能信號 / wash 訊號)，給快速 decision-maker 用。剩 7 段詳細為 drill-down。
+
+---
+
+## 策略改進 Backlog（需獨立 plan，本計畫不做）
+
+1. **盤中模擬 (intraday-sim) 的處置**：回測已證明無方向 skill（skill_vs_zero -2.4%，方向命中 51.6% vs 「永遠猜跌」57%）且信心帶過窄（41% vs 目標 50%）。選項：(a) `/intraday-sim` 頁面頂部加紅字告示「回測顯示無方向預測力，僅供情境想像」；(b) 加寬帶寬重新校準；(c) 下架。至少做 (a)。
+2. **主力雷達訊號設計**：Pearson corr 算在 n=5 天上幾乎無過濾力（`tw_broker_lookup.py:212`）。bsr_cache 已累積 40+ 天 → 可改 `--days 10`。注意：改參數後 `broker_radar_history` 新舊事件不可混合回測，需重新累積 1-2 個月再評估。改前先用現行回測基準線存檔。
+3. **參數敏感度掃描**：對第二波 7 條件、TR 6 參數做 grid 掃描 + walk-forward（2025 調參 / 2026 驗證）。必須在 Task 3/10 之後做（有了可信的衡量才有調參的意義）。
+4. **倖存者偏差**：universe 改用含下市股的清單（FinMind `TaiwanStockInfo` 含 `date` 欄位可判斷；或 TWSE 下市公司名單），回測面板補抓已下市股票價格。
+5. **美台聯動多重比較**：`--scan` 對 ~190 檔挑最高相關 = winner's curse。輸出加 split-half 驗證欄（前半窗 vs 後半窗 corr 同號才標「穩定」）。
+6. **turnaround screener 資料源**：Yahoo → FinMind（其他工具 2026-05-11 已遷移，`tw_turnaround_screener.py:40` 還在用 Yahoo，rate-limit 靜默跳過會讓 universe 每天不同）。同時加「抓取失敗計數」到輸出——區分「無候選」與「資料斷線」。
+7. **組合層模擬**：事件研究之上加簡單組合模擬（同時最多 K 檔、等權、資金重複使用規則），回答「這些策略疊起來的資金曲線長怎樣」。
+8. **沉睡巨人 / 美台聯動 回測**：沉睡巨人持有期長（月~年），需要不同的評估框架（6m/12m horizon + 觸發稀少）；美台聯動是配對訊號非選股訊號。各開獨立 plan。
+9. **dormant_giants 還原價來源**：Yahoo adjclose → FinMind `TaiwanStockPriceAdj`（sponsor 已可用，README 註記過時）。
