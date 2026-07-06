@@ -58,6 +58,20 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
 
 
+# 財報公告死線: 年報 3/31、Q1 5/15、Q2 8/14、Q3 11/14。
+# 死線前後的窗口內快取縮短到 3 天，其餘 21 天（原 30 天會讓新季報最多晚 30 天生效）。
+_EARNINGS_WINDOWS = [(325, 410), (505, 525), (805, 825), (1105, 1125)]  # (MMDD, MMDD)
+
+
+def _margin_cache_ttl(now=None) -> int:
+    now = now or datetime.now()
+    md = now.month * 100 + now.day
+    for lo, hi in _EARNINGS_WINDOWS:
+        if lo <= md <= hi:
+            return 3 * 86400
+    return 21 * 86400
+
+
 def http_json(url: str, retries: int = 2):
     """Simple GET → JSON with retry on rate limit."""
     for attempt in range(retries + 1):
@@ -85,7 +99,7 @@ def fetch_quarterly_margins(code: str, token: str = "") -> list[dict]:
     cache_path = os.path.join(CACHE_DIR, f"margin_{code}.json")
     if os.path.exists(cache_path):
         mtime = os.path.getmtime(cache_path)
-        if time.time() - mtime < 30 * 86400:
+        if time.time() - mtime < _margin_cache_ttl():
             with open(cache_path) as f:
                 return json.load(f)
 
