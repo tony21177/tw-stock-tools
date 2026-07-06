@@ -46,6 +46,25 @@ class TestAnchorD(unittest.TestCase):
         self.assertFalse(ok_post)
         self.assertTrue(ok_pre2)
 
+    def test_postclose_len22_boundary(self):
+        # 恰 22 根 K 棒：舊版允許 (len<22 才擋)，anchor=21 必須能算 D
+        vols = [1000] * 21 + [3000]
+        closes = [100.0] * 22
+        ok, msg = signal_d_volume(_px(closes, vols))
+        self.assertNotIn("資料不足", msg)
+
+    def test_postclose_len62_60d_branch(self):
+        # 恰 62 根：前日量 = 20d 均的 0.948x 但 60d 均的 1.684x → True
+        # 數據設計：41 根 400量 + 19 根 1200量 + 1 根 1100量 + 1 根 1000量
+        # prev_vol = vols[60] = 1100
+        # win20 = vols[40:60] = [400] + [1200]*19 = sum 23200, avg 1160 → ratio 0.948 < 1.0
+        # win60 = vols[0:60] = [400]*41 + [1200]*19 = sum 39200, avg 653.33 → ratio 1.684 >= 1.5
+        vols = [400] * 41 + [1200] * 19 + [1100, 1000]
+        closes = [100.0] * 62
+        ok, msg = signal_d_volume(_px(closes, vols))
+        self.assertTrue(ok, msg)
+        self.assertIn("60d", msg)
+
 
 if __name__ == "__main__":
     unittest.main()

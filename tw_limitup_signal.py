@@ -499,7 +499,7 @@ def signal_d_volume(px: list[dict], anchor: int | None = None) -> tuple[bool, st
     """D 量能蓄勢: anchor 前一日量 / 20d 均量 ≥ 1.0 或 / 60d 均量 ≥ 1.5。"""
     if anchor is None:
         anchor = len(px) - 1
-    if anchor < 22:
+    if anchor < 21:
         return False, "(資料不足)"
     prev_vol = px[anchor - 1].get("volume") or 0
     win20 = px[anchor - 21:anchor - 1]
@@ -508,7 +508,7 @@ def signal_d_volume(px: list[dict], anchor: int | None = None) -> tuple[bool, st
         return False, "(無均量)"
     ratio20 = prev_vol / avg20
     ratio60 = ratio20
-    if anchor >= 62:
+    if anchor >= 61:
         win60 = px[anchor - 61:anchor - 1]
         avg60 = sum((r.get("volume") or 0) for r in win60) / 60
         if avg60 > 0:
