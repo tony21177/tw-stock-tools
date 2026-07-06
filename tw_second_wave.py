@@ -221,7 +221,8 @@ def _ex_dates_cached(code: str, token: str) -> list[str]:
     if os.path.exists(p) and time.time() - os.path.getmtime(p) < 7 * 86400:
         with open(p) as f:
             return json.load(f)
-    sys.path.insert(0, HERE)
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
     import finmind_client
     start = (datetime.now() - timedelta(days=300)).strftime("%Y-%m-%d")
     ex = finmind_client.fetch_dividend_ex_dates(code, start, token)
