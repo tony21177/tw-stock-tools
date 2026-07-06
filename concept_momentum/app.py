@@ -3714,6 +3714,10 @@ def _render_second_wave_backtest_page(data: dict | None = None, error: str = "")
     H = r["horizons"]
     def cls(v): return "pos" if v is not None and v > 0 else "neg"
     hh = H[hmax]
+    _edge_v = hh.get("edge_mean", hh.get("edge", 0))
+    _edge_ci = hh.get("edge_ci")
+    _edge_ci_str = (f"CI [{_edge_ci[0]:+.2f},{_edge_ci[1]:+.2f}]" if _edge_ci else "淨超額−基準")
+    _ci = hh.get("exc_ci", [0, 0])
     cards = (
         f'<p class="small" style="margin:.2em 0">摘要＝持有 {hmax} 交易日</p><div class="cards">'
         f'<div class="card"><div class="k">絕對報酬(均)</div>'
@@ -3722,17 +3726,33 @@ def _render_second_wave_backtest_page(data: dict | None = None, error: str = "")
         f'<div class="card"><div class="k">淨超額 vs 大盤</div>'
         f'<div class="v {cls(hh["net"])}">{hh["net"]:+.1f}%</div>'
         f'<div class="small">贏大盤率 {hh["beat"]:.0f}%</div></div>'
-        f'<div class="card"><div class="k">訊號 edge</div>'
-        f'<div class="v {cls(hh["edge"])}">{hh["edge"]:+.1f}%</div>'
-        f'<div class="small">淨超額−基準</div></div>'
+        f'<div class="card"><div class="k">超額中位數</div>'
+        f'<div class="v {cls(hh["exc_med"])}">{hh["exc_med"]:+.1f}%</div>'
+        f'<div class="small">均值 {hh["exc_mean"]:+.1f}%</div></div>'
+        f'<div class="card"><div class="k">95% CI (超額均)</div>'
+        f'<div class="v" style="font-size:.9em">[{_ci[0]:+.2f}, {_ci[1]:+.2f}]</div>'
+        f'<div class="small">t={hh.get("t", 0):.2f}'
+        f'{"  ✓顯著" if _ci[0] > 0 else ""}</div></div>'
+        f'<div class="card"><div class="k">訊號 edge (均)</div>'
+        f'<div class="v {cls(_edge_v)}">{_edge_v:+.1f}%</div>'
+        f'<div class="small">{_edge_ci_str}</div></div>'
         f'<div class="card"><div class="k">進場樣本</div>'
         f'<div class="v">{r["n_episodes"]}</div>'
-        f'<div class="small">{r["n_signal_days"]} 訊號日去重</div></div></div>')
+        f'<div class="small">{r["n_signal_days"]} 訊號日・除權息剔 {r.get("n_skipped_div", 0)}</div></div></div>')
     meta = (f'<p class="small">universe {r["universe"]} 檔（{r.get("universe_label","概念股子集")}）・'
             f'{r["start"]}~{r["end"]}・扣 {r["cost"]}% 成本・生成 {_esc(data["generated"])}</p>')
 
     def row(name, key, fmt="{:+.2f}", pct="%"):
-        cells = "".join(f'<td class="num">{fmt.format(H[h][key])}{pct}</td>' for h in hs)
+        cells = "".join(f'<td class="num">{fmt.format(H[h].get(key, 0))}{pct}</td>' for h in hs)
+        return f'<tr><td>{name}</td>{cells}</tr>'
+    def ci_row(name, key):
+        def _fmt(hd):
+            ci = hd.get(key)
+            if not ci:
+                return "—"
+            return f"[{ci[0]:+.2f}, {ci[1]:+.2f}]"
+        cells = "".join(f'<td class="num" style="white-space:nowrap">{_fmt(H[h])}</td>'
+                        for h in hs)
         return f'<tr><td>{name}</td>{cells}</tr>'
     th = "".join(f'<th class="num">{h}日</th>' for h in hs)
     tbl = (f'<section><h3>📊 各持有天數表現</h3>'
@@ -3741,18 +3761,20 @@ def _render_second_wave_backtest_page(data: dict | None = None, error: str = "")
            + row("賺錢率", "win", "{:.0f}")
            + row("超額 vs 大盤(均)", "exc_mean")
            + row("超額 中位數", "exc_med")
+           + ci_row("95% CI (超額均)", "exc_ci")
+           + row("t-stat", "t", "{:.2f}", "")
            + row("贏大盤率", "beat", "{:.0f}")
            + row("扣成本淨超額", "net")
-           + row("基準(隨機股票日)", "baseline")
-           + row("⭐訊號 edge", "edge")
+           + row("⭐訊號 edge (均)", "edge_mean")
+           + ci_row("edge 95% CI", "edge_ci")
            + '</tbody></table>'
-           '<p class="small">edge = 淨超額 − 基準（同期同universe隨機股票日的平均超額）。'
-           '正且夠大 = 訊號真的比「隨便買一檔概念股」好。</p></section>')
+           '<p class="small">edge_mean = (股票超額−大盤) − 同日隨機 k=100 檔的基準超額。'
+           'CI 含 0 = 該 horizon 無統計顯著 edge；edge_ci 全正 = 顯著。</p></section>')
 
     # 圖表
     hlabels = json.dumps([f"{h}日" for h in hs])
-    edge_d = json.dumps([H[h]["edge"] for h in hs])
-    base_d = json.dumps([H[h]["baseline"] for h in hs])
+    edge_d = json.dumps([H[h].get("edge_mean", H[h].get("edge", 0)) for h in hs])
+    base_d = json.dumps([H[h].get("baseline", 0) for h in hs])
     net_d = json.dumps([H[h]["net"] for h in hs])
     eq = H[hmax]["equity"]
     eq_labels = json.dumps([e["date"] for e in eq])
@@ -3781,8 +3803,8 @@ def _render_second_wave_backtest_page(data: dict | None = None, error: str = "")
       '<b>④ 三個比較對象</b><br>'
       '• <b>絕對報酬</b>：買進後 H 日漲跌%。<br>'
       '• <b>超額 vs 大盤</b>：減去同期加權指數，看贏不贏大盤。<br>'
-      '• <b>基準</b>：同期同universe<b>所有可評估股票日</b>的平均前向超額（＝隨便買一檔的期望）。'
-      '訊號要打贏這個才算真有用。<br><br>'
+      '• <b>基準 (edge baseline)</b>：與事件<b>同日期</b>隨機抽 k=100 檔股票，'
+      '算它們平均超額（date-matched baseline）；訊號 edge = 超額 − 基準。<br><br>'
       '<b>⑤ 成本/資料</b><br>'
       f'扣 {r["cost"]}% 來回成本。universe = {r.get("universe_label","概念股子集")} {r["universe"]} 檔。'
       '</div></section>')
@@ -3798,7 +3820,7 @@ def _render_second_wave_backtest_page(data: dict | None = None, error: str = "")
               '要到 20 日才有明顯 edge → 第二波是「抱一個月」的 setup，不是短打。<br>'
               '2. 報酬右偏：均值 &gt;&gt; 中位數，靠少數大贏家拉高，多數只是接近大盤。<br>'
               + uni_cav +
-              '4. 成本固定 0.4%，急跌反彈股流動性差時滑價可能更大；'
+              f'4. 成本 {r["cost"]}%（手續費6折+證交稅，零滑價假設），急跌反彈股流動性差時滑價可能更大；'
               '全市場含小型股時滑價影響更明顯。</p></section>')
 
     js = f"""<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>

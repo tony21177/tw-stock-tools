@@ -1,231 +1,127 @@
 #!/usr/bin/env python3
-"""強勢股第二波 回測 — 事件研究法 (event study)。
+"""強勢股第二波 回測 v2 — 事件研究。
 
-第二波是『每檔股票』的型態訊號（強漲→急殺15-25%→反彈啟動），不是排名，
-所以用事件研究：每當某股某日觸發訊號，量它之後 H 日的報酬，跟
-(a) 大盤、(b) 同universe隨機股票日 的基準比，看訊號有沒有 edge。
-
-手法：直接 import 正式程式的 detect_second_wave（測真訊號），對每檔股票
-逐日 point-in-time 跑（只用 ≤t 資料）。同一波連續觸發只取『首次』(episode 去重)。
-
-資料：重用 concept_momentum/cache/backtest_prices.json (192 檔 date/close/volume)。
-※ universe = 概念股 192 檔（正式 cron 掃全市場，這裡是子集，偏液性大票）。
-
-用法：
-  tw_second_wave_backtest.py
-  tw_second_wave_backtest.py --horizon 5 10 20 --cost 0.4 --json-out path.json
+v2 相對 v1 的差異：
+  - 進場：預設『訊號隔日還原開盤價』(--entry next_open)。訊號 07:40 盤前產生，
+    隔日開盤是最早可實現的成交價；v1 的訊號日收盤進場把隔夜跳空算進去（不可實現）。
+  - 報酬：還原價 (aopen/aclose)，跨除息的持有期不再低估。
+  - 訊號除污：偵測窗 (peak→signal) 內有除權息交易日的 episode 剔除
+    （未還原收盤的除權缺口會偽造 F3 急跌）— 剔除數記在 n_skipped_div。
+  - 統計：bootstrap 95% CI + t-stat + 中位數 + 分年 (2025/2026)。
+  - 基準：與事件同日期的隨機股票日 (date-matched)。
+偵測邏輯不變：import 正式 detect_second_wave point-in-time 跑。
 """
 import argparse
 import json
 import os
-import statistics
 import sys
-import time
-import urllib.parse
-import urllib.request
 from argparse import Namespace
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from tw_second_wave import detect_second_wave, load_universe  # noqa: E402
+import backtest_lib as bl                                  # noqa: E402
+from backtest_prices import load_panel                     # noqa: E402
+from tw_second_wave import detect_second_wave, FILTER_DEFAULTS  # noqa: E402
 
-PRICE_CACHE = os.path.join(HERE, "concept_momentum", "cache", "backtest_prices.json")
-PRICE_CACHE_ALL = os.path.join(HERE, "concept_momentum", "cache", "backtest_prices_all.json")
-FINMIND = "https://api.finmindtrade.com/api/v4/data"
-
-
-def _token() -> str:
-    t = os.environ.get("FINMIND_TOKEN", "")
-    if t:
-        return t
-    import subprocess
-    out = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
-    for line in out.splitlines():
-        if "FINMIND_TOKEN=" in line:
-            return line.split("FINMIND_TOKEN=", 1)[1].split()[0]
-    return ""
+DEFAULT_ARGS = Namespace(**FILTER_DEFAULTS)
+MIN_HISTORY = 135
 
 
-def _fm_rows(code: str, start: str, token: str) -> list[dict]:
-    q = urllib.parse.urlencode({"dataset": "TaiwanStockPrice", "data_id": code,
-                                "start_date": start, "token": token})
-    for _ in range(3):
-        try:
-            with urllib.request.urlopen(f"{FINMIND}?{q}", timeout=30) as r:
-                data = json.loads(r.read().decode()).get("data", [])
-            out = [{"date": x["date"].replace("-", ""), "close": float(x["close"]),
-                    "volume": float(x.get("Trading_Volume") or 0)}
-                   for x in data if x.get("close") and x["close"] > 0]
-            out.sort(key=lambda r: r["date"])
-            return out
-        except Exception:
-            time.sleep(2)
-    return []
-
-
-def build_all_market_cache(start: str) -> dict:
-    """抓全市場 2155 檔日線，快取到 backtest_prices_all.json。"""
-    if os.path.exists(PRICE_CACHE_ALL):
-        with open(PRICE_CACHE_ALL) as f:
-            c = json.load(f)
-        if c.get("start") == start:
-            print(f"[cache] 全市場快取 {len(c['stocks'])} 檔", file=sys.stderr)
-            return c
-    token = _token()
-    uni = load_universe("all")
-    print(f"[fetch] 全市場 {len(uni)} 檔，自 {start} … (約 10-25 分)", file=sys.stderr)
-    stocks = {}
-    for i, (code, name) in enumerate(uni):
-        rows = _fm_rows(code, start, token)
-        if len(rows) >= 60:
-            stocks[code] = {"code": code, "name": name, "rows": rows}
-        if (i + 1) % 100 == 0:
-            print(f"  {i+1}/{len(uni)} (有效 {len(stocks)})", file=sys.stderr)
-        time.sleep(0.05)
-    taiex = _fm_rows("TAIEX", start, token)
-    c = {"start": start, "stocks": stocks, "taiex": taiex}
-    with open(PRICE_CACHE_ALL, "w") as f:
-        json.dump(c, f)
-    print(f"[fetch] 完成，{len(stocks)} 檔有效，快取 {PRICE_CACHE_ALL}", file=sys.stderr)
-    return c
-
-# 與 tw_second_wave.py add_argument 預設一致
-DEFAULT_ARGS = Namespace(
-    rally_min_gain=0.30, peak_lookback=60, drop_min=0.15, drop_max=0.25,
-    min_drop_days=5, max_drop_days=15, min_recovery_days=1, max_recovery_days=10,
-    recovery_min_gain=0.05, recovery_vol_ratio=0.7, max_today_vs_peak=0.98,
-)
-MIN_HISTORY = 135   # detect 需 rally_lookback(130)+ 緩衝
-
-
-def load_prices(universe="concepts", start="2025-01-01"):
-    if universe == "all":
-        d = build_all_market_cache(start)
-    else:
-        with open(PRICE_CACHE) as f:
-            d = json.load(f)
-    return d["stocks"], d["taiex"]
-
-
-def fwd_ret(rows_close: dict, dates: list, i: int, h: int) -> float | None:
-    if i + h >= len(dates):
-        return None
-    c0 = rows_close.get(dates[i]); c1 = rows_close.get(dates[i + h])
-    if not c0 or not c1 or c0 <= 0:
-        return None
-    return (c1 / c0 - 1) * 100
-
-
-def run(horizons, cost, dedup=True, universe="concepts", start="2025-01-01"):
-    stocks, taiex = load_prices(universe, start)
-    tx_close = {r["date"]: r["close"] for r in taiex}
-    tx_dates = sorted(tx_close)
-
-    def tx_fwd(date, h):
-        if date not in tx_close:
-            return None
-        i = tx_dates.index(date) if date in tx_dates else None
-        if i is None or i + h >= len(tx_dates):
-            return None
-        c0, c1 = tx_close[tx_dates[i]], tx_close[tx_dates[i + h]]
-        return (c1 / c0 - 1) * 100 if c0 > 0 else None
-
-    sig = {h: {"exc": [], "abs": [], "dates": []} for h in horizons}
-    base = {h: [] for h in horizons}   # baseline: 所有可跑訊號的股票日
-    n_signal_days = 0
-    n_episodes = 0
+def run(horizons, cost, entry="next_open", dedup_days=None, start="2025-01-01",
+        baseline_k=100):
+    panel = load_panel(start)
     max_h = max(horizons)
+    cooldown = dedup_days if dedup_days is not None else max_h
+    events = []          # (code, date, i)
+    n_signal_days = 0
+    n_skipped_div = 0
 
-    for code, s in stocks.items():
+    for code, s in panel.stocks.items():
         rows = s["rows"]
         if len(rows) < MIN_HISTORY + max_h:
             continue
-        dates = [r["date"] for r in rows]
-        close = {r["date"]: r["close"] for r in rows}
-        prev_fire = False
+        fires = []
         for i in range(MIN_HISTORY, len(rows) - max_h):
-            # baseline: 每個可評估股票日的前向超額 (vs 大盤)
-            for h in horizons:
-                fr = fwd_ret(close, dates, i, h)
-                tf = tx_fwd(dates[i], h)
-                if fr is not None and tf is not None:
-                    base[h].append(fr - tf)
-            # 訊號：只用 ≤i 的資料 point-in-time
             res = detect_second_wave(rows[:i + 1], DEFAULT_ARGS)
-            fire = res is not None
-            if fire:
-                n_signal_days += 1
-                is_entry = (not prev_fire) if dedup else True
-                if is_entry:
-                    n_episodes += 1
-                    for h in horizons:
-                        fr = fwd_ret(close, dates, i, h)
-                        tf = tx_fwd(dates[i], h)
-                        if fr is not None and tf is not None:
-                            sig[h]["abs"].append(fr)
-                            sig[h]["exc"].append(fr - tf)
-                            sig[h]["dates"].append(dates[i])
-            prev_fire = fire
+            if res is None:
+                continue
+            n_signal_days += 1
+            # 除權息 guard：偵測窗 (peak_date, signal_date] 有除權息 → 假急跌
+            if panel.has_ex_dividend(code, res["peak_date"], rows[i]["date"]):
+                n_skipped_div += 1
+                continue
+            fires.append(i)
+        for i in bl.dedup_cooldown(fires, cooldown):
+            events.append((code, rows[i]["date"], i))
 
-    # 輸出
-    summary = {"n_signal_days": n_signal_days, "n_episodes": n_episodes,
-               "start": tx_dates[0], "end": tx_dates[-1], "cost": cost,
-               "universe": len(stocks),
-               "universe_label": "全市場" if universe == "all" else "概念股子集",
+    summary = {"n_signal_days": n_signal_days, "n_episodes": len(events),
+               "n_skipped_div": n_skipped_div, "entry": entry, "cost": cost,
+               "start": panel.tx_dates[0], "end": panel.tx_dates[-1],
+               "universe": len(panel.stocks), "universe_label": "全市場",
                "horizons": {}}
-    print(f"\n{'='*60}\n強勢股第二波 回測（事件研究）"
-          f"\n universe {len(stocks)} 檔・{tx_dates[0]}~{tx_dates[-1]}"
-          f"\n 訊號觸發 {n_signal_days} 股票日 → 去重後 {n_episodes} 個進場 episode"
-          f"\n{'='*60}")
+    print(f"\n{'='*60}\n第二波 回測 v2  entry={entry}  cost={cost}%"
+          f"\n universe {len(panel.stocks)} 檔・{panel.tx_dates[0]}~{panel.tx_dates[-1]}"
+          f"\n 訊號 {n_signal_days} 股票日 → 除權息剔除 {n_skipped_div} → "
+          f"episodes {len(events)}\n{'='*60}")
+
     for h in horizons:
-        S = sig[h]
-        if not S["exc"]:
-            print(f"\n[H={h}d] 無樣本"); continue
-        exc = statistics.mean(S["exc"])
-        net = exc - cost
-        med = statistics.median(S["exc"])
-        win = sum(1 for x in S["abs"] if x > 0) / len(S["abs"]) * 100   # 絕對賺錢
-        beat = sum(1 for x in S["exc"] if x > 0) / len(S["exc"]) * 100  # 贏大盤
-        b = statistics.mean(base[h]) if base[h] else 0.0               # 基準超額
-        edge = net - b
-        # 權益曲線 (非複利累加淨超額，按日期排序)
-        order = sorted(range(len(S["dates"])), key=lambda k: S["dates"][k])
+        absr, excr, edges, dates = [], [], [], []
+        by_year = {}
+        for code, date, _i in events:
+            r = panel.fwd(code, date, h, entry)
+            if r is None:
+                continue
+            sr, tr = r
+            b = panel.matched_baseline(date, h, k=baseline_k, entry=entry)
+            absr.append(sr); excr.append(sr - tr); dates.append(date)
+            if b is not None:
+                edges.append(sr - tr - b)
+            by_year.setdefault(date[:4], []).append(sr - tr)
+        s = bl.summarize_events(absr, excr, cost, edge_samples=edges)
+        s["per_year"] = {y: {"n": len(v),
+                             "exc_mean": round(sum(v) / len(v), 2),
+                             "exc_ci": [round(x, 2) for x in bl.bootstrap_ci(v)]}
+                         for y, v in sorted(by_year.items())}
+        # 權益曲線（沿用 v1 呈現：非複利累加淨超額）
+        order = sorted(range(len(dates)), key=lambda k: dates[k])
         eq, cum = [], 0.0
         for k in order:
-            cum += S["exc"][k] - cost
-            eq.append({"date": S["dates"][k], "cum": round(cum, 2)})
-        summary["horizons"][h] = {
-            "n": len(S["exc"]), "abs_mean": round(statistics.mean(S["abs"]), 2),
-            "exc_mean": round(exc, 2), "net": round(net, 2), "exc_med": round(med, 2),
-            "win": round(win, 0), "beat": round(beat, 0),
-            "baseline": round(b, 2), "edge": round(edge, 2), "equity": eq}
-        print(f"\n【持有 {h} 交易日】 進場 {len(S['exc'])} 次")
-        print(f"  絕對報酬(均)      : {statistics.mean(S['abs']):+.2f}%  (賺錢率 {win:.0f}%)")
-        print(f"  超額 vs 大盤(均)   : {exc:+.2f}%  (中位 {med:+.2f}%, 贏大盤率 {beat:.0f}%)")
-        print(f"  扣 {cost}% 成本後淨超額: {net:+.2f}%")
-        print(f"  基準(隨機股票日超額): {b:+.2f}%")
-        print(f"  ⭐訊號 edge(淨−基準) : {edge:+.2f}%  ← 正=訊號真有用")
+            cum += excr[k] - cost
+            eq.append({"date": dates[k], "cum": round(cum, 2)})
+        s["equity"] = eq
+        summary["horizons"][h] = s
+        if s["n"]:
+            print(f"\n【H={h}d】n={s['n']}  絕對 {s['abs_mean']:+.2f}% (勝率 {s['win']:.0f}%)")
+            print(f"  超額均 {s['exc_mean']:+.2f}%  中位 {s['exc_med']:+.2f}%  "
+                  f"95%CI [{s['exc_ci'][0]:+.2f}, {s['exc_ci'][1]:+.2f}]  t={s['t']:.2f}")
+            print(f"  扣成本淨超額 {s['net']:+.2f}%  "
+                  f"⭐edge {s.get('edge_mean', 0):+.2f}% CI {s.get('edge_ci')}")
+            for y, v in s["per_year"].items():
+                print(f"    {y}: n={v['n']} 超額 {v['exc_mean']:+.2f}% CI {v['exc_ci']}")
     return summary
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--horizon", type=int, nargs="+", default=[5, 10, 20])
-    ap.add_argument("--cost", type=float, default=0.4)
-    ap.add_argument("--no-dedup", action="store_true",
-                    help="不做 episode 去重 (每個觸發日都算進場)")
-    ap.add_argument("--universe", default="concepts",
-                    help="concepts (192檔快取) 或 all (全市場 2155 檔, 會抓資料)")
+    ap.add_argument("--cost", type=float, default=bl.cost_roundtrip_pct())
+    ap.add_argument("--entry", default="next_open",
+                    choices=["next_open", "signal_close"])
+    ap.add_argument("--slippage-bp", type=float, default=0.0)
+    ap.add_argument("--dedup-days", type=int, default=None,
+                    help="episode cooldown 交易日數 (預設 = max horizon)")
     ap.add_argument("--start", default="2025-01-01")
     ap.add_argument("--json-out")
     args = ap.parse_args()
-    s = run(args.horizon, args.cost, dedup=not args.no_dedup,
-            universe=args.universe, start=args.start)
+    cost = (bl.cost_roundtrip_pct(slippage_bp=args.slippage_bp)
+            if args.cost == bl.cost_roundtrip_pct() else args.cost)
+    s = run(args.horizon, cost, entry=args.entry, dedup_days=args.dedup_days,
+            start=args.start)
     if args.json_out:
         from datetime import datetime
         with open(args.json_out, "w", encoding="utf-8") as f:
             json.dump({"generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                       "params": {"horizons": args.horizon, "cost": args.cost,
-                                  "universe": args.universe},
+                       "params": {"horizons": args.horizon, "cost": cost,
+                                  "entry": args.entry, "universe": "all"},
                        "result": s}, f, ensure_ascii=False)
         print(f"\n[json] 寫入 {args.json_out}", file=sys.stderr)

@@ -1016,6 +1016,48 @@ warm cache 後續查詢秒級。
 - 急跌可能是利空 (基本面轉壞)、政策 (產業限制)、或主力洗盤 — 三者需區分
 - 候選 ≠ 買入訊號，是「pattern 已成形的池子」，需搭配當日量價、消息面決策
 
+### 回測 v2（`tw_second_wave_backtest.py`）
+
+**進場口徑**：訊號日**隔日還原開盤價** (`--entry next_open`)。訊號在 07:40 盤前產生，隔日開盤是最早可實現的成交價；v1 使用訊號日收盤進場，把無法預知的隔夜跳空算進報酬（口徑不可實現）。v1 → v2 數字不可直接比較。
+
+**報酬衡量**：採**還原價** (aopen/aclose)，跨除息持有期不再低估報酬。
+
+**除權息 guard**：偵測窗 (peak_date → 訊號日] 內有除權息交易日的 episode 剔除，避免未還原收盤的除權缺口偽造 Phase 3 急跌訊號。剔除數記錄為 `n_skipped_div`。
+
+**成本模型**：`cost_roundtrip_pct(discount=0.6, slippage_bp=0.0) = 0.471%`（手續費 6 折 + 證交稅，零滑價假設）。
+
+**統計**：bootstrap 95% CI（5000 次重抽，seed=7）、t-stat、超額中位數、分年拆解（2025 / 2026）。
+
+**基準**：與每個事件**同日期**隨機抽 k=100 檔股票的平均超額（date-matched baseline），比「隨便買一檔」多多少算 edge。
+
+**CI 判讀**：`exc_ci` 含 0 表示該 horizon 無統計顯著 alpha；`edge_ci` 全正才算訊號真有 edge。
+
+```bash
+# 跑回測（使用已建立的 bt_cache/backtest_prices_v2.json，無需網路）
+python3 tw_second_wave_backtest.py \
+  --json-out concept_momentum/cache/second_wave_backtest.json
+
+# 背景執行（1895 檔 × 370 天，約 2-5 分鐘）
+nohup python3 tw_second_wave_backtest.py \
+  --json-out concept_momentum/cache/second_wave_backtest.json \
+  > bt_cache/swbt.log 2>&1 &
+```
+
+**v2 回測結果摘要**（2025-01-02 ～ 2026-07-06，全市場 1895 檔）：
+
+| H | n | 超額均 | 95% CI | t | 淨超額 | edge_mean | edge_ci |
+|---|---|------|--------|---|-------|-----------|---------|
+| 5d | 502 | -0.69% | [-1.62, +0.31] | -1.43 | -1.16% | -0.05% | [-0.96, 0.92] |
+| 10d | 501 | +0.08% | [-1.32, +1.52] | +0.11 | -0.39% | +1.17% | [-0.22, 2.58] |
+| 20d | 502 | +1.66% | [-0.61, +4.11] | +1.39 | +1.19% | +4.54% | [+2.29, +6.94] |
+
+除權息剔除：77 episodes（占訊號 1828 日 × cooldown 去重前）。
+
+**結論**：
+- H=5/10d：CI 含 0，無統計顯著 alpha
+- H=20d：超額 CI 含 0（不顯著）；但 edge_ci=[+2.29, +6.94] 全正，表示持有一個月時訊號相對隨機基準有統計顯著 edge
+- 第二波是「抱一個月」的 setup，不是短打；均值右偏（靠少數大贏家），中位數為負
+
 ---
 
 ## 環境變數

@@ -49,6 +49,14 @@ except Exception:
 CACHE_DIR = os.path.join(HERE, "second_wave_cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
+# 偵測參數單一來源 — argparse 與回測共用（勿在他處手抄預設值）
+FILTER_DEFAULTS = dict(
+    rally_min_gain=0.30, peak_lookback=60, drop_min=0.15, drop_max=0.25,
+    min_drop_days=5, max_drop_days=15, min_recovery_days=1,
+    max_recovery_days=10, recovery_min_gain=0.05, recovery_vol_ratio=0.7,
+    max_today_vs_peak=0.98,
+)
+
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
 DEFAULT_CHAT_ID = "-5229750819"
 TG_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
@@ -403,31 +411,31 @@ def send_telegram(message: str, bot_token: str, chat_id: str) -> bool:
 def main():
     p = argparse.ArgumentParser(description="強勢股第二波篩選器")
     # Phase 1 — pre-peak rally
-    p.add_argument("--rally-min-gain", type=float, default=0.30,
+    p.add_argument("--rally-min-gain", type=float, default=FILTER_DEFAULTS["rally_min_gain"],
                    help="峰前 6m 累積漲幅 ≥ N (預設 0.30)")
     # Phase 2 — peak in recent
-    p.add_argument("--peak-lookback", type=int, default=60,
+    p.add_argument("--peak-lookback", type=int, default=FILTER_DEFAULTS["peak_lookback"],
                    help="峰值落在最近 N td 內 (預設 60，~3 個月)")
     # Phase 3 — drop
-    p.add_argument("--drop-min", type=float, default=0.15,
+    p.add_argument("--drop-min", type=float, default=FILTER_DEFAULTS["drop_min"],
                    help="急跌幅度下限 (預設 0.15)")
-    p.add_argument("--drop-max", type=float, default=0.25,
+    p.add_argument("--drop-max", type=float, default=FILTER_DEFAULTS["drop_max"],
                    help="急跌幅度上限 (預設 0.25)")
-    p.add_argument("--min-drop-days", type=int, default=5,
+    p.add_argument("--min-drop-days", type=int, default=FILTER_DEFAULTS["min_drop_days"],
                    help="急跌持續至少 N td (預設 5)")
-    p.add_argument("--max-drop-days", type=int, default=15,
+    p.add_argument("--max-drop-days", type=int, default=FILTER_DEFAULTS["max_drop_days"],
                    help="急跌持續最多 N td (預設 15，超過視為慢跌)")
     # Phase 4 — recovery
-    p.add_argument("--min-recovery-days", type=int, default=1,
+    p.add_argument("--min-recovery-days", type=int, default=FILTER_DEFAULTS["min_recovery_days"],
                    help="低點距今至少 N td (預設 1，避免今日才見底)")
-    p.add_argument("--max-recovery-days", type=int, default=10,
+    p.add_argument("--max-recovery-days", type=int, default=FILTER_DEFAULTS["max_recovery_days"],
                    help="低點距今最多 N td (預設 10，太久反彈已老)")
-    p.add_argument("--recovery-min-gain", type=float, default=0.05,
+    p.add_argument("--recovery-min-gain", type=float, default=FILTER_DEFAULTS["recovery_min_gain"],
                    help="今日 vs trough 漲幅 ≥ N (預設 0.05)")
-    p.add_argument("--recovery-vol-ratio", type=float, default=0.7,
+    p.add_argument("--recovery-vol-ratio", type=float, default=FILTER_DEFAULTS["recovery_vol_ratio"],
                    help="近 3d 均量 / 急跌期均量 ≥ N (預設 0.7，急跌期常爆恐慌量，"
                         "反彈初期不需要也爆量，只要量沒萎縮)")
-    p.add_argument("--max-today-vs-peak", type=float, default=0.98,
+    p.add_argument("--max-today-vs-peak", type=float, default=FILTER_DEFAULTS["max_today_vs_peak"],
                    help="今日 / 峰值 < N (預設 0.98，避免已破前高才追)")
 
     p.add_argument("--universe", default="all", help="all / concepts / 逗號代號")
