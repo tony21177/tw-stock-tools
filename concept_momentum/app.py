@@ -3440,6 +3440,34 @@ _BACKTEST_GLOSSARY = {
         "<b>ge2 組（ABD≥2）</b> = 當日至少兩個 overlay 訊號同步觸發；<b>lt2 組（ABD&lt;2）</b> = 否。"
         "比較兩組前向報酬差異，可回答「Layer 2 是否在 Layer 1 之上加值」。"
     ),
+    "借券賣出餘額 (SBL)": (
+        "<b>Securities Borrowing and Lending</b>（借券賣出）的每日未平倉張數。"
+        "放空者向券商借股票來賣，SBL 餘額代表市場上「尚未還券」的借出量，"
+        "俗稱「空頭部位」的一種衡量。⚠ 陷阱：SBL 減少不一定是空頭平倉——"
+        "也可能是到期強制還券（制度性還券）或轉換融券；判斷前須排除明顯的「一次性大量還券」。"
+    ),
+    "議借": (
+        "<b>議借</b>（Negotiated Lending）是借券交易的一種型態，由借方與出借方直接協議數量與利率，"
+        "與「競價」借券（公開競標）相對。議借量爆增代表機構/大戶有大量借券需求，"
+        "可能為放空建倉（高利率 &gt;7%）或避險/套利（低利率 &lt;1%）。"
+        "本策略用 <code>TaiwanStockSecuritiesLending</code> 中 transaction_type='議借' 的記錄。"
+    ),
+    "利率帶 (<1% / >7%)": (
+        "議借的量加權平均費率。<br>"
+        "<b>&lt;1% (low_rate)</b>：利率極低，出借方幾乎無報酬，借方可能為套利或避險目的，"
+        "市場上「容易借到」意味空頭成本低；與之後股價走勢關係較複雜。<br>"
+        "<b>&gt;7% (high_rate)</b>：高費率代表<b>難借、供不應求</b>，"
+        "空頭仍願付高價借股票，通常是對個股下跌有強烈信念；"
+        "歷史上高費率議借後股價往往繼續弱勢（空頭佔優）。"
+        "⚠ 兩個利率帶方向含義不同，<b>不可混讀</b>。"
+    ),
+    "up_only (減量且當日上漲)": (
+        "<b>up_only</b> 是「空頭撤退」訊號的子集：SBL 餘額日減 ≥10% <b>且</b> 個股當日收漲。"
+        "live 系統的「轉多訊號」分組規則（tw_lending_monitor.py）正是這條邏輯——"
+        "空頭縮手 + 股價已開始反彈，視為更強的轉多確認。"
+        "回測中若 up_only 組 edge 顯著優於 all 組，支持此分組規則有選股力；"
+        "若差異不顯著或反轉，則分組條件需重新評估。"
+    ),
 }
 
 
@@ -4575,6 +4603,218 @@ def turnaround_backtest():
     except Exception as e:
         return _render_turnaround_backtest_page(error=f"{type(e).__name__}: {e}")
     return _render_turnaround_backtest_page(data=data)
+
+
+def _render_lending_backtest_page(data: dict | None = None, error: str = "") -> str:
+    nav = ('<nav><a href="/">← 大盤 dashboard</a>'
+           '<a href="/second-wave-backtest">🌊 第二波回測</a>'
+           '<a href="/turnaround-backtest">🔄 轉機接力回測</a>'
+           '<a href="/lending-backtest">🔻 借券回測</a></nav>')
+    css = """<style>
+  body { font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
+         max-width:1200px; margin:1em auto; padding:0 1em; background:#f7f7f9; color:#222; }
+  h1 { font-size:1.4em; margin:.4em 0; } nav a { margin-right:12px; color:#0066cc; text-decoration:none; }
+  section { background:#fff; padding:12px 16px; border-radius:6px; margin-bottom:12px;
+            box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  section h3 { margin:0 0 8px 0; font-size:1.05em; color:#444; }
+  table.report-table { width:100%; border-collapse:collapse; font-size:.9em; }
+  table.report-table th,table.report-table td { padding:6px 10px; border-bottom:1px solid #eee; text-align:left; }
+  table.report-table th { background:#fafafa; font-weight:600; color:#555; }
+  table.report-table .num { text-align:right; font-variant-numeric:tabular-nums; }
+  .pos { color:#060; } .neg { color:#c30; } .small,small { font-size:.85em; color:#666; }
+  .error { background:#fee; border:1px solid #f99; padding:12px; border-radius:4px; color:#c00; }
+  .warn { background:#fff8e1; border:1px solid #ffe082; padding:6px 10px;
+          border-radius:4px; color:#795548; font-size:.85em; display:inline-block; margin-bottom:6px; }
+  .group-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  @media(max-width:700px){ .group-grid { grid-template-columns:1fr; } }
+</style>"""
+    head = (f'<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+            f'<title>借券雷達 + 空頭撤退 回測</title>{css}</head><body>{nav}'
+            f'<h1>🔻 借券雷達 + 空頭撤退 — 回測（事件研究）</h1>')
+    tail = '</body></html>'
+    if error:
+        return head + f'<div class="error">{_esc(error)}</div>' + tail
+    if not data:
+        _nodata_glossary = _glossary_section([
+            "借券賣出餘額 (SBL)", "議借", "利率帶 (<1% / >7%)",
+            "up_only (減量且當日上漲)",
+            "事件研究", "episode 去重", "CI / 信賴區間",
+            "隔日開盤進場", "日期配對基準 (date-matched)", "樣本不足警語 (n<30)",
+        ])
+        return head + ('<section><p>尚無回測結果。請先跑：<br>'
+                       '<code>python3 tw_lending_backtest.py --json-out '
+                       'concept_momentum/cache/lending_backtest.json</code></p></section>'
+                       ) + _nodata_glossary + tail
+
+    r = data["result"]
+    p = r.get("params", {})
+    ec = r.get("event_counts", {})
+    cost = p.get("cost", 0.471)
+    hs = [str(h) for h in p.get("horizons", [5, 10, 20])]
+    generated = _esc(data.get("generated", ""))
+
+    def cls(v):
+        return "pos" if v is not None and v > 0 else "neg"
+
+    def _grp_table(grp_data: dict, label: str, note: str = "") -> str:
+        """Render a single group's per-horizon table."""
+        th = "".join(f'<th class="num">{h}日</th>' for h in hs)
+        rows_html = ""
+        n_warn = False
+
+        def _val(h, key, fmt="{:+.2f}", pct="%", color=False):
+            hd = grp_data.get(h, {})
+            v = hd.get(key)
+            if v is None:
+                return '<td class="num">—</td>'
+            s = fmt.format(v) + pct
+            col_cls = f' class="num {cls(v)}"' if color else ' class="num"'
+            return f'<td{col_cls}>{s}</td>'
+
+        def _ci_val(h, key):
+            hd = grp_data.get(h, {})
+            ci = hd.get(key)
+            if not ci:
+                return '<td class="num">—</td>'
+            return f'<td class="num" style="white-space:nowrap">[{ci[0]:+.2f},{ci[1]:+.2f}]</td>'
+
+        for h in hs:
+            hd = grp_data.get(h, {})
+            if hd.get("n", 0) < 30:
+                n_warn = True
+
+        warn_html = '<span class="warn">⚠ 樣本不足 (n&lt;30) — 數字僅供方向參考</span>' if n_warn else ""
+
+        def row(name, key, fmt="{:+.2f}", pct="%", color=False):
+            cells = "".join(_val(h, key, fmt, pct, color) for h in hs)
+            return f'<tr><td>{name}</td>{cells}</tr>'
+
+        def ci_row(name, key):
+            cells = "".join(_ci_val(h, key) for h in hs)
+            return f'<tr><td>{name}</td>{cells}</tr>'
+
+        def n_row():
+            cells = ""
+            for h in hs:
+                hd = grp_data.get(h, {})
+                n = hd.get("n", 0)
+                mark = " ⚠" if n < 30 else ""
+                cells += f'<td class="num">{n}{mark}</td>'
+            return f'<tr><td>樣本數 (n)</td>{cells}</tr>'
+
+        rows_html = (
+            n_row()
+            + row("絕對報酬(均)", "abs_mean")
+            + row("賺錢率", "win", "{:.0f}")
+            + row("超額 vs 大盤(均)", "exc_mean", color=True)
+            + row("超額 中位數", "exc_med", color=True)
+            + ci_row("95% CI (超額均)", "exc_ci")
+            + row("t-stat", "t", "{:.2f}", "", False)
+            + row("贏大盤率", "beat", "{:.0f}")
+            + row("扣成本淨超額", "net", color=True)
+            + row("訊號 edge (均)", "edge_mean", color=True)
+            + ci_row("edge 95% CI", "edge_ci")
+        )
+        note_html = f'<p class="small">{note}</p>' if note else ""
+        return (f'<div><h3>{label}</h3>'
+                + warn_html
+                + f'<table class="report-table"><thead><tr><th>指標</th>{th}</tr></thead>'
+                f'<tbody>{rows_html}</tbody></table>'
+                + note_html + '</div>')
+
+    grids = (
+        '<section><h3>📊 四組回測對照</h3>'
+        '<p class="small">進場 = 訊號日隔日還原開盤；扣 '
+        f'{cost:.3f}% 成本；生成 {generated}</p>'
+        f'<p class="small">事件數：空頭撤退 all={ec.get("sbl_all",0)}'
+        f' up_only={ec.get("sbl_up_only",0)}｜'
+        f'議借 low_rate={ec.get("lending_low",0)} high_rate={ec.get("lending_high",0)}</p>'
+        '<div class="group-grid">'
+        + _grp_table(
+            r["sbl_retreat"]["all"], "📉 空頭撤退 — all (SBL日減≥10%)",
+            "全市場 SBL 餘額當日縮減 ≥10%（前日餘額 ≥200 張避免小基數雜訊）。"
+            "隔日開盤進場，持有 H 日後賣出。")
+        + _grp_table(
+            r["sbl_retreat"]["up_only"], "📉↑ 空頭撤退 — up_only (減量且收漲)",
+            "all 子集：SBL 減量且當日個股收漲。"
+            "live 系統的「轉多訊號」分組——空頭縮手 + 股價已反彈，為更強轉多確認。"
+            "若 up_only edge 顯著優於 all，支持此分組邏輯有選股力。")
+        + _grp_table(
+            r["lending_surge"]["low_rate"], "💡 議借雷達 — low_rate (<1%)",
+            "議借量 &gt;5日均量×2 且利率 &lt;1%。低費率=容易借到/套利需求，"
+            "方向含義複雜；與 high_rate 不可混讀。")
+        + _grp_table(
+            r["lending_surge"]["high_rate"], "🔥 議借雷達 — high_rate (>7%)",
+            "議借量 &gt;5日均量×2 且利率 &gt;7%。高費率=難借/空頭強烈信念，"
+            "歷史上高費率議借後股價通常繼續偏弱（對空方有利）。")
+        + '</div></section>'
+    )
+
+    method = (
+        '<section><h3>🔬 方法說明</h3><div class="small" style="line-height:1.7">'
+        '<b>① 空頭撤退訊號</b><br>'
+        '從 <code>TaiwanDailyShortSaleBalances</code> 取 SBL 每日餘額，'
+        '當日相較前日縮減 ≥10%（前日餘額需 ≥200 張避免小基數偽訊號）視為「空頭撤退」。'
+        'up_only 子集再加「當日個股收漲」條件，對齊 live 推播的轉多分組邏輯。<br><br>'
+        '<b>② 借券雷達訊號</b><br>'
+        '從 <code>TaiwanStockSecuritiesLending</code> 取 transaction_type=議借 的記錄，'
+        '日彙總後計算量加權費率。當日議借量 &gt;前 5 日均量×2 為爆量門檻；'
+        '再依費率分 low_rate (&lt;1%) 和 high_rate (&gt;7%) 兩組，兩者方向含義不同。<br><br>'
+        '<b>③ episode 去重（cooldown）</b><br>'
+        '每檔個股連續觸發的訊號只取首次，冷卻期 = max_horizon，避免同一波重複計入。<br><br>'
+        '<b>④ up_only vs all 差異的意義</b><br>'
+        'up_only 驗證的是 live 系統「借券減少 + 當日上漲 = 轉多訊號」這條分組規則有沒有 edge。'
+        '若 up_only 超額 / edge 顯著高於 all，代表加「收漲」這個條件能過濾掉品質較差的事件；'
+        '若差異不顯著，說明此條件對後續 H 日報酬沒有額外選股力。<br><br>'
+        '<b>⑤ 成本與資料</b><br>'
+        f'扣 {cost:.3f}% 來回成本（手續費 6 折 + 證交稅）。'
+        '價格面板：TaiwanStockPrice/Adj v2（含 open/close/aopen/aclose）；'
+        '面板 start=2025-01-01，涵蓋約 1.5 年，多為多頭期，空頭盤 edge 可能不同。'
+        '</div></section>'
+    )
+
+    caveat = (
+        '<section><h3>⚠ 解讀限制與樣本量 caveat</h3><p class="small">'
+        '1. <b>樣本期間偏短</b>：2025-01-01 起，約 1.5 年，多為多頭環境；空頭期的表現可能不同，謹慎外推。<br>'
+        '2. <b>議借 high_rate 樣本可能不足</b>：費率 &gt;7% 屬罕見，若 n&lt;30 數字僅供方向參考，需累積更多歷史才能下強結論。<br>'
+        '3. <b>SBL 制度性還券</b>：到期強制還券、除權息前還券等制度因素會造成 SBL 大幅減少，'
+        '但並非空頭主動平倉（轉多）。本回測未過濾這類事件，all/up_only 兩組均可能含雜訊。<br>'
+        '4. <b>cost 0.471%</b>：借券股有時流動性偏低，實際滑價可能高於模型假設。'
+        '</p></section>'
+    )
+
+    glossary = _glossary_section([
+        "借券賣出餘額 (SBL)",
+        "議借",
+        "利率帶 (<1% / >7%)",
+        "up_only (減量且當日上漲)",
+        "事件研究",
+        "episode 去重",
+        "CI / 信賴區間",
+        "t 統計量",
+        "隔日開盤進場",
+        "日期配對基準 (date-matched)",
+        "樣本不足警語 (n<30)",
+        "絕對報酬",
+        "超額報酬 (vs 大盤)",
+        "淨超額",
+        "edge",
+    ])
+    return head + grids + method + glossary + caveat + tail
+
+
+@app.route("/lending-backtest")
+def lending_backtest():
+    path = os.path.join(HERE, "cache", "lending_backtest.json")
+    if not os.path.exists(path):
+        return _render_lending_backtest_page()
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        return _render_lending_backtest_page(error=f"{type(e).__name__}: {e}")
+    return _render_lending_backtest_page(data=data)
 
 
 if __name__ == "__main__":
