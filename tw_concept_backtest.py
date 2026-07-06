@@ -34,9 +34,11 @@ CM = os.path.join(HERE, "concept_momentum")
 sys.path.insert(0, HERE)
 sys.path.insert(0, CM)
 
+import backtest_lib as bl                                                # noqa: E402
 from concept_momentum import (compute_score_for_date, extract_leaders,  # noqa: E402
                               _truncate_rows, compute_breadth,
-                              compute_volume_ratio)
+                              compute_volume_ratio, filter_liquid_stocks,
+                              build_concept_index)
 
 CONCEPTS = os.path.join(CM, "cache", "concepts.json")
 PRICE_CACHE = os.path.join(CM, "cache", "backtest_prices.json")
@@ -171,16 +173,23 @@ def spearman(xs: list[float], ys: list[float]) -> float:
 
 
 def ret_20d_score(theme_info: dict, stocks: dict, t: str) -> float:
-    """對照基準：純 20 日報酬 (等權成員)。"""
-    rets = []
+    """與正式版 analyze_all 同口徑：成交額加權概念指數的 20d 報酬。"""
+    trunc = []
     for c in theme_info.get("stocks", []):
         s = stocks.get(c)
         if not s:
             continue
         rows = _truncate_rows(s["rows"], t)
-        if len(rows) > 20 and rows[-21]["close"] > 0:
-            rets.append((rows[-1]["close"] / rows[-21]["close"] - 1) * 100)
-    return statistics.mean(rets) if rets else 0.0
+        if len(rows) >= 21:
+            trunc.append({**s, "rows": rows})
+    trunc = filter_liquid_stocks(trunc)          # 正式版同款流動性濾網
+    if len(trunc) < 3:
+        return 0.0
+    idx = build_concept_index(trunc)             # 預設 turnover-weighted，同正式版
+    vals = [p["value"] for p in idx]
+    if len(vals) < 21 or vals[-21] <= 0:
+        return 0.0
+    return (vals[-1] / vals[-21] - 1) * 100
 
 
 def _theme_breadth_vol(theme_info: dict, stocks: dict, t: str) -> tuple[float, float]:
@@ -193,6 +202,7 @@ def _theme_breadth_vol(theme_info: dict, stocks: dict, t: str) -> tuple[float, f
         rows = _truncate_rows(s["rows"], t)
         if len(rows) >= 20:
             trunc.append({**s, "rows": rows})
+    trunc = filter_liquid_stocks(trunc)          # 正式版 analyze_concept 同款
     if len(trunc) < 3:
         return 0.0, 0.0
     breadth_avg = (compute_breadth(trunc, 5) + compute_breadth(trunc, 20)) / 2
@@ -248,6 +258,7 @@ def run_backtest(start, rebalance, horizons, topk, cost, which, label,
     results = {h: {"ic": [], "top_rs": [], "bot_rs": [], "hit": [],
                    "l2_ret": [], "l2_dates": []} for h in horizons}
 
+    # ── IC 迴圈（允許重疊觀察，cadence = rebalance）──────────────────────────
     for t_i in idxs:
         t = dates[t_i]
         scored = []
@@ -262,6 +273,8 @@ def run_backtest(start, rebalance, horizons, topk, cost, which, label,
         tercile = max(1, n // 3)
 
         for h in horizons:
+            if t_i + h >= len(dates):
+                continue
             fwd = dates[t_i + h]
             tw = taiex_fwd_return(taiex, t, fwd)
             if tw is None:
@@ -283,13 +296,31 @@ def run_backtest(start, rebalance, horizons, topk, cost, which, label,
             results[h]["bot_rs"].append(statistics.mean(bot))
             results[h]["hit"].append(1 if statistics.mean(top) > 0 else 0)
 
-            # Layer 2：前 K 名族群的 leaders
+    # ── L2 迴圈（非重疊網格：每 h 用 max(rebalance,h) 步進）─────────────────
+    # 避免 5d rebalance × 20d 持有 → 報酬重複計 4 次而灌水 total/max_dd/calmar
+    idxs_l2 = {h: list(range(20, len(dates) - h, max(rebalance, h))) for h in horizons}
+    for h in horizons:
+        for t_i in idxs_l2[h]:
+            t = dates[t_i]
+            fwd = dates[t_i + h]
+            tw = taiex_fwd_return(taiex, t, fwd)
+            if tw is None:
+                continue
+            scored_l2 = []
+            for tk, info in themes.items():
+                sc = score_fn(info, t)
+                if sc is not None:
+                    scored_l2.append((tk, info, sc))
+            if len(scored_l2) < 6:
+                continue
+            scored_l2.sort(key=lambda x: x[2], reverse=True)
             leg = []
-            for tk, info, sc in scored[:topk]:
+            for tk, info, sc in scored_l2[:topk]:
                 codes = info.get("stocks", [])
                 cstocks = [{**stocks[c], "rows": _truncate_rows(stocks[c]["rows"], t)}
                            for c in codes if c in stocks
                            and len(_truncate_rows(stocks[c]["rows"], t)) >= 20]
+                cstocks = filter_liquid_stocks(cstocks)     # 與正式版對齊
                 for ld in extract_leaders(cstocks, top_n=5):
                     r = stock_fwd_return(ld["code"], stocks, t, fwd)
                     if r is not None:
@@ -309,13 +340,17 @@ def run_backtest(start, rebalance, horizons, topk, cost, which, label,
             continue
         ic = statistics.mean(R["ic"])
         ic_pos = sum(1 for x in R["ic"] if x > 0) / len(R["ic"]) * 100
+        ic_ci = bl.block_bootstrap_ci(R["ic"], block=-(-h // rebalance))
         top = statistics.mean(R["top_rs"])
         bot = statistics.mean(R["bot_rs"])
         hit = statistics.mean(R["hit"]) * 100
         l2 = statistics.mean(R["l2_ret"]) if R["l2_ret"] else None
         l2_win = (sum(1 for x in R["l2_ret"] if x > 0) / len(R["l2_ret"]) * 100
                   if R["l2_ret"] else None)
-        # 權益曲線 (非複利累加 L2 每期淨超額) + 最大回撤
+        l2_ci = bl.bootstrap_ci(R["l2_ret"]) if R["l2_ret"] else (0.0, 0.0)
+        l2_rebalance = max(rebalance, h)
+        l2_n = len(R["l2_ret"])
+        # 權益曲線 (非複利累加 L2 每期淨超額) + 最大回撤（基於非重疊序列）
         eq, cum, peak, max_dd = [], 0.0, 0.0, 0.0
         for dt, r in zip(R["l2_dates"], R["l2_ret"]):
             cum += r
@@ -328,10 +363,13 @@ def run_backtest(start, rebalance, horizons, topk, cost, which, label,
         calmar = (total / max_dd) if max_dd else None                 # 總報酬/最大回撤
         summary["horizons"][h] = {
             "n": len(R["ic"]), "ic": round(ic, 3), "ic_pos": round(ic_pos, 0),
+            "ic_ci": [round(ic_ci[0], 3), round(ic_ci[1], 3)],
             "top_rs": round(top, 2), "bot_rs": round(bot, 2),
             "spread": round(top - bot, 2), "hit": round(hit, 0),
             "l2": round(l2, 2) if l2 is not None else None,
             "l2_win": round(l2_win, 0) if l2_win is not None else None,
+            "l2_ci": [round(l2_ci[0], 2), round(l2_ci[1], 2)],
+            "l2_rebalance": l2_rebalance, "l2_n": l2_n,
             "total": round(total, 1), "max_dd": round(max_dd, 1),
             "vol": round(vol, 2),
             "ret_risk": round(ret_risk, 2) if ret_risk is not None else None,
@@ -339,9 +377,12 @@ def run_backtest(start, rebalance, horizons, topk, cost, which, label,
             "equity": eq}
         print(f"\n【持有 {h} 交易日】 樣本 {len(R['ic'])} 期")
         print(f"  IC (Spearman)     : {ic:+.3f}   (>0 比例 {ic_pos:.0f}%)")
+        print(f"  IC 95% CI         : [{ic_ci[0]:+.3f}, {ic_ci[1]:+.3f}]")
         print(f"  多空價差 (高−低)   : {top-bot:+.2f}%")
         print(f"  高分組贏大盤命中率 : {hit:.0f}%")
-        print(f"  Layer2 選股淨超額  : {l2:+.2f}% (扣{cost}%成本, 勝率{l2_win:.0f}%)")
+        print(f"  (L2 非重疊 rebalance={l2_rebalance}d, n={l2_n})")
+        print(f"  Layer2 選股淨超額  : {l2:+.2f}% (扣{cost}%成本, 勝率{l2_win:.0f}%)" if l2 is not None else "  Layer2 選股淨超額  : —")
+        print(f"  L2 95% CI         : [{l2_ci[0]:+.2f}, {l2_ci[1]:+.2f}]")
         print(f"  累積淨超額(總)     : {total:+.1f}%")
         print(f"  最大回撤 (MaxDD)   : -{max_dd:.1f}%")
         print(f"  單期波動 (std)     : {vol:.2f}%")

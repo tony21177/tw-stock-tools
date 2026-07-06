@@ -773,6 +773,53 @@ python3 ~/project/tw_stock_tools/tw_limitup_signal.py --codes ... \
 - **🌙 借券動向**：dashboard 第四分頁，5 日視窗。上下兩段顯示借券雷達 (議借爆量) 與空頭撤退 (借券賣餘大減)，依時間/變化幅度排序
 - **歷史榜快取**：5 個新 dir — `concept_momentum/cache/{broker_radar_history,turnaround_relay_history,second_wave_history,lending_radar_history,short_retreat_history}/{date}.json`，皆 gitignored；歷史由 cron 累積，無 backfill
 
+### 族群熱力回測（`tw_concept_backtest.py`）
+
+驗證族群動能評分是否具有前向預測力；三變體比較：複合加權(A)、純動能 ret_20d(B)、動能+門檻過濾(C，正式推送採用)。
+
+**跑回測（快取命中，無網路呼叫）：**
+```bash
+FINMIND_TOKEN=$(crontab -l | grep -o 'FINMIND_TOKEN=[^ ]*' | head -1 | cut -d= -f2) \
+  python3 tw_concept_backtest.py \
+  --json-out concept_momentum/cache/concept_backtest.json
+# → 開啟 http://localhost:5000/concept-backtest 看三變體比較表 + 權益曲線
+```
+
+**方法摘要：**
+- **IC 計算**：允許重疊觀察（每 5d rebalance），加 block bootstrap 95% CI 校正序列自相關。
+- **L2 權益曲線**：使用**非重疊**網格（步進 = max(rebalance, H)），確保 total/max_dd/calmar 可信。
+  - 舊版重疊灌水問題：H=20d × rebalance=5d → 每筆持倉重複計入 4 次，H=20 total 舊值 ~334% 為 ~4× 灌水。
+  - 修正後 H=20 total 下降至 ~72%（strategy）；這是正確值，非退化。
+- **流動性過濾 parity**：`ret_20d_score` 改用成交額加權概念指數（同正式版 `analyze_all`）；L2 選股前加 `filter_liquid_stocks`（同正式版 `analyze_concept`）。
+
+**2025-01 起回測結果摘要（新版，非重疊 L2）：**
+
+| 指標 | strategy (A) | benchmark (B) | filter (C) |
+|------|-------------|--------------|------------|
+| IC @H5 | +0.128 [+0.075,+0.179] | +0.121 | +0.076 |
+| IC @H10 | +0.162 [+0.105,+0.229] | +0.138 | +0.099 |
+| IC @H20 | +0.194 [+0.127,+0.278] | +0.142 | +0.140 |
+| L2 total @H5 | +81.6% | +94.5% | +83.2% |
+| L2 total @H10 | +101.5% | +119.7% | +113.5% |
+| L2 total @H20 | +72.2% | +52.9% | +110.2% ✓ |
+| Calmar @H10 | 5.30 | 12.01 | **12.48** |
+| ret/vol @H10 | 0.45 | 0.54 | **0.60** |
+
+**filter vs benchmark 結論：**
+- **H5/H10**：filter total 略低於 benchmark（+ 流動性過濾縮小池子），但 H10 ret/vol 與 Calmar 均高於 benchmark，顯示風險調整後 filter 仍具優勢。
+- **H20**：filter total (+110.2%) 遠高於 benchmark (+52.9%)，且 H20 L2 CI 下界正 ✓，統計顯著。
+- **整體**：廣度/量能**當門檻過濾**（排除項）在 H20 明顯加值；H5 短期差異不顯著。正式推送繼續採用 C 變體。
+
+**舊值 vs 新值對照（重疊灌水說明）：**
+
+| 變體 | H20 total 舊 (重疊) | H20 total 新 (非重疊) | 倍率 |
+|------|---------------------|----------------------|------|
+| strategy | ~334% | +72.2% | ~4.6× |
+| benchmark | ~260% | +52.9% | ~4.9× |
+| filter | ~280% | +110.2% | ~2.5× |
+
+舊版 `rebalance=5d × H=20d` 每個持倉日被計入 4 個 bucket，total/max_dd/calmar 全部失真。現已修正為每個持有期各自獨立觀察。
+
 ### 本機看儀表板
 
 ```bash

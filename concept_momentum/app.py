@@ -3533,15 +3533,51 @@ def _render_concept_backtest_page(data: dict | None = None, error: str = "") -> 
                 val = -val
             cells += f'<td class="num">{fmtv(val, fmt, pct)}</td>'
         return f'<tr><td>{name}</td>{cells}</tr>'
+    def ci_row(name, key):
+        """Render a CI row where JSON value is [lo, hi]."""
+        cells = ""
+        for _, _, _, v in variants:
+            hv = v["horizons"].get(hrow, {})
+            ci = hv.get(key)
+            if ci and len(ci) == 2:
+                sig = " ✓" if ci[0] > 0 else ""
+                cells += f'<td class="num"><small>[{ci[0]:+.3f}, {ci[1]:+.3f}]{sig}</small></td>'
+            else:
+                cells += '<td class="num">—</td>'
+        return f'<tr><td><small>{name}</small></td>{cells}</tr>'
+    def ci_row_l2(name, key):
+        """Render a CI row for L2 (2 decimal places)."""
+        cells = ""
+        for _, _, _, v in variants:
+            hv = v["horizons"].get(hrow, {})
+            ci = hv.get(key)
+            if ci and len(ci) == 2:
+                sig = " ✓" if ci[0] > 0 else ""
+                cells += f'<td class="num"><small>[{ci[0]:+.2f}, {ci[1]:+.2f}]{sig}</small></td>'
+            else:
+                cells += '<td class="num">—</td>'
+        return f'<tr><td><small>{name}</small></td>{cells}</tr>'
+    def l2n_row(name, key):
+        """Render L2 n and rebalance info."""
+        cells = ""
+        for _, _, _, v in variants:
+            hv = v["horizons"].get(hrow, {})
+            n_val = hv.get("l2_n"); rb = hv.get("l2_rebalance")
+            cells += (f'<td class="num"><small>n={n_val}, reb={rb}d</small></td>'
+                      if n_val is not None else '<td class="num">—</td>')
+        return f'<tr><td><small>{name}</small></td>{cells}</tr>'
     tbl_rows = ""
     ncol = len(variants) + 1
     for h in hs:
         hrow = h
         tbl_rows += f'<tr><th colspan="{ncol}" style="background:#f0f3ff">持有 {h} 交易日</th></tr>'
         tbl_rows += row("IC (Spearman)", "ic", "{:+.3f}")
+        tbl_rows += ci_row("IC 95% CI (block bootstrap)", "ic_ci")
         tbl_rows += row("多空價差 (高−低)", "spread", "{:+.2f}", "%")
         tbl_rows += row("高分組命中率", "hit", "{:.0f}", "%")
         tbl_rows += row("選股單期淨超額", "l2", "{:+.2f}", "%")
+        tbl_rows += ci_row_l2("L2 95% CI (非重疊網格)", "l2_ci")
+        tbl_rows += l2n_row("L2 非重疊樣本", "l2_n")
         tbl_rows += row("累積淨超額(總)", "total", "{:+.1f}", "%")
         tbl_rows += row("最大回撤 MaxDD", "max_dd", "{:.1f}", "%", neg=True)
         tbl_rows += row("報酬/波動", "ret_risk", "{:.2f}")
@@ -3551,7 +3587,7 @@ def _render_concept_backtest_page(data: dict | None = None, error: str = "") -> 
              f'<table class="report-table"><thead><tr><th>指標</th>{th}</tr></thead>'
              f'<tbody>{tbl_rows}</tbody></table>'
              f'<p class="small">門檻過濾變體因部分期間通過門檻的族群 &lt;6 個而略過，'
-             f'樣本期數可能少於另兩者。</p></section>')
+             f'樣本期數可能少於另兩者。CI ✓ = 下界 &gt; 0（95% 顯著正）。</p></section>')
 
     # 圖表
     hlabels = json.dumps([f"{h}日" for h in hs])
@@ -3636,8 +3672,12 @@ def _render_concept_backtest_page(data: dict | None = None, error: str = "") -> 
               '2. 樣本 ~16 個月、63 期，且此段多頭/動能行情友善，換盤整盤未必續強。<br>'
               '3. 族群成員用當前 concepts.json 套過去 = 輕微 look-ahead。<br>'
               '4. 成本固定 0.4%，小型 leaders 實際滑價可能更差。<br>'
-              '5. 權益曲線為重疊持倉的交易 P&L 流（rebalance 5日<持有天數），'
-              'MaxDD 為該 P&L 流的回撤，非單一資金複利曲線。</p></section>')
+              '5. L2 權益曲線使用<b>非重疊網格</b>（步進 = max(rebalance, H)），'
+              '避免 5d rebalance × 20d 持有造成 4x 報酬重複計數（舊版 H=20 total '
+              '~334% 即為灌水；修正後為 ~72%）。IC 仍以較密的 rebalance 網格計算（允許重疊觀察），'
+              '並加 block bootstrap 95% CI 校正自相關。<br>'
+              '6. L2 信賴區間 ✓ = 下界 &gt; 0（95% 統計顯著）；H=20 樣本數 n≈16，CI 較寬、勿過度解讀。'
+              '</p></section>')
 
     js = f"""<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
