@@ -3425,6 +3425,21 @@ _BACKTEST_GLOSSARY = {
     "非重疊 rebalance": "權益曲線用<b>非重疊</b>窗口（步進 ≥ 持有天數 H）計算，每筆資金只算一次。若用比 H 更密的 rebalance（如每 5 日 rebalance、但持有 20 日），同一段期間會被計入 4 次，報酬虛膨 4 倍。IC 允許重疊觀察（偵測相關性），但其 CI 另用 block bootstrap 校正時序自相關。",
     "block bootstrap CI": "IC 的信賴區間不能直接用獨立重抽樣 bootstrap — 相鄰期的 IC 有時序相關（自相關）。改用 <b>block bootstrap</b>：把連續幾期一塊抽，保留時序結構，再算 CI，比較不會低估不確定性。CI ✓ = 下界 > 0，表示 IC 顯著為正。",
     "樣本不足警語 (n<30)": "⚠<30 標示表示該持有期的樣本數不足 30 筆。統計中央極限定理在 n<30 時可靠性下降，CI 會很寬；看到這個標示時，數字僅供方向參考，不宜下強結論。累積更多歷史事件後才建議重新評估。",
+    "財報可用日 (法定死線)": (
+        "point-in-time 重建中，FinMind 的 <code>TaiwanStockFinancialStatements</code> 的 <code>date</code> 欄是<b>季度期末日</b>，"
+        "不是公告日。回測以法定申報死線當作「資料可用日」：Q1(3/31)→5/15、Q2(6/30)→8/14、Q3(9/30)→11/14、Q4(12/31)→翌年3/31。"
+        "這是<b>保守估計</b>（多數公司會提早公告，實際可用日更早），因此回測 edge 是<b>低估</b>而非高估。"
+        "⚠ 陷阱：若用 FinMind date 直接當進場日，等於財報一出就用，會引入前視偏誤（look-ahead bias）。"
+    ),
+    "ABD overlay": (
+        "Layer 2 訊號在 Layer 1 事件日的三訊號評分（0-3 分）：<br>"
+        "A = 漲停接力（近 3 日有漲 ≥5%，且前日盤中未崩 ≤-4%）；"
+        "B = 借券回補（借券賣餘近 3d/前 5d ≤ 0.97 或前日單日 ≤-3%）；"
+        "D = 量能蓄勢（前日量 / 20d 均量 ≥1.0 或 / 60d 均量 ≥1.5）。"
+        "C 訊號（籌碼集中）需分點歷史資料，無公開歷史，誠實跳過，故 overlay 名稱為 ABD。<br>"
+        "<b>ge2 組（ABD≥2）</b> = 當日至少兩個 overlay 訊號同步觸發；<b>lt2 組（ABD&lt;2）</b> = 否。"
+        "比較兩組前向報酬差異，可回答「Layer 2 是否在 Layer 1 之上加值」。"
+    ),
 }
 
 
@@ -4367,6 +4382,199 @@ def chip_price():
     return _render_chip_price_page(code=code, data=data, source=source,
                                     broker_query=broker_query,
                                     broker_html=broker_html)
+
+
+def _render_turnaround_backtest_page(data: dict | None = None, error: str = "") -> str:
+    nav = ('<nav><a href="/">← 大盤 dashboard</a>'
+           '<a href="/second-wave-backtest">🌊 第二波回測</a>'
+           '<a href="/turnaround-backtest">🔄 轉機接力回測</a></nav>')
+    css = """<style>
+  body { font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
+         max-width:1100px; margin:1em auto; padding:0 1em; background:#f7f7f9; color:#222; }
+  h1 { font-size:1.4em; margin:.4em 0; } nav a { margin-right:12px; color:#0066cc; text-decoration:none; }
+  section { background:#fff; padding:12px 16px; border-radius:6px; margin-bottom:12px;
+            box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  section h3 { margin:0 0 8px 0; font-size:1.05em; color:#444; }
+  table.report-table { width:100%; border-collapse:collapse; font-size:.9em; }
+  table.report-table th,table.report-table td { padding:6px 10px; border-bottom:1px solid #eee; text-align:left; }
+  table.report-table th { background:#fafafa; font-weight:600; color:#555; }
+  table.report-table .num { text-align:right; font-variant-numeric:tabular-nums; }
+  .pos { color:#060; } .neg { color:#c30; } .small,small { font-size:.85em; color:#666; }
+  .error { background:#fee; border:1px solid #f99; padding:12px; border-radius:4px; color:#c00; }
+  .cards { display:flex; gap:10px; flex-wrap:wrap; }
+  .card { flex:1; min-width:130px; background:#fff8f0; border:1px solid #f0d8b0; border-radius:6px; padding:10px 12px; }
+  .card .v { font-size:1.4em; font-weight:700; } .card .k { font-size:.8em; color:#777; }
+</style>"""
+    head = (f'<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+            f'<title>轉機接力回測</title>{css}</head><body>{nav}'
+            f'<h1>🔄 轉機接力 Layer 1 — 回測（事件研究）</h1>')
+    tail = '</body></html>'
+    if error:
+        return head + f'<div class="error">{_esc(error)}</div>' + tail
+    if not data:
+        _nodata_glossary = _glossary_section([
+            "持有天數 (H)", "事件研究", "point-in-time", "財報可用日 (法定死線)",
+            "ABD overlay", "episode 去重", "CI / 信賴區間", "t 統計量",
+        ])
+        return head + ('<section><p>尚無回測結果。請先跑：<br>'
+                       '<code>python3 tw_turnaround_backtest.py --json-out '
+                       'concept_momentum/cache/turnaround_backtest.json</code></p></section>'
+                       ) + _nodata_glossary + tail
+    r = data["result"]; p = data["params"]
+    hs = [str(h) for h in p["horizons"]]
+    hmax = hs[-1]
+    H = r["horizons"]
+    def cls(v): return "pos" if v is not None and v > 0 else "neg"
+    hh = H.get(hmax, {})
+    if not hh or not hh.get("n"):
+        return head + ('<section><div class="error">回測資料不完整（horizons 為空）。'
+                       '請重新執行 tw_turnaround_backtest.py。</div></section>') + tail
+    _edge_v = hh.get("edge_mean", 0) or 0
+    _edge_ci = hh.get("edge_ci")
+    _edge_ci_str = (f"CI [{_edge_ci[0]:+.2f},{_edge_ci[1]:+.2f}]" if _edge_ci else "淨超額−基準")
+    _ci = hh.get("exc_ci", [0, 0])
+    cards = (
+        f'<p class="small" style="margin:.2em 0">摘要＝持有 {hmax} 交易日</p><div class="cards">'
+        f'<div class="card"><div class="k">絕對報酬(均)</div>'
+        f'<div class="v {cls(hh.get("abs_mean",0))}">{hh.get("abs_mean",0):+.1f}%</div>'
+        f'<div class="small">賺錢率 {hh.get("win",0):.0f}%</div></div>'
+        f'<div class="card"><div class="k">淨超額 vs 大盤</div>'
+        f'<div class="v {cls(hh.get("net",0))}">{hh.get("net",0):+.1f}%</div>'
+        f'<div class="small">贏大盤率 {hh.get("beat",0):.0f}%</div></div>'
+        f'<div class="card"><div class="k">超額中位數</div>'
+        f'<div class="v {cls(hh.get("exc_med",0))}">{hh.get("exc_med",0):+.1f}%</div>'
+        f'<div class="small">均值 {hh.get("exc_mean",0):+.1f}%</div></div>'
+        f'<div class="card"><div class="k">95% CI (超額均)</div>'
+        f'<div class="v" style="font-size:.9em">[{_ci[0]:+.2f}, {_ci[1]:+.2f}]</div>'
+        f'<div class="small">t={hh.get("t",0):.2f}'
+        f'{"  ✓顯著" if _ci[0] > 0 else ""}</div></div>'
+        f'<div class="card"><div class="k">訊號 edge (均)</div>'
+        f'<div class="v {cls(_edge_v)}">{_edge_v:+.1f}%</div>'
+        f'<div class="small">{_edge_ci_str}</div></div>'
+        f'<div class="card"><div class="k">進場樣本</div>'
+        f'<div class="v">{r["n_episodes"]}</div>'
+        f'<div class="small">GM 可過 {r["n_stocks_gm_pass"]} 檔</div></div></div>')
+    meta = (f'<p class="small">回測區間 {p.get("start","2025-01-01")}~・'
+            f'進場 {r.get("entry","next_open")}・扣 {r["cost"]}% 成本・'
+            f'生成 {_esc(data["generated"])}</p>')
+
+    def row(name, key, fmt="{:+.2f}", pct="%"):
+        cells = "".join(f'<td class="num">{fmt.format(H.get(h, {}).get(key, 0))}{pct}</td>' for h in hs)
+        return f'<tr><td>{name}</td>{cells}</tr>'
+    def ci_row(name, key):
+        def _fmt(hd):
+            ci = hd.get(key)
+            if not ci:
+                return "—"
+            return f"[{ci[0]:+.2f}, {ci[1]:+.2f}]"
+        cells = "".join(f'<td class="num" style="white-space:nowrap">{_fmt(H.get(h, {}))}</td>'
+                        for h in hs)
+        return f'<tr><td>{name}</td>{cells}</tr>'
+    th = "".join(f'<th class="num">{h}日</th>' for h in hs)
+    tbl = (f'<section><h3>📊 各持有天數表現</h3>'
+           f'<table class="report-table"><thead><tr><th>指標</th>{th}</tr></thead><tbody>'
+           + row("絕對報酬(均)", "abs_mean")
+           + row("賺錢率", "win", "{:.0f}")
+           + row("超額 vs 大盤(均)", "exc_mean")
+           + row("超額 中位數", "exc_med")
+           + ci_row("95% CI (超額均)", "exc_ci")
+           + row("t-stat", "t", "{:.2f}", "")
+           + row("贏大盤率", "beat", "{:.0f}")
+           + row("扣成本淨超額", "net")
+           + row("⭐訊號 edge (均)", "edge_mean")
+           + ci_row("edge 95% CI", "edge_ci")
+           + '</tbody></table>'
+           '<p class="small">edge_mean = (股票超額−大盤) − 同日隨機 k=100 檔的基準超額。</p></section>')
+
+    # Layer 2 ABD overlay 對照表
+    L2 = r.get("layer2", {})
+    l2_rows = ""
+    for h in hs:
+        g = L2.get(h, {})
+        ge2 = g.get("ge2", {}); lt2 = g.get("lt2", {})
+        ge2_n = ge2.get("n", 0); lt2_n = lt2.get("n", 0)
+        ge2_exc = ge2.get("exc_mean", 0) or 0; lt2_exc = lt2.get("exc_mean", 0) or 0
+        ge2_ci = ge2.get("exc_ci"); lt2_ci = lt2.get("exc_ci")
+        ge2_ci_s = (f"[{ge2_ci[0]:+.2f},{ge2_ci[1]:+.2f}]" if ge2_ci else "—")
+        lt2_ci_s = (f"[{lt2_ci[0]:+.2f},{lt2_ci[1]:+.2f}]" if lt2_ci else "—")
+        diff = ge2_exc - lt2_exc
+        l2_rows += (
+            f'<tr><td class="num">{h}日</td>'
+            f'<td class="num">{ge2_n}</td>'
+            f'<td class="num {cls(ge2_exc)}">{ge2_exc:+.2f}%</td>'
+            f'<td class="num" style="white-space:nowrap">{ge2_ci_s}</td>'
+            f'<td class="num">{lt2_n}</td>'
+            f'<td class="num {cls(lt2_exc)}">{lt2_exc:+.2f}%</td>'
+            f'<td class="num" style="white-space:nowrap">{lt2_ci_s}</td>'
+            f'<td class="num {cls(diff)}" style="font-weight:600">{diff:+.2f}%</td></tr>'
+        )
+    l2_tbl = (
+        '<section><h3>🔍 Layer 2 ABD overlay 對照（ge2 vs lt2）</h3>'
+        '<table class="report-table"><thead><tr>'
+        '<th>H</th>'
+        '<th class="num">ge2 n</th><th class="num">ge2 超額均</th><th class="num">ge2 95%CI</th>'
+        '<th class="num">lt2 n</th><th class="num">lt2 超額均</th><th class="num">lt2 95%CI</th>'
+        '<th class="num">差值</th>'
+        f'</tr></thead><tbody>{l2_rows}</tbody></table>'
+        '<p class="small">ge2=同日 ABD≥2 訊號；lt2=ABD&lt;2。差值 = ge2超額 − lt2超額，正=overlay 加值。'
+        '⚠ C 訊號（籌碼集中分點）無歷史資料，故 overlay 只含 A/B/D 三項，最高 3 分，≥2 = 多數訊號同步。</p>'
+        '</section>'
+    )
+
+    method = (
+        '<section><h3>🔬 詳細回測方法</h3><div class="small" style="line-height:1.7">'
+        '<b>① 為何用事件研究</b><br>'
+        '轉機接力是<b>四濾網（ABCD）同時通過</b>的個股型態訊號，不是族群排名。'
+        '每當某股某日四網全過，量它之後的報酬，比基準看有沒有 edge。<br><br>'
+        '<b>② point-in-time 訊號重建</b><br>'
+        '直接 import 正式篩選器的純函數（margin_passes/volume_passes/ma60_passes/short_passes），'
+        '逐日 as-of 截斷：財報用法定死線可用日（Q1→5/15、Q2→8/14、Q3→11/14、Q4→翌年3/31），'
+        '量能/季線用 ≤t 的面板資料，借券餘額 as-of 截斷到 t 日。<br><br>'
+        '<b>③ episode 去重（cooldown）</b><br>'
+        '四濾網通過後的連續觸發只取首次進場，冷卻期 = max_horizon，'
+        f'避免同一波重複計入。<br><br>'
+        '<b>④ Layer 2 ABD overlay</b><br>'
+        '在每個 Layer 1 事件日同時計算 A/B/D 三個 overlay 訊號（C 無歷史跳過），'
+        '依 ABD 總分 ≥2 vs &lt;2 分兩組，比較前向超額報酬差異。<br><br>'
+        '<b>⑤ 成本/資料</b><br>'
+        f'扣 {r["cost"]}% 來回成本（手續費6折+證交稅）。'
+        '毛利率來源：FinMind TaiwanStockFinancialStatements；'
+        '價格面板：TaiwanStockPrice/Adj（v2，含 open/close/aopen/aclose）。'
+        '</div></section>'
+    )
+
+    caveat = (
+        '<section><h3>⚠ 解讀與限制</h3><p class="small">'
+        '1. <b>PIT 保守規則</b>：用法定死線當可用日，比多數公司實際公告晚，低估 edge，不高估。<br>'
+        '2. <b>C 訊號缺失</b>：Layer 2 overlay 只含 A/B/D，若 C（籌碼集中）有效，ge2 組可能被低估。<br>'
+        '3. <b>回測期間偏短</b>：面板 start=2025-01-01，樣本涵蓋約 1.5 年，多為多頭期；空頭盤 edge 可能不同。<br>'
+        '4. 成本 0.471%（手續費6折+證交稅，零滑價），轉機股流動性有時偏低，實際滑價可能更高。'
+        '</p></section>'
+    )
+
+    glossary = _glossary_section([
+        "持有天數 (H)", "事件研究", "episode 去重", "point-in-time",
+        "財報可用日 (法定死線)", "ABD overlay",
+        "絕對報酬", "超額報酬 (vs 大盤)", "淨超額",
+        "基準 (baseline)", "edge", "賺錢率 / 勝率", "贏大盤率 (beat rate)",
+        "中位數 vs 均值", "CI / 信賴區間", "t 統計量",
+        "日期配對基準 (date-matched)", "隔日開盤進場",
+    ])
+    return head + cards + meta + tbl + l2_tbl + method + glossary + caveat + tail
+
+
+@app.route("/turnaround-backtest")
+def turnaround_backtest():
+    path = os.path.join(HERE, "cache", "turnaround_backtest.json")
+    if not os.path.exists(path):
+        return _render_turnaround_backtest_page()
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        return _render_turnaround_backtest_page(error=f"{type(e).__name__}: {e}")
+    return _render_turnaround_backtest_page(data=data)
 
 
 if __name__ == "__main__":

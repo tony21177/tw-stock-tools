@@ -1202,6 +1202,73 @@ nohup python3 tw_second_wave_backtest.py \
 
 ---
 
+## 轉機接力回測 (`tw_turnaround_backtest.py`)
+
+Layer 1 四濾網（ABCD）的首次系統性回測，採 point-in-time 事件研究法。
+
+### 方法
+
+**資料與 PIT 規則**
+
+- 毛利率：FinMind `TaiwanStockFinancialStatements`；`date` 欄是季末日，非公告日
+- 財報**可用日**（law-deadline rule，保守）：
+
+  | 季末   | 可用日  |
+  |--------|---------|
+  | 3/31   | 5/15    |
+  | 6/30   | 8/14    |
+  | 9/30   | 11/14   |
+  | 12/31  | 翌年 3/31|
+
+  多數公司提早公告，故此規則**低估** edge（不高估）。
+- 量能/季線：v2 price panel 未還原 close/volume，與正式篩選器同口徑
+- 借券餘額：as-of 截斷到事件日 t
+
+**訊號重建**
+import 正式 `tw_turnaround_screener` 純函數逐日跑；episode 去重採 cooldown=max_horizon，同一波只取首次進場。
+
+**Layer 2 ABD overlay**
+在每個 Layer 1 事件日計算 A（漲停接力）/ B（借券回補）/ D（量能蓄勢）三個 overlay 訊號（C 訊號需分點歷史無公開記錄，誠實跳過），依總分 ≥2 vs <2 分兩組，比較前向超額報酬差異。
+
+**進場假設**：訊號日隔日還原開盤（07:30 盤前推播後最早可成交時間）。
+
+### Headline 數字（2025-01-01 起）
+
+> 首跑結果（`tw_turnaround_backtest.py --start 2025-01-01`，2026-07-06 完成）：
+
+- **Episodes**：613（universe 1895 檔，GM 可過關 1482 檔）
+- **H=5d**：超額 +0.17% CI [-0.53, 0.87] t=0.48 淨 -0.30%；ABD≥2: +0.29% vs ABD<2: +0.06%
+- **H=10d**：超額 +0.15% CI [-0.94, 1.28] t=0.27 淨 -0.32%；ABD≥2: +0.59% vs ABD<2: -0.28%
+- **H=20d**：超額 -1.14% CI [-2.65, 0.39] t=-1.46 淨 -1.61%；ABD≥2: +0.12% vs ABD<2: -2.39% ★
+
+**★ 關鍵發現**：ABD overlay 分組差異在 H=20d 最為顯著：
+- ABD<2 超額 -2.39% CI [-4.24, -0.42]，t=-2.42，CI 全負 → 統計顯著的負 edge
+- ABD≥2 超額 +0.12%（CI 含 0，非顯著），但明顯優於 ABD<2 組（差值 +2.51pp）
+- 解讀：Layer 1 單獨信號不足，**ABD<2（低 overlay 分數）應視為迴避警號**
+
+### Live-History Overlap 驗證
+
+取 `concept_momentum/cache/turnaround_relay_history/2026*.json` 的 layer1_passed 記錄（37 個交易日，1192 組 (date, code) 對），
+與回測同日事件集合比對：overlap = **5.1%（61/1192）**。
+
+差距來源（低 overlap 的結構性解釋）：
+1. **Cooldown 去重（最主要）**：回測對每檔股票施加 cooldown=20 天，實際運行不去重；若一檔連過 10 天，回測只計 1 次，live 計 10 次 → overlap 分母膨脹 10×
+2. **法定死線 vs 實際公告**：回測用保守法定死線，多數公司早於死線公告，live 可先看到最新 FS
+3. **面板口徑微差**：v2 面板快取 vs 盤前即時快取時間戳差異
+
+> 本 overlap 偏低（＜30%）主要為設計上的保守性（cooldown + PIT），非訊號失準。
+
+### 限制
+
+1. **C 訊號缺失**：Layer 2 只含 A/B/D，若 C（籌碼集中）有效，ge2 組 edge 可能被低估
+2. **樣本期間偏短**：面板 start=2025-01-01，約 1.5 年，多頭友善期；空頭盤 edge 未知
+3. **PIT 保守**：財報用法定死線，比多數公司實際公告晚，回測 edge 低估
+4. **滑價假設**：成本 0.471% 假設零滑價，轉機股流動性偏低時實際成本更高
+
+Dashboard 頁面：`/turnaround-backtest`（仿第二波頁，多 Layer2 ge2/lt2 對照表）
+
+---
+
 ## 回測共用工具
 
 所有回測頁底部有 📚 術語說明（CI/t/中位數/日期配對基準/非重疊/block bootstrap 等），方便直接對照解讀。

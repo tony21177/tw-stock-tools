@@ -39,6 +39,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "concept_momentum"))
 from data_fetcher import fetch_stock, fetch_yahoo  # noqa: E402
 
+# 轉機接力預設參數（回測與正式篩選器共用同一份數值）
+TR_DEFAULTS = dict(
+    gm_pp=1.5,        # 毛利率 4Q 累積增幅門檻 (pp)
+    gm_qoq=2,         # 4Q 中至少幾次 QoQ 增長
+    vol_ratio=1.3,    # 20d/60d 成交量比門檻
+    sbl_decline=0.95, # 借券賣出餘額 10d/prior-30d 比例門檻 (≤ 此值)
+    ma_accel_days=5,  # MA60 曲率比較窗口 (交易日)
+    ma_curv_ratio=0.5, # MA60 曲率寬鬆度
+)
+
 
 def fetch_stock_6mo(code: str) -> dict:
     """Fetch 6 months of TW stock data (vs fetch_stock's 3mo).
@@ -421,17 +431,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    ap.add_argument("--gm-pp", type=float, default=1.5,
+    ap.add_argument("--gm-pp", type=float, default=TR_DEFAULTS["gm_pp"],
                     help="毛利率 4Q 累積增幅門檻（pp，預設 1.5）")
-    ap.add_argument("--gm-qoq", type=int, default=2,
+    ap.add_argument("--gm-qoq", type=int, default=TR_DEFAULTS["gm_qoq"],
                     help="4Q 中至少幾次 QoQ 增長（預設 2/3）")
-    ap.add_argument("--vol-ratio", type=float, default=1.3,
+    ap.add_argument("--vol-ratio", type=float, default=TR_DEFAULTS["vol_ratio"],
                     help="20d/60d 成交量比門檻（預設 1.3）")
-    ap.add_argument("--sbl-decline", type=float, default=0.95,
+    ap.add_argument("--sbl-decline", type=float, default=TR_DEFAULTS["sbl_decline"],
                     help="借券賣出餘額 10d/30d-prior 比門檻（預設 0.95，需 ≤ 此值）")
-    ap.add_argument("--ma-accel-days", type=int, default=5,
+    ap.add_argument("--ma-accel-days", type=int, default=TR_DEFAULTS["ma_accel_days"],
                     help="季線（MA60）曲率比較窗口（預設 5td：比較近 5 天斜率 vs 前 5 天斜率）")
-    ap.add_argument("--ma-curv-ratio", type=float, default=0.5,
+    ap.add_argument("--ma-curv-ratio", type=float, default=TR_DEFAULTS["ma_curv_ratio"],
                     help="MA60 曲率寬鬆度（slope_recent ≥ ratio × slope_earlier）"
                          "；1.0=嚴格加速、0.5=允許動能減半（預設）、0.0=只要求斜率為正")
     ap.add_argument("--universe", default="all",
