@@ -419,6 +419,37 @@ TG_BOT_TOKEN=xxx FINMIND_TOKEN=xxx python3 ~/project/tw_stock_tools/tw_broker_mo
 3. 無法區分「分點買進」中現股 vs 融資的比例 — 只能用相關性做 inference
 4. 公開資料源都沒有 per-(分點 × 現股/融資) 細項：FinMind v4/v3 完整 enum (~100 datasets) 掃過，沒有此維度的 dataset (`TaiwanStockTradingDailyReport` 不存在)。連贊助 tier 也沒有。實務替代：HiStock 有「分點融資估計」但是 inference 結果，不完全準。
 
+### 回測（`tw_broker_radar_backtest.py`）
+
+主力雷達靠分點 BSR，BSR 無歷史 API → 不能重算歷史訊號。改用 cron 每天存下的實際訊號輸出
+(`broker_radar_history/YYYYMMDD.json`) 做事件研究：每個被點名的 (股票, 日)，量它之後 H 日報酬
+vs 大盤 vs 同期隨機股票日基準 (edge)。
+
+**v2 重點改動**：
+- **進場預設隔日開盤** (`--entry next`)：訊號 18:00 才出，隔日開盤是最早可實現的進場價；
+  v1 用訊號日收盤進場是理想化（不可實現）。`--entry signal` 保留理想化版本供對照。
+- **date-matched 基準**：baseline 改為與事件同日期的隨機 100 股票平均超額（對齊市場狀態），
+  取代 v1 的全期隨機採樣。
+- **bootstrap 95% CI + t-stat**：判讀 edge 是否顯著 — CI 全正才顯著，含 0 = 不確定。
+
+**重要告示**：
+> 事件由已部署的訊號版本產生，改訊號參數（BSR 閾值、融資相關性門檻等）後歷史事件不可比。
+> 累積至少半年以上歷史後再回測才有統計意義。
+
+**CI 判讀**：
+- CI 全正 = 有統計顯著 edge；CI 含 0 = 方向參考，無統計結論
+- 樣本 n < 30 → CI 非常寬，結論僅供方向參考（⚠ 警語會印出）
+- edge_mean 已扣除成本（0.471%）
+
+```bash
+# 跑回測（預設 next=隔日開盤）
+python3 ~/project/tw_stock_tools/tw_broker_radar_backtest.py \
+  --json-out concept_momentum/cache/broker_radar_backtest.json
+
+# 查看結果
+open http://localhost:5000/broker-radar-backtest
+```
+
 ---
 
 ## 6. `tw_broker_history_lookup.py` — 個股分點歷史查詢（HiStock 爬蟲）

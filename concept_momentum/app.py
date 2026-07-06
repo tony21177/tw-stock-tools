@@ -4170,7 +4170,7 @@ def _render_broker_radar_backtest_page(data: dict | None = None, error: str = ""
         return head + f'<div class="error">{_esc(error)}</div>' + tail
     if not data:
         return head + ('<section><p>尚無回測結果。請先跑：<br>'
-                       '<code>tw_broker_radar_backtest.py --entry signal --json-out '
+                       '<code>tw_broker_radar_backtest.py --entry next --json-out '
                        'concept_momentum/cache/broker_radar_backtest.json</code></p></section>') + tail
     rs = data.get("result", {})         # 訊號日進場
     rn = data.get("result_next", {})    # 隔天進場
@@ -4184,41 +4184,61 @@ def _render_broker_radar_backtest_page(data: dict | None = None, error: str = ""
             if not v:
                 continue
             ec = "pos" if v["exc_mean"] > 0 else "neg"
-            mc = "pos" if v["exc_med"] > 0 else "neg"
-            rows += (f'<tr><td>{h} 日</td><td class="num">{v["n"]}</td>'
+            mc = "pos" if v.get("exc_med", 0) > 0 else "neg"
+            ci = v.get("exc_ci", [0, 0])
+            ci_str = f"[{ci[0]:+.2f},{ci[1]:+.2f}]" if ci else "—"
+            edge_v = v.get("edge_mean", v.get("edge", 0))
+            edge_ci = v.get("edge_ci")
+            edge_ci_str = (f'<br><small>[{edge_ci[0]:+.2f},{edge_ci[1]:+.2f}]</small>'
+                           if edge_ci else "")
+            ec2 = "pos" if edge_v > 0 else "neg"
+            warn = (' <span style="color:#c80;font-size:.8em">⚠&lt;30</span>'
+                    if v["n"] < 30 else "")
+            rows += (f'<tr><td>{h} 日</td><td class="num">{v["n"]}{warn}</td>'
                      f'<td class="num {ec}">{v["exc_mean"]:+.2f}%</td>'
-                     f'<td class="num {mc}">{v["exc_med"]:+.2f}%</td>'
+                     f'<td class="num {mc}">{v.get("exc_med", 0):+.2f}%</td>'
+                     f'<td class="num" style="white-space:nowrap;font-size:.85em">{ci_str}</td>'
+                     f'<td class="num">{v.get("t", 0):.2f}</td>'
                      f'<td class="num">{v["beat"]:.0f}%</td>'
                      f'<td class="num">{v["abs_mean"]:+.2f}%</td>'
-                     f'<td class="num">{v["edge"]:+.2f}%</td></tr>')
-        return (f'<section><h3>{title}（去重 {r.get("n_episodes")} 進場 / 原始 {r.get("n_events_raw")} 事件）</h3>'
+                     f'<td class="num {ec2}">{edge_v:+.2f}%{edge_ci_str}</td></tr>')
+        skipped = r.get("n_skipped_no_data", 0)
+        skipped_note = f'，無資料跳過 {skipped}' if skipped else ''
+        return (f'<section><h3>{title}（去重 {r.get("n_episodes")} 進場 / 原始 {r.get("n_events_raw")} 事件{skipped_note}）</h3>'
                 f'<table class="report-table"><thead><tr><th>持有</th><th class="num">樣本</th>'
                 f'<th class="num">超額vs大盤</th><th class="num">超額中位</th>'
+                f'<th class="num">95% CI</th><th class="num">t</th>'
                 f'<th class="num">贏大盤率</th><th class="num">絕對報酬</th>'
-                f'<th class="num">edge</th></tr></thead><tbody>{rows}</tbody></table></section>')
+                f'<th class="num">edge(扣成本)</th></tr></thead>'
+                f'<tbody>{rows}</tbody></table>'
+                f'<p class="small">edge = 個股超額 − 同日隨機基準 − 成本；'
+                f'CI 含 0 = 統計上不顯著；⚠&lt;30 = 樣本不足，CI 很寬。</p></section>')
 
     v5 = rn.get("horizons", {}).get("5", {})
+    v5_ci = v5.get("exc_ci", [0, 0])
+    v5_ci_str = f"[{v5_ci[0]:+.2f},{v5_ci[1]:+.2f}]" if v5_ci else "—"
     verdict = (
         '<section style="background:#eef7ee;border:1px solid #9c9"><h3>⚖️ 裁決</h3>'
-        f'<p class="small"><b>主力雷達有「短線」正向 edge，是目前測過最有戲的訊號</b>'
-        f'（隔天進場、持有 5 日：超額大盤 <b>{v5.get("exc_mean","?")}%</b>、'
-        f'贏大盤率 <b>{v5.get("beat","?")}%</b>、中位數也正 {v5.get("exc_med","?")}%）。<br>'
-        '但 10-20 日就退化（中位數轉負、贏大盤率掉到 50% 以下＝靠少數飆股拉，多數其實平庸）。<br>'
-        '⚠ <b>樣本非常小</b>（55 進場、僅 7 週、單一多頭盤），統計上不夠硬，'
-        '可能是運氣；要再累積幾個月歷史才敢確定。<br>'
-        '⚠ edge 看起來大（+4~8%）有一半是因為<b>基準很爛</b>（這段中小型隨機股輸大盤 -1.5~-6.7%）；'
-        '真正「贏指數」是 5 日 +2.85% 那種等級。</p></section>')
+        f'<p class="small"><b>主力雷達短線 edge 尚未達統計顯著（CI 含 0）</b>；'
+        f'隔天開盤進場、持有 5 日：超額大盤 <b>{v5.get("exc_mean","?")}%</b>、'
+        f'贏大盤率 <b>{v5.get("beat","?")}%</b>、95%CI <b>{v5_ci_str}</b>。<br>'
+        f'10-20 日 edge 漸增（date-matched 基準對比），但 CI 仍跨零。<br>'
+        '⚠ <b>樣本偏小</b>（63 進場），CI 很寬，結論僅供方向參考；'
+        '累積半年以上歷史後再回測才可信。<br>'
+        '⚠ <b>事件由已部署的訊號版本產生</b>，改訊號參數後歷史事件不可比。</p></section>')
 
     method = ('<section><h3>🔬 方法 + 限制</h3><p class="small">'
               '主力雷達靠<b>分點 BSR</b>，BSR 無歷史 API → 不能重算歷史訊號。'
               '改用 cron 每天存下的<b>實際訊號輸出</b>(broker_radar_history/)做事件研究：'
               '被點名的 (股,日) → 量之後 H 日報酬 vs 大盤 vs 同期隨機股票日基準。<br>'
+              '<b>v2 改動</b>：進場預設隔日<b>開盤</b>（訊號 18:00 才出，隔日開盤是最早可實現價）；'
+              '基準改 date-matched（與事件同日期隨機 100 股票平均超額）；'
+              '統計加 bootstrap 95% CI + t-stat。<br>'
               '「訊號日進場」=理想化(收盤即買，但訊號 18:00 才出)；'
-              '「隔天進場」=較真實(訊號出後隔天買)。<br>'
+              '「隔天開盤進場」=較真實。<br>'
               '⚠ 近期事件因尚無完整 20 日後續，H=20 樣本更少。'
-              '⚠ 7 週單一盤、55 進場 → <b>僅供方向參考，非統計定論</b>。'
-              '累積到半年以上再回測才可信。</p></section>')
-    return head + verdict + tbl(rn, "🟢 隔天進場（較真實）") + tbl(rs, "理想化：訊號日進場") + method + tail
+              '⚠ 事件由已部署訊號版本產生，<b>改訊號參數後歷史事件不可比</b>。</p></section>')
+    return head + verdict + tbl(rn, "🟢 隔天開盤進場（較真實，v2 預設）") + tbl(rs, "理想化：訊號日收盤進場") + method + tail
 
 
 @app.route("/broker-radar-backtest")
