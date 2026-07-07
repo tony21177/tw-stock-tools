@@ -598,9 +598,6 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
       <input type="text" name="code" placeholder="股號" required style="width:80px;padding:6px 8px;font-size:14px;border:1px solid #ccc;border-radius:4px;">
       <button type="submit" style="padding:6px 12px;background:#0066cc;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;">👥 前十大股東</button>
     </form>
-    <a href="/adr-premium" style="padding:6px 12px;background:#0a7;color:white;border-radius:4px;text-decoration:none;font-size:13px;">🇺🇸 ADR 折溢價</a>
-    <a href="/futures-basis" style="padding:6px 12px;background:#a50;color:white;border-radius:4px;text-decoration:none;font-size:13px;">📐 期貨基差</a>
-    <a href="/concept-backtest" style="padding:6px 12px;background:#73c;color:white;border-radius:4px;text-decoration:none;font-size:13px;">🧪 族群策略回測</a>
   </div>
 </div>
 
@@ -635,14 +632,10 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
       <a class="tab" href="/concept-backtest" style="text-decoration:none;color:inherit;">🔥 族群動能</a>
     </div>
   </div>
-  <div class="tab-group g-stock" title="單檔查詢工具 (即時抓取, 非 cron)">
-    <div class="tab-group-label">單檔查詢 · 即時</div>
+  <div class="tab-group g-stock" title="即時工具頁 (非 cron；單檔輸入框在上方快速查詢列)">
+    <div class="tab-group-label">即時工具</div>
     <div class="tab-group-items">
-      <a class="tab" href="/chip-price" style="text-decoration:none;color:inherit;">📋 籌碼價量</a>
       <a class="tab" href="/intraday-sim" style="text-decoration:none;color:inherit;">📉 盤中走勢模擬</a>
-      <a class="tab" href="/contract-liabilities" style="text-decoration:none;color:inherit;">💰 合約負債</a>
-      <a class="tab" href="/inventory" style="text-decoration:none;color:inherit;">📦 存貨</a>
-      <a class="tab" href="/shareholders" style="text-decoration:none;color:inherit;">👥 前十大股東</a>
       <a class="tab" href="/adr-premium" style="text-decoration:none;color:inherit;">🇺🇸 ADR 折溢價</a>
       <a class="tab" href="/futures-basis" style="text-decoration:none;color:inherit;">📐 期貨基差</a>
     </div>

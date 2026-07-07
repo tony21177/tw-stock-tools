@@ -840,6 +840,8 @@ FINMIND_TOKEN=$(crontab -l | grep -o 'FINMIND_TOKEN=[^ ]*' | head -1 | cut -d= -
 
 舊版 `rebalance=5d × H=20d` 每個持倉日被計入 4 個 bucket，total/max_dd/calmar 全部失真。現已修正為每個持有期各自獨立觀察。
 
+**導航結構 (2026-07-07 重整)**：上方「🔍 單檔快速查詢」列 = 4 個帶股號輸入框的工具 (籌碼價量/合約負債/存貨/前十大股東)；nav 四群組 = 族群動能 (6 分頁) / 訊號監控·依時段 (盤前/借券/主力雷達/成效) / 🧪 策略回測·事件研究 (5 頁) / 即時工具 (盤中模擬/ADR/期貨基差)。每個入口全站僅出現一次。
+
 ### 本機看儀表板
 
 ```bash
@@ -1365,6 +1367,62 @@ Dashboard 頁面：`/lending-backtest`（四組各一表，含 n<30 樣本不足
 **Episode 去重（dedup_cooldown）**：觸發訊號後 N 根 K 棒內不再進場，避免同檔股票連續交易。
 
 **事件摘要（summarize_events）**：統一報告樣本數、絕對/超額報酬均值中位數、95% CI、t 統計、淨收益、勝率、成本；支援 edge sample（每事件 vs 同日隨機基準）的邊際收益分析。
+
+---
+
+## 參數敏感度掃描 (`tw_param_sweep.py`)
+
+強勢股第二波 / 轉機接力兩策略的偵測參數，逐一 (one-at-a-time，其餘固定為現行預設) 掃描候選值，各自跑 `tw_second_wave_backtest.py` / `tw_turnaround_backtest.py` 的 `run()` 並切 **IS (2025-01-01~2026-03-31) / OOS (2026-04-01~)** 兩窗，比較 IS 有沒有進步、OOS 有沒有跟著撐住 —— 抓「只是 IS 過擬合」的參數組合。
+
+**用法：**
+```bash
+python3 tw_param_sweep.py --strategy both               # 全掃兩策略（second_wave ~18 run、turnaround ~11 run，逐 run 5-15 分鐘）
+python3 tw_param_sweep.py --strategy turnaround          # 只掃轉機接力
+python3 tw_param_sweep.py --horizon 10 --json-out out.json
+python3 tw_param_sweep.py --strategy turnaround --only gm_qoq 3   # 只跑預設組合 + 這一組（局部驗證/快速測試用）
+nohup python3 tw_param_sweep.py --strategy second_wave > bt_cache/sweep_sw.log 2>&1 &   # 建議背景跑
+```
+
+**掃描 spec（寫在檔內 `SWEEP_SPEC`，中間值＝現行預設）：**
+
+| 策略 | 參數 | 候選值 | 現行預設 |
+|---|---|---|---|
+| second_wave | rally_min_gain | 0.20 / 0.30 / 0.45 | 0.30 |
+| second_wave | drop_min | 0.10 / 0.15 / 0.20 | 0.15 |
+| second_wave | drop_max | 0.22 / 0.25 / 0.30 | 0.25 |
+| second_wave | min_drop_days | 3 / 5 / 8 | 5 |
+| second_wave | max_drop_days | 12 / 15 / 20 | 15 |
+| second_wave | max_recovery_days | 7 / 10 / 15 | 10 |
+| second_wave | recovery_min_gain | 0.03 / 0.05 / 0.08 | 0.05 |
+| second_wave | recovery_vol_ratio | 0.5 / 0.7 / 1.0 | 0.7 |
+| second_wave | max_today_vs_peak | 0.95 / 0.98 | 0.98 |
+| turnaround | gm_pp | 1.0 / 1.5 / 2.5 | 1.5 |
+| turnaround | gm_qoq | 1 / 2 / 3 | 2 |
+| turnaround | vol_ratio | 1.15 / 1.3 / 1.5 | 1.3 |
+| turnaround | sbl_decline | 0.90 / 0.95 / 1.00 | 0.95 |
+| turnaround | ma_curv_ratio | 0.0 / 0.5 / 1.0 | 0.5 |
+
+（second_wave 的 `peak_lookback` / `min_recovery_days`、turnaround 的 `ma_accel_days` 是結構性參數，固定不掃。預設組合兩策略各只共用跑 1 次 → 動態算出總 run 數：second_wave 8×2+1+1=18、turnaround 5×2+1=11，共 **29**。）
+
+**快取（resumable）：** 每個 run 存 `bt_cache/sweep/{strategy}__{param}__{value}.json`（預設組合存 `{strategy}__default__.json`），只存該 run 的 `windows` 切窗結果。檔案已存在就跳過 → 可分次/多 session 續跑、中斷重跑不重算。
+
+**彙總 JSON（`concept_momentum/cache/param_sweep.json`）：**
+```
+{generated, horizon, windows, strategies: {
+  second_wave / turnaround: {
+    default: {IS: {...}, OOS: {...}},
+    params: {param: [{value, is_default, IS: {n, exc_mean, exc_ci, edge_mean, edge_ci}, OOS: {...}}]},
+    proposals: [...], overfit_flags: [...]
+}}}
+```
+缺快取的 run（尚未跑或只跑了子集）在彙總裡標 `"pending": true`，不算錯誤 —— 可以邊跑邊看目前彙總進度。
+
+**提案規則（機械判定，寫死在程式裡，相對預設組合）：**
+- `IS.edge_mean` 提升 **≥ 1.0pp** 且 `OOS.edge_mean ≥ 預設 OOS.edge_mean − 0.5pp` 且 `OOS.n ≥ 30` → 進 `proposals`
+- 只有 IS 贏（≥1.0pp）但 OOS 不過關 → 進 `overfit_flags`（過擬合警訊）
+- `edge_mean` 缺值（`None`，樣本不足時 `summarize_events` 不產生此欄）→ 該候選值不進兩份名單
+
+**⚠ 這是提案分析工具，不是自動調參器** — 它只產生 `proposals` / `overfit_flags` 供人工檢視，**不會、也不應該自動改動任何 live 策略參數**（`tw_second_wave.py` 的 `FILTER_DEFAULTS` / `tw_turnaround_screener.py` 的 `TR_DEFAULTS` 都要人工評估後手動修改）。
 
 ---
 
