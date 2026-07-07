@@ -60,7 +60,7 @@ def _fm(dataset: str, data_id: str, start: str, token: str) -> list[dict]:
 def _fetch_one(code: str, name: str, start: str, token: str):
     raw = _fm("TaiwanStockPrice", code, start, token)
     adj = _fm("TaiwanStockPriceAdj", code, start, token)
-    div = _fm("TaiwanStockDividend", code, "2024-01-01", token)
+    div = _fm("TaiwanStockDividend", code, min(start, "2024-01-01"), token)
     adj_by = {r["date"]: r for r in adj}
     rows = []
     for r in raw:
