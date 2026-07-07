@@ -94,6 +94,9 @@ def _panel_path(start: str) -> str:
 
 
 def build_cache_v2(start: str = "2025-01-01", workers: int = 4, force: bool = False) -> dict:
+    """可續傳建置：per-stock 分片快取 (panel_parts_*) + TAIEX 最先抓。
+    全市場 ×3 datasets ≈ 6500 呼叫，會超過單一 quota 窗口 — 被 402 中斷時
+    已抓分片保留，重跑只補缺的部分，跑到 panel 寫出為止。"""
     path = _panel_path(start)
     if not force and os.path.exists(path):
         with open(path) as f:
@@ -102,18 +105,47 @@ def build_cache_v2(start: str = "2025-01-01", workers: int = 4, force: bool = Fa
             print(f"[cache] v2 面板 {len(c['stocks'])} 檔（--force 可重抓）", file=sys.stderr)
             return c
     token = _token()
+
+    # TAIEX 先抓 (1 次呼叫, 最關鍵) — 失敗立刻停, 不浪費 quota
+    tx = _fm("TaiwanStockPrice", "TAIEX", start, token)
+    taiex = [{"date": r["date"].replace("-", ""),
+              "open": float(r.get("open") or r.get("close") or 0),
+              "close": float(r.get("close") or 0)}
+             for r in tx if r.get("close")]
+    if not taiex:
+        raise RuntimeError("TAIEX 抓取失敗 (可能 rate limit)，稍後重跑 build")
+
+    parts_dir = os.path.join(BT_CACHE, f"panel_parts_{start.replace('-', '')}")
+    os.makedirs(parts_dir, exist_ok=True)
     uni = load_universe("all")
-    print(f"[fetch] v2 面板：{len(uni)} 檔 × 3 datasets（約 30-60 分鐘）…", file=sys.stderr)
+
+    def _load_or_fetch(code: str, name: str):
+        p = os.path.join(parts_dir, f"{code}.json")
+        if os.path.exists(p):
+            with open(p) as f:
+                d = json.load(f)
+            return d["rows"], d["ex"], True
+        rows, ex = _fetch_one(code, name, start, token)
+        # 只有抓到有效資料才寫分片 (rows 空 或 還原價全 0 = 疑似 402, 下次重抓)
+        if rows and any(r.get("aclose") for r in rows):
+            with open(p, "w") as f:
+                json.dump({"rows": rows, "ex": ex}, f)
+        return rows, ex, False
+
+    n_cached = sum(1 for code, _ in uni
+                   if os.path.exists(os.path.join(parts_dir, f"{code}.json")))
+    print(f"[fetch] v2 面板：{len(uni)} 檔 × 3 datasets（分片已存 {n_cached} 檔，"
+          f"可續傳）…", file=sys.stderr)
     stocks, ex_dates = {}, {}
     done = 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futs = {pool.submit(_fetch_one, code, name, start, token): (code, name)
+        futs = {pool.submit(_load_or_fetch, code, name): (code, name)
                 for code, name in uni}
         for fut in as_completed(futs):
             code, name = futs[fut]
             done += 1
             try:
-                rows, ex = fut.result()
+                rows, ex, _hit = fut.result()
             except Exception as e:
                 print(f"  [ERR] {code}: {e}", file=sys.stderr)
                 continue
@@ -122,13 +154,12 @@ def build_cache_v2(start: str = "2025-01-01", workers: int = 4, force: bool = Fa
                 ex_dates[code] = ex
             if done % 100 == 0:
                 print(f"  {done}/{len(uni)} (有效 {len(stocks)})", file=sys.stderr)
-    tx = _fm("TaiwanStockPrice", "TAIEX", start, token)
-    taiex = [{"date": r["date"].replace("-", ""),
-              "open": float(r.get("open") or r.get("close") or 0),
-              "close": float(r.get("close") or 0)}
-             for r in tx if r.get("close")]
-    if not taiex:
-        raise RuntimeError("TAIEX 抓取失敗 (可能 rate limit)，不寫入快取 — 稍後重跑 build")
+
+    # 完成度健檢：有效檔數需接近 universe (避免 402 中段污染的殘缺面板被寫出)
+    if len(stocks) < len(uni) * 0.85:
+        raise RuntimeError(
+            f"僅 {len(stocks)}/{len(uni)} 檔有效 (<85%)，疑似 quota 中斷 — "
+            f"分片已保留，稍後重跑即從斷點續傳")
     c = {"schema": 2, "start": start, "stocks": stocks,
          "ex_dates": ex_dates, "taiex": taiex}
     with open(path, "w") as f:
