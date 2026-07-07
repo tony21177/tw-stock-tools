@@ -356,7 +356,7 @@ def format_lending_output(results: list[dict], target_date: str) -> str:
             lines.append("")
 
     if high_rate:
-        lines.append("利率 >7%（高利率，借券需求強勁）")
+        lines.append("利率 >7%（高利率，借券需求強勁）（⚠ 回測: 顯著看空確認, 20日 -2.1%）")
         lines.append("━━━━━━━━━━━━")
         for r in high_rate:
             lines.append(format_stock(r))
@@ -372,6 +372,10 @@ def format_sbl_output(sbl_results: list[dict], target_date: str) -> str:
     date_str = dt.strftime("%Y-%m-%d")
 
     lines = [f"借券賣出大幅減少監控 {date_str}\n"]
+    lines.append(
+        "⚠ 回測(2026-07): 借券賣餘大減後 20 日超額為負(-1.0~-1.4%, CI全負) — "
+        "此為弱勢股觀察名單，非買入訊號。詳 /lending-backtest\n"
+    )
 
     if not sbl_results:
         lines.append("今日無符合條件的標的")
@@ -392,7 +396,7 @@ def format_sbl_output(sbl_results: list[dict], target_date: str) -> str:
     others = [r for r in sbl_results if r.get("change_pct_price", 0) <= 0]
 
     if bullish:
-        lines.append("借券減少且今日上漲（轉多訊號）")
+        lines.append("借券減少且今日上漲")
         lines.append("━━━━━━━━━━━━")
         for r in bullish:
             lines.append(format_sbl_stock(r))

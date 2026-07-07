@@ -347,6 +347,10 @@ def format_report(survivors: list[dict], total: int) -> str:
     lines = []
     lines.append("🌊 強勢股第二波篩選 — 急跌洗盤後即將二度發動")
     lines.append(f"掃描 {total} 檔 → 候選 {len(survivors)} 檔")
+    lines.append(
+        "⚠ 回測(2026-07): 20日持有型 setup, 對同日基準有 edge 但中位數為負(樂透型) — "
+        "單檔部位宜小、分散。詳 /second-wave-backtest"
+    )
     lines.append("")
 
     if not survivors:

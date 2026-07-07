@@ -618,7 +618,7 @@ def format_report(target_date: str, scored: list[tuple[dict, dict]],
 
     if by_score[1] or by_score[0]:
         rest = by_score[1] + by_score[0]
-        lines.append(f"═══ ≤1/4 (純拉抬，{len(rest)} 檔) ═══")
+        lines.append(f"═══ ≤1/4 (純拉抬，{len(rest)} 檔) ⚠ 回測: ABD<2 抱20日顯著負超額 — 避開 ═══")
         codes = [f"{info['code']} {info['name']} +{info['change_pct']:.1f}%" for info, _ in rest]
         # 4 per line
         for i in range(0, len(codes), 4):
