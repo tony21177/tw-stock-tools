@@ -563,6 +563,7 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
   .tab-group {{ display: flex; flex-direction: column; gap: 2px; padding: 4px 8px 4px 8px; border-left: 3px solid; border-radius: 4px; background: #fafafa; }}
   .tab-group.g-concept {{ border-left-color: #d62728; }}
   .tab-group.g-flow {{ border-left-color: #ff7f0e; }}
+  .tab-group.g-backtest {{ border-left-color: #9467bd; }}
   .tab-group.g-stock {{ border-left-color: #1f77b4; }}
   .tab-group-label {{ font-size: 11px; color: #666; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; padding: 2px 0; }}
   .tab-group-items {{ display: flex; gap: 4px; flex-wrap: wrap; }}
@@ -613,20 +614,25 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
       <div class="tab" onclick="showTab('trend')">📈 3 個月趨勢</div>
       <div class="tab" onclick="showTab('leaders')">強勢族群領漲股</div>
       <div class="tab" onclick="showTab('full')">完整排行</div>
-      <a class="tab" href="/concept-backtest" style="text-decoration:none;color:inherit;">🧪 策略回測</a>
-      <a class="tab" href="/second-wave-backtest" style="text-decoration:none;color:inherit;">🌊 第二波回測</a>
-      <a class="tab" href="/turnaround-backtest" style="text-decoration:none;color:inherit;">🔄 轉機接力回測</a>
     </div>
   </div>
-  <div class="tab-group g-flow" title="盤前 / 盤後資金流向監控 (各自有獨立 cron)">
-    <div class="tab-group-label">資金/動向監控 · 各 cron</div>
+  <div class="tab-group g-flow" title="盤前 / 盤後資金流向監控 (依 cron 時間排序)">
+    <div class="tab-group-label">訊號監控 · 依時段</div>
     <div class="tab-group-items">
-      <div class="tab" onclick="showTab('broker')">🎯 主力雷達 (18:00)</div>
-      <a class="tab" href="/broker-radar-backtest" style="text-decoration:none;color:inherit;">🧪 主力雷達回測</a>
       <div class="tab" onclick="showTab('premarket')">🌅 盤前訊號 (07:30/07:40)</div>
       <div class="tab" onclick="showTab('lending')">🌙 借券動向 (16:00/21:30)</div>
-      <a class="tab" href="/lending-backtest" style="text-decoration:none;color:inherit;">📊 借券回測</a>
+      <div class="tab" onclick="showTab('broker')">🎯 主力雷達 (18:00)</div>
       <a class="tab" href="/signal-outcomes" style="text-decoration:none;color:inherit;">📈 訊號成效 (週一)</a>
+    </div>
+  </div>
+  <div class="tab-group g-backtest" title="各策略事件研究回測 (含 95% CI 與術語說明)">
+    <div class="tab-group-label">🧪 策略回測 · 事件研究</div>
+    <div class="tab-group-items">
+      <a class="tab" href="/turnaround-backtest" style="text-decoration:none;color:inherit;">🔄 轉機接力</a>
+      <a class="tab" href="/second-wave-backtest" style="text-decoration:none;color:inherit;">🌊 第二波</a>
+      <a class="tab" href="/lending-backtest" style="text-decoration:none;color:inherit;">🌙 借券</a>
+      <a class="tab" href="/broker-radar-backtest" style="text-decoration:none;color:inherit;">🎯 主力雷達</a>
+      <a class="tab" href="/concept-backtest" style="text-decoration:none;color:inherit;">🔥 族群動能</a>
     </div>
   </div>
   <div class="tab-group g-stock" title="單檔查詢工具 (即時抓取, 非 cron)">
