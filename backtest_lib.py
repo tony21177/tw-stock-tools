@@ -69,6 +69,18 @@ def dedup_cooldown(fires: list, cooldown: int) -> list:
     return out
 
 
+def split_by_window(events, windows):
+    """events = [(..., date_yyyymmdd, ...)]，date 在 tuple index 1。
+    windows = {label: (from, to)} 含兩端。回 {label: [events]}。"""
+    out = {k: [] for k in windows}
+    for ev in events:
+        d = ev[1]
+        for label, (lo, hi) in windows.items():
+            if lo <= d <= hi:
+                out[label].append(ev)
+    return out
+
+
 def summarize_events(abs_rets, exc_rets, cost, edge_samples=None) -> dict:
     """事件研究摘要。edge_samples = 每事件 (超額 − 同日隨機基準)，可選。"""
     n = len(exc_rets)

@@ -1142,6 +1142,9 @@ python3 tw_second_wave_backtest.py \
 nohup python3 tw_second_wave_backtest.py \
   --json-out concept_momentum/cache/second_wave_backtest.json \
   > bt_cache/swbt.log 2>&1 &
+
+# IS/OOS 切窗（--is-end 給定 YYYYMMDD 上界，自動切 IS/OOS 兩窗，結果多一個 result.windows 鍵，不影響原本 schema）
+python3 tw_second_wave_backtest.py --is-end 20260331 --json-out /tmp/sw_iso.json
 ```
 
 **v2 回測結果摘要**（2025-01-02 ～ 2026-07-06，全市場 1895 檔）：
@@ -1237,6 +1240,8 @@ import 正式 `tw_turnaround_screener` 純函數逐日跑；episode 去重採 co
 在每個 Layer 1 事件日計算 A（漲停接力）/ B（借券回補）/ D（量能蓄勢）三個 overlay 訊號（C 訊號需分點歷史無公開記錄，誠實跳過），依總分 ≥2 vs <2 分兩組，比較前向超額報酬差異。
 
 **進場假設**：訊號日隔日還原開盤（07:30 盤前推播後最早可成交時間）。
+
+**IS/OOS 切窗**：`--is-end 20260331` 把回測切成 IS（`--start` ~ `--is-end`）/ OOS（`--is-end` 翌日 ~ 期末）兩窗，各自輸出 `summarize_events` 摘要於 `result.windows.{IS,OOS}[h]`；不給則行為與 schema 完全不變（供參數敏感度掃描腳本用）。
 
 ### Headline 數字（2025-01-01 起）
 

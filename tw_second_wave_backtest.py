@@ -23,12 +23,32 @@ import backtest_lib as bl                                  # noqa: E402
 from backtest_prices import load_panel                     # noqa: E402
 from tw_second_wave import detect_second_wave, FILTER_DEFAULTS  # noqa: E402
 
-DEFAULT_ARGS = Namespace(**FILTER_DEFAULTS)
 MIN_HISTORY = 135
 
 
+def _summarize_window(panel, events_subset, h, cost, entry, baseline_k):
+    """單一 horizon 對單一 events 子集 (全期或某 window) 的 fwd + matched_baseline
+    + summarize_events 彙總。回 (summary_dict, extra)，extra 供全期呼叫端再組
+    per_year/equity（windows 呼叫端只需要 summary_dict）。"""
+    absr, excr, edges, dates = [], [], [], []
+    by_year = {}
+    for code, date, _i in events_subset:
+        r = panel.fwd(code, date, h, entry)
+        if r is None:
+            continue
+        sr, tr = r
+        b = panel.matched_baseline(date, h, k=baseline_k, entry=entry)
+        absr.append(sr); excr.append(sr - tr); dates.append(date)
+        if b is not None:
+            edges.append(sr - tr - b)
+        by_year.setdefault(date[:4], []).append(sr - tr)
+    s = bl.summarize_events(absr, excr, cost, edge_samples=edges)
+    return s, {"dates": dates, "excr": excr, "by_year": by_year}
+
+
 def run(horizons, cost, entry="next_open", dedup_days=None, start="2025-01-01",
-        baseline_k=100):
+        baseline_k=100, params_override=None, windows=None):
+    DEFAULT_ARGS = Namespace(**{**FILTER_DEFAULTS, **(params_override or {})})
     panel = load_panel(start)
     max_h = max(horizons)
     cooldown = dedup_days if dedup_days is not None else max_h
@@ -65,19 +85,8 @@ def run(horizons, cost, entry="next_open", dedup_days=None, start="2025-01-01",
           f"episodes {len(events)}\n{'='*60}")
 
     for h in horizons:
-        absr, excr, edges, dates = [], [], [], []
-        by_year = {}
-        for code, date, _i in events:
-            r = panel.fwd(code, date, h, entry)
-            if r is None:
-                continue
-            sr, tr = r
-            b = panel.matched_baseline(date, h, k=baseline_k, entry=entry)
-            absr.append(sr); excr.append(sr - tr); dates.append(date)
-            if b is not None:
-                edges.append(sr - tr - b)
-            by_year.setdefault(date[:4], []).append(sr - tr)
-        s = bl.summarize_events(absr, excr, cost, edge_samples=edges)
+        s, extra = _summarize_window(panel, events, h, cost, entry, baseline_k)
+        dates, excr, by_year = extra["dates"], extra["excr"], extra["by_year"]
         s["per_year"] = {y: {"n": len(v),
                              "exc_mean": round(sum(v) / len(v), 2),
                              "exc_ci": [round(x, 2) for x in bl.bootstrap_ci(v)]}
@@ -98,6 +107,20 @@ def run(horizons, cost, entry="next_open", dedup_days=None, start="2025-01-01",
                   f"⭐edge {s.get('edge_mean', 0):+.2f}% CI {s.get('edge_ci')}")
             for y, v in s["per_year"].items():
                 print(f"    {y}: n={v['n']} 超額 {v['exc_mean']:+.2f}% CI {v['exc_ci']}")
+
+    if windows:
+        win_events = bl.split_by_window(events, windows)
+        summary["windows"] = {}
+        print(f"\n{'='*60}\n IS/OOS 切窗彙總  {windows}\n{'='*60}")
+        for label, subset in win_events.items():
+            summary["windows"][label] = {}
+            print(f" [{label}] n_episodes={len(subset)}")
+            for h in horizons:
+                s_w, _ = _summarize_window(panel, subset, h, cost, entry, baseline_k)
+                summary["windows"][label][h] = s_w
+                if s_w["n"]:
+                    print(f"   H={h}d n={s_w['n']} 超額 {s_w['exc_mean']:+.2f}% "
+                          f"CI {s_w['exc_ci']} t={s_w['t']} 淨 {s_w['net']:+.2f}%")
     return summary
 
 
@@ -111,12 +134,24 @@ if __name__ == "__main__":
     ap.add_argument("--dedup-days", type=int, default=None,
                     help="episode cooldown 交易日數 (預設 = max horizon)")
     ap.add_argument("--start", default="2025-01-01")
+    ap.add_argument("--is-end", default=None,
+                    help="給定 YYYYMMDD (如 20260331) 時，把回測切成 IS "
+                         "(--start ~ --is-end) / OOS (--is-end 翌日 ~ 期末) 兩窗，"
+                         "各自輸出 summarize_events 摘要於 result['windows']；"
+                         "預設不切窗（行為與 schema 不變）")
     ap.add_argument("--json-out")
     args = ap.parse_args()
     cost = (bl.cost_roundtrip_pct(slippage_bp=args.slippage_bp)
             if args.cost == bl.cost_roundtrip_pct() else args.cost)
+    windows = None
+    if args.is_end:
+        from datetime import datetime, timedelta
+        oos_start = (datetime.strptime(args.is_end, "%Y%m%d")
+                     + timedelta(days=1)).strftime("%Y%m%d")
+        windows = {"IS": (args.start.replace("-", ""), args.is_end),
+                   "OOS": (oos_start, "20991231")}
     s = run(args.horizon, cost, entry=args.entry, dedup_days=args.dedup_days,
-            start=args.start)
+            start=args.start, windows=windows)
     if args.json_out:
         from datetime import datetime
         with open(args.json_out, "w", encoding="utf-8") as f:
