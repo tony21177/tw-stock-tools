@@ -174,6 +174,51 @@ def _render_sw_tercile_table(sw: dict) -> str:
     return "\n".join(parts)
 
 
+def _render_sw_tier_table(sw_tiers: dict) -> str:
+    """SW 分層標記 (⭐/◐/▽) 分桶表 — 2026-07 子群分析落地。"""
+    if not sw_tiers:
+        return '<p style="color:#888">無 SW 分層數據</p>'
+
+    parts = [
+        '<div class="table-scroll" style="overflow-x:auto;margin-bottom:24px;">',
+        '<table class="market-breadth">',
+        '<thead><tr>',
+        '<th title="分層標記">層</th>',
+    ]
+    for hk, hlabel in _HORIZONS:
+        parts.append(f'<th colspan="3" title="{hlabel}">{hlabel}</th>')
+    parts.append('</tr><tr><th></th>')
+    for _ in _HORIZONS:
+        parts.append('<th>n</th><th>超額均</th><th>贏大盤</th>')
+    parts.append('</tr></thead><tbody>')
+
+    label_map = {
+        "⭐": "⭐ 早期(<88%)+大額(≥11億)",
+        "◐": "◐ 早期",
+        "▽": "▽ 已近前高(≥88%)",
+        "untagged": "未標記 (2026-07-08 前的舊訊號無標記)",
+    }
+    for bk in ["⭐", "◐", "▽", "untagged"]:
+        bd = sw_tiers.get(bk)
+        if not bd:
+            continue
+        parts.append(f'<tr><td><b>{label_map.get(bk, bk)}</b></td>')
+        for hk, _ in _HORIZONS:
+            hd = bd.get(hk)
+            if not hd:
+                parts.append('<td>—</td><td>—</td><td>—</td>')
+                continue
+            exc_cls = "pos" if hd.get("exc_mean", 0) > 0 else "neg"
+            beat = hd.get("beat")
+            parts.append(f'<td>{hd.get("n","—")}</td>')
+            parts.append(f'<td class="{exc_cls}">{hd.get("exc_mean",0):+.1f}%</td>')
+            parts.append(f'<td>{"—" if beat is None else f"{beat:.0f}%"}</td>')
+        parts.append('</tr>')
+
+    parts.append('</tbody></table></div>')
+    return "\n".join(parts)
+
+
 def _render_recent_signals(signals: list[dict], n: int = 20) -> str:
     """最近 n 筆訊號明細 (code / 策略 / 進場日 / T+5 超額)。"""
     recent = sorted(signals, key=lambda r: r.get("entry_date", ""), reverse=True)[:n]
@@ -251,6 +296,17 @@ def _glossary_section() -> str:
         ("SW score 三分位",
          "second_wave_score = 五因子乘積（峰前漲幅 × 急跌幅 × 反彈幅 × 量比 × 距峰位置）。"
          "三分位比較回答「score 高的第二波 setup 是否實際報酬更好？」"),
+        ("分層標記 (⭐/◐/▽)",
+         "2026-07-07 對 502 個第二波 episodes 做子群分析（2025 訓練 / 2026 驗證，兩年方向一致）得出："
+         "距前高 &lt;88%（反彈早期）且 20 日均成交額 ≥11 億的訊號，20 日超額報酬 +11.9%（95% CI 全正，中位數 +7.2%，"
+         "n=52）；現行約 72% 的訊號（已反彈至 ≥88%）幾乎無 edge（+0.05%，CI 含 0）。"
+         "三層定義：<br>"
+         "⭐ = 距前高&lt;88% 且 20 日均成交額 ≥11 億（早期 + 大額）<br>"
+         "◐ = 距前高&lt;88% 但成交額未達門檻（早期，籌碼較薄）<br>"
+         "▽ = 距前高 ≥88%（已近前高，反彈晚期）<br>"
+         "⚠ 陷阱：此分層是<b>事後子群挖掘</b>（約 20 種切法中挑出的組合），⭐ 組樣本僅 n=52，"
+         "+11.9%/≈0 是<b>歷史統計、非保證</b>。本表（分層桶）就是用來 forward-test 這個分層是否在新訊號上繼續成立——"
+         "「未標記」桶是 2026-07-08 前無 tier 欄位的舊訊號，不代表分層失效。"),
         ("還原價 (adjusted)",
          "TaiwanStockPriceAdj 已做除權息還原，排除配息/配股造成的價格跳空。"),
     ]
@@ -286,6 +342,7 @@ def render_tab(data: dict | None) -> str:
     summary = data.get("summary", {})
     abcd = data.get("abcd_buckets", {})
     sw_tercile = data.get("sw_score_terciles", {})
+    sw_tiers = data.get("sw_tier_buckets", {})
 
     parts = [
         f'<h2 style="margin-bottom:6px;">📈 訊號成效（後照鏡）</h2>',
@@ -305,6 +362,12 @@ def render_tab(data: dict | None) -> str:
     parts.append('<h3 style="margin-top:20px;">🌊 強勢第二波 score 三分位</h3>')
     parts.append('<p class="meta">回答：second_wave_score 高的 setup 是否有更好的實際報酬？</p>')
     parts.append(_render_sw_tercile_table(sw_tercile))
+
+    # SW 分層標記 (⭐/◐/▽)
+    parts.append('<h3 style="margin-top:20px;">🌊 強勢第二波 分層標記 (⭐/◐/▽)</h3>')
+    parts.append('<p class="meta">回答：2026-07 子群回測分層在 forward-test 中是否成立？'
+                  '「未標記」桶為 2026-07-08 前的舊訊號無標記，非分層失效。</p>')
+    parts.append(_render_sw_tier_table(sw_tiers))
 
     # Recent 20 signals
     parts.append('<h3 style="margin-top:20px;">最近 20 筆訊號明細</h3>')

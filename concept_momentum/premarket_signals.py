@@ -82,11 +82,14 @@ def load_turnaround_relay_rows(cache_dir: str, end_date: str,
     return rows
 
 
+_TIER_RANK = {"⭐": 0, "◐": 1, "▽": 2, "": 3}
+
+
 def load_second_wave_rows(cache_dir: str, end_date: str,
                            lookback_days: int = 10) -> list[dict]:
     """Return list of {code, name, latest_date, second_wave_score, drop_pct,
-    volume_ratio, consecutive_days}, sorted by latest_date desc, consecutive desc,
-    score desc."""
+    volume_ratio, tier, today_vs_peak, consecutive_days}, sorted by latest_date
+    desc, tier (⭐ > ◐ > ▽ > untagged) asc, today_vs_peak asc (越早期越前面)."""
     per_day = _load_per_day(cache_dir, end_date, lookback_days, "candidates")
     if not per_day:
         return []
@@ -113,8 +116,13 @@ def load_second_wave_rows(cache_dir: str, end_date: str,
             "second_wave_score": float(latest_data.get("second_wave_score", 0.0)),
             "drop_pct": float(latest_data.get("drop_pct", 0.0)),
             "volume_ratio": float(latest_data.get("volume_ratio", 0.0)),
+            "tier": latest_data.get("tier", ""),
+            "today_vs_peak": float(latest_data.get("today_vs_peak", 0) or 0),
             "consecutive_days": streak,
         })
-    rows.sort(key=lambda r: (r["latest_date"], r["consecutive_days"],
-                              r["second_wave_score"]), reverse=True)
+    rows.sort(key=lambda r: (
+        r["latest_date"],
+        -_TIER_RANK.get(r["tier"], 3),
+        -r["today_vs_peak"],
+    ), reverse=True)
     return rows

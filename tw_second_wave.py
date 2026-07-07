@@ -57,6 +57,17 @@ FILTER_DEFAULTS = dict(
     max_today_vs_peak=0.98,
 )
 
+# 分層標記 (2026-07-07 子群分析, 詳 README「子群分析」節): 不改篩選、只標層
+TIER_BIG_TURNOVER_NTD = 1_100_000_000   # 20d 均成交額門檻 (~P67)
+TIER_EARLY_TVP = 0.88                    # 距前高門檻 (today/peak < 0.88 = 反彈早期)
+
+
+def classify_tier(today_vs_peak: float, turn20_ntd: float) -> str:
+    """⭐ 早期+大額 / ◐ 早期 / ▽ 已近前高 — 依 2026-07 子群分析分層。"""
+    if today_vs_peak < TIER_EARLY_TVP:
+        return "⭐" if turn20_ntd >= TIER_BIG_TURNOVER_NTD else "◐"
+    return "▽"
+
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
 DEFAULT_CHAT_ID = "-5229750819"
 TG_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
@@ -336,7 +347,12 @@ def process_one(code: str, name: str, args) -> dict | None:
                 return None
         except Exception as e:
             print(f"[WARN] dividend guard {code}: {e}", file=sys.stderr)
-    return {"code": code, "name": name, "market": yh.get("market", ""), **sig}
+    rows = yh["rows"]
+    last20 = rows[-20:]
+    turn20_ntd = sum(r["volume"] * r["close"] for r in last20) / max(len(last20), 1)
+    tier = classify_tier(sig["today_vs_peak"], turn20_ntd)
+    return {"code": code, "name": name, "market": yh.get("market", ""), **sig,
+            "turn20_ntd": turn20_ntd, "tier": tier}
 
 
 # ============================================================
@@ -357,7 +373,7 @@ def format_report(survivors: list[dict], total: int) -> str:
         lines.append("（無符合 pattern 的標的）")
         return "\n".join(lines)
 
-    # Score: 漲幅大 × 急跌深 × 反彈強 × 量能高 × 距離前高還近 (但未破)
+    # Score 保留供 JSON 相容（回測已證 IC≈0，無鑑別力，不再用於排序）
     def score(s):
         return (s["rally_gain"] *
                 s["drop_pct"] *
@@ -365,13 +381,19 @@ def format_report(survivors: list[dict], total: int) -> str:
                 min(s["vol_ratio"], 3) *
                 (s["today_vs_peak"] - 0.7))  # closer to peak = better setup
 
-    survivors.sort(key=score, reverse=True)
+    # 排序改依 today_vs_peak 升冪（越早期越前面）— 詳 README「子群分析」節
+    survivors.sort(key=lambda s: s["today_vs_peak"])
 
-    lines.append(f"{'代號':<6}{'名稱':<10}{'前漲':<7}{'跌幅':<7}{'跌天':<5}"
+    lines.append(
+        "⭐ 早期(<88%)+大額(≥11億/日)  ◐ 早期  ▽ 已近前高 — "
+        "依 2026-07 子群回測，⭐ 組 20d 超額 +11.9%、▽ 組 ≈0"
+    )
+    lines.append(f"{'層':<3}{'代號':<6}{'名稱':<10}{'前漲':<7}{'跌幅':<7}{'跌天':<5}"
                  f"{'反彈':<7}{'反彈天':<6}{'今/峰':<6}{'量比':<6}{'峰日':<11}")
     lines.append("-" * 80)
     for s in survivors:
         lines.append(
+            f"{s.get('tier', ''):<3}"
             f"{s['code']:<6}{s['name'][:8]:<10}"
             f"{s['rally_gain']*100:>4.0f}%   "
             f"{s['drop_pct']*100:>4.1f}%   "
@@ -386,7 +408,7 @@ def format_report(survivors: list[dict], total: int) -> str:
     # Detail blocks for top 20
     lines.append("")
     for s in survivors[:20]:
-        lines.append(f"\n{s['code']} {s['name']} [{s['market']}]")
+        lines.append(f"\n{s.get('tier', '')} {s['code']} {s['name']} [{s['market']}]")
         lines.append(f"  Phase 1 強勢底盤：峰前 6m 漲幅 {s['rally_gain']*100:.0f}%")
         lines.append(f"  Phase 2 峰值：{s['peak_date']} 收 {s['peak_close']:.1f}")
         lines.append(f"  Phase 3 急跌：{s['drop_days']} td 跌 {s['drop_pct']*100:.1f}% 至 "
@@ -523,6 +545,9 @@ def main():
                         ),
                         "drop_pct": round(c.get("drop_pct", 0.0), 4),
                         "volume_ratio": round(c.get("vol_ratio", 0.0), 2),
+                        "tier": c.get("tier", ""),
+                        "today_vs_peak": round(c.get("today_vs_peak", 0.0), 4),
+                        "turn20_m": round(c.get("turn20_ntd", 0.0) / 1_000_000, 1),
                     } for c in survivors
                 ],
             }, _f, ensure_ascii=False, indent=2)

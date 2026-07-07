@@ -177,6 +177,39 @@ def _abcd_bucket_summary(signals_with_ret: list[dict], horizons=(1, 5, 10, 20)) 
     return result
 
 
+def _sw_tier_summary(signals_with_ret: list[dict], horizons=(1, 5, 10, 20)) -> dict:
+    """SW 分層標記 (⭐/◐/▽) 分桶 — 2026-07 子群分析落地 (詳 README「子群分析」節)。
+    缺 tier 欄位 (2026-07-08 前的舊訊號) 歸入 "untagged" 桶。"""
+    sw_recs = [r for r in signals_with_ret if r["strategy"] == "second_wave"]
+    if not sw_recs:
+        return {}
+
+    buckets: dict[str, dict] = {}
+    for r in sw_recs:
+        tier = r["meta"].get("tier") or "untagged"
+        b = buckets.setdefault(tier, {str(h): {"abs": [], "exc": []} for h in horizons})
+        for h, v in r["ret"].items():
+            if h in b:
+                b[h]["abs"].append(v["abs"])
+                b[h]["exc"].append(v["exc"])
+
+    result = {}
+    for lbl, hs in buckets.items():
+        result[lbl] = {}
+        for h, v in hs.items():
+            n = len(v["exc"])
+            if not n:
+                continue
+            result[lbl][h] = {
+                "n": n,
+                "exc_mean": round(sum(v["exc"]) / n, 2),
+                "exc_med": round(sorted(v["exc"])[n // 2], 2),
+                "win": round(sum(1 for x in v["abs"] if x > 0) / n * 100, 0),
+                "beat": round(sum(1 for x in v["exc"] if x > 0) / n * 100, 0),
+            }
+    return result
+
+
 def _sw_score_tercile_summary(signals_with_ret: list[dict], horizons=(1, 5, 10, 20)) -> dict:
     """SW second_wave_score 三分位分桶。"""
     sw_recs = [r for r in signals_with_ret if r["strategy"] == "second_wave"
@@ -258,6 +291,7 @@ def send_telegram(message: str, bot_token: str, chat_id: str) -> bool:
 def _build_tg_report(outcomes: dict) -> str:
     summary = outcomes.get("summary", {})
     abcd = outcomes.get("abcd_buckets", {})
+    sw_tiers = outcomes.get("sw_tier_buckets", {})
     now_str = outcomes.get("generated", "")[:16]
     lines = [f"📈 訊號成效週報 ({now_str})", ""]
 
@@ -293,6 +327,17 @@ def _build_tg_report(outcomes: dict) -> str:
             h5b = bd.get("5", {})
             if h5b:
                 lines.append(f"  {lbl_str}: n={h5b['n']} 超額{h5b['exc_mean']:+.1f}% 勝率{h5b['win']:.0f}%")
+
+    # SW 分層標記 (⭐/◐/▽) — 僅當 ⭐ 或 ◐ 桶 n≥5 才顯示，避免初期噪音
+    tier_display = {"⭐": "⭐ 早期+大額", "◐": "◐ 早期", "▽": "▽ 已近前高"}
+    shown_tiers = [t for t in ("⭐", "◐") if sw_tiers.get(t, {}).get("5", {}).get("n", 0) >= 5]
+    if shown_tiers:
+        lines.append("")
+        lines.append("🌊 SW 分層標記 (T+5 超額均，2026-07 子群回測落地)")
+        for t in ("⭐", "◐", "▽"):
+            h5b = sw_tiers.get(t, {}).get("5", {})
+            if h5b:
+                lines.append(f"  {tier_display[t]}: n={h5b['n']} 超額{h5b['exc_mean']:+.1f}% 勝率{h5b['win']:.0f}%")
 
     # quota info
     n_failed = outcomes.get("n_px_failed", 0)
@@ -361,6 +406,7 @@ def main():
     # 5. Extra aggregations
     outcomes["abcd_buckets"] = _abcd_bucket_summary(outcomes["signals"])
     outcomes["sw_score_terciles"] = _sw_score_tercile_summary(outcomes["signals"])
+    outcomes["sw_tier_buckets"] = _sw_tier_summary(outcomes["signals"])
     outcomes["n_px_failed"] = n_failed
     outcomes["n_px_codes"] = len(codes)
     outcomes["generated"] = datetime.now().isoformat()

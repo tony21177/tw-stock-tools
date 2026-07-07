@@ -56,6 +56,10 @@ def _render_sw(rows: list[dict]) -> str:
              '<thead><tr>'
              '<th title="股票代號">代號</th>'
              '<th title="股票中文名稱">名稱</th>'
+             '<th title="分層標記 — 依 2026-07 子群回測 (502 episodes) 分層：'
+             '&#10;&#10;⭐ 早期(距前高<88%)+大額(20日均成交額≥11億) — 20日超額 +11.9%'
+             '&#10;&#10;◐ 早期但成交額未達門檻'
+             '&#10;&#10;▽ 已近前高(≥88%) — 20日超額≈0，現行大多數訊號屬此層">層</th>'
              '<th title="該檔最近一次入強勢股第二波榜的日期">入榜日期</th>'
              '<th title="第二波 setup 評分 — 五因子相乘，越高代表 setup 越完美：'
              '&#10;&#10;rally_gain (峰前漲幅)：峰值前 6 個月的累積漲幅 (e.g., 0.42 = 漲 42%)。底盤要先有強勢起漲，沒漲過不算第二波。'
@@ -74,10 +78,12 @@ def _render_sw(rows: list[dict]) -> str:
         drop_raw = r.get('drop_pct', 0.0)
         drop_pct_display = -drop_raw * 100
         drop_cls = 'neg' if drop_raw > 0 else ''
+        tier = r.get('tier', '') or '—'
         parts.append(
             '<tr>'
             f'<td>{r["code"]}</td>'
             f'<td>{r.get("name", r["code"])}</td>'
+            f'<td>{tier}</td>'
             f'<td>{_fmt_date(r.get("latest_date", ""))}</td>'
             f'<td>{r.get("second_wave_score", 0):.4f}</td>'
             f'<td class="{drop_cls}">{drop_pct_display:+.1f}%</td>'
@@ -86,6 +92,12 @@ def _render_sw(rows: list[dict]) -> str:
             '</tr>'
         )
     parts.append('</tbody></table></div>')
+    parts.append(
+        '<p style="font-size:0.8em; color:#888; margin:4px 0 0;">'
+        '⭐ 早期(&lt;88%)+大額(≥11億/日)　◐ 早期　▽ 已近前高 — '
+        '依 2026-07 子群回測，⭐ 組 20d 超額 +11.9%、▽ 組 ≈0'
+        '</p>'
+    )
     return "\n".join(parts)
 
 
