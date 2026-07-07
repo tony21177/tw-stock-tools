@@ -4378,6 +4378,88 @@ def intraday_sim():
     return _render_intraday_sim_page(code=code, data=data)
 
 
+_BACKTEST_GLOSSARY.update({
+    "融資維持率": "擔保品市值 ÷ 融資金額 ×100%。跌到 130% 券商發追繳令、限期補錢否則斷頭賣出。"
+                 "本頁的維持率是「市場整體」估算：用 3 個月融資買賣重建平均成本，不是任何特定投資人的真實數字。",
+    "追繳價 / 警戒價": "現價再跌到哪裡，整體維持率會碰 130%（追繳）/ 140%（警戒）。距離越近，融資多殺多的引爆點越近——"
+                 "跌破追繳價常引發強制賣壓連鎖（斷頭潮）。",
+    "FIFO / LIFO / 比例扣減": "融資餘額減少時，要把減少量歸給哪一批進場者的三種假設：FIFO=老批先出場（最常見）、"
+                 "LIFO=新批恐慌先跑、比例=大家等比例減。同一檔用不同規則算出的批次分布差異可能很大，建議切換比對做壓力測試。",
+    "批次 (cohort)": "把融資餘額按進場日拆開的分組。整體平均維持率會掩蓋風險——例如平均 151% 看似安全，"
+                 "但拆開後可能 9 成的追蹤量都擠在 130-140% 危險區，只是被舊部位拉高平均。看分布比看平均準。",
+    "舊部位 (legacy)": "3 個月觀察期之前就存在的融資部位，成本無從得知，無法估維持率。舊部位佔比越高，本頁估算的參考性越低。",
+})
+
+
+def _render_margin_lookup_page(code: str = "", method: str = "fifo",
+                               report: str = "", error: str = "") -> str:
+    nav = ('<nav><a href="/">← 大盤 dashboard</a>'
+           '<a href="/chip-price">📋 籌碼價量</a></nav>')
+    css = """<style>
+  body { font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
+         max-width:900px; margin:1em auto; padding:0 1em; background:#f7f7f9; color:#222; }
+  h1 { font-size:1.4em; margin:.4em 0; } nav a { margin-right:12px; color:#0066cc; text-decoration:none; }
+  section { background:#fff; padding:12px 16px; border-radius:6px; margin-bottom:12px;
+            box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  .small,small { font-size:.85em; color:#666; }
+  .error { background:#fee; border:1px solid #f99; padding:12px; border-radius:4px; color:#c00; }
+  form { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  input[type=text]{ width:90px; padding:6px 8px; border:1px solid #ccc; border-radius:4px; }
+  select{ padding:6px 8px; border:1px solid #ccc; border-radius:4px; }
+  button{ padding:6px 14px; background:#0066cc; color:#fff; border:none; border-radius:4px; cursor:pointer; }
+  pre.report { background:#fff; padding:14px 18px; border-radius:6px; font-size:.92em; line-height:1.55;
+               overflow-x:auto; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  table.glossary { width:100%; border-collapse:collapse; font-size:.85em; }
+  table.glossary td { padding:6px 8px; border-bottom:1px solid #eee; vertical-align:top; }
+  table.glossary td:first-child { white-space:nowrap; font-weight:600; color:#444; }
+</style>"""
+    sel = {m: (" selected" if m == method else "") for m in ("fifo", "lifo", "proportional")}
+    head = (f'<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+            f'<title>融資維持率查詢</title>{css}</head><body>{nav}'
+            f'<h1>💳 單檔融資維持率 + 批次分布</h1>'
+            f'<section><form action="/margin-lookup" method="get">'
+            f'<input type="text" name="code" placeholder="股號" value="{_esc(code)}" required>'
+            f'<select name="method">'
+            f'<option value="fifo"{sel["fifo"]}>FIFO 老批先扣</option>'
+            f'<option value="lifo"{sel["lifo"]}>LIFO 新批先扣</option>'
+            f'<option value="proportional"{sel["proportional"]}>比例扣減</option>'
+            f'</select><button type="submit">查詢</button>'
+            f'<span class="small">FIFO 重建 3 個月市場整體融資成本 → 維持率 + 批次 (cohort) 風險分布</span>'
+            f'</form></section>')
+    glossary = _glossary_section(["融資維持率", "追繳價 / 警戒價", "FIFO / LIFO / 比例扣減",
+                                  "批次 (cohort)", "舊部位 (legacy)"])
+    caveat = ('<section class="small">⚠ 注意：(1) 收盤後查詢時「現價」可能是盤中快照而非官方收盤價（Yahoo 資料源特性），'
+              '關鍵決策前請以 FinMind/TWSE 官方收盤覆核；(2) 全部數字為市場整體估算，'
+              '實際個別投資人成本與擔保品組合各異；(3) 融資成數用預設值（上市 60% / 上櫃 50%），'
+              '警示股/處置股的降成數未反映。</section>')
+    tail = '</body></html>'
+    if error:
+        return head + f'<div class="error">{_esc(error)}</div>' + glossary + caveat + tail
+    if report:
+        return head + f'<pre class="report">{_esc(report)}</pre>' + glossary + caveat + tail
+    return head + glossary + caveat + tail
+
+
+@app.route("/margin-lookup")
+def margin_lookup():
+    code = (request.args.get("code") or "").strip()
+    method = (request.args.get("method") or "fifo").strip()
+    if method not in ("fifo", "lifo", "proportional"):
+        method = "fifo"
+    if not code:
+        return _render_margin_lookup_page(method=method)
+    try:
+        import tw_margin_lookup
+        import tw_inventory
+        token = tw_inventory._get_token() or ""
+        report = tw_margin_lookup.lookup(code, finmind_token=token, method=method)
+    except Exception as e:
+        return _render_margin_lookup_page(code=code, method=method,
+                                          error=f"{type(e).__name__}: {e}")
+    return _render_margin_lookup_page(code=code, method=method, report=report)
+
+
 @app.route("/adr-premium")
 def adr_premium():
     import tw_adr_premium

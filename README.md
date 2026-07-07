@@ -273,6 +273,8 @@ FINMIND_TOKEN=xxx python3 ~/project/tw_stock_tools/tw_margin_monitor.py --thresh
 
 ## 4. `tw_margin_lookup.py` — 單檔融資維持率查詢 + Cohort 分析
 
+**網頁版**：`/margin-lookup?code=XXXX&method=fifo|lifo|proportional`（dashboard 快速查詢列「💳 融資維持率」，2026-07-07 加；同 CLI 輸出 + 術語說明 + 收盤後現價 caveat）
+
 ### 用途
 輸入股票代號，輸出：
 - 整體 FIFO 加權成本 + 維持率 + 警戒/追繳價

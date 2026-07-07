@@ -598,6 +598,10 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
       <input type="text" name="code" placeholder="股號" required style="width:80px;padding:6px 8px;font-size:14px;border:1px solid #ccc;border-radius:4px;">
       <button type="submit" style="padding:6px 12px;background:#0066cc;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;">👥 前十大股東</button>
     </form>
+    <form action="/margin-lookup" method="get" style="display:flex;gap:4px;">
+      <input type="text" name="code" placeholder="股號" required style="width:80px;padding:6px 8px;font-size:14px;border:1px solid #ccc;border-radius:4px;">
+      <button type="submit" style="padding:6px 12px;background:#0066cc;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;">💳 融資維持率</button>
+    </form>
   </div>
 </div>
 
