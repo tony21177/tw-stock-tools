@@ -86,9 +86,17 @@ def _fetch_one(code: str, name: str, start: str, token: str):
     return rows, sorted(ex)
 
 
+def _panel_path(start: str) -> str:
+    """預設起日用原路徑（向後相容既有面板）；其他起日各自一檔，互不覆蓋。"""
+    if start == "2025-01-01":
+        return PANEL_PATH
+    return os.path.join(BT_CACHE, f"backtest_prices_v2_{start.replace('-', '')}.json")
+
+
 def build_cache_v2(start: str = "2025-01-01", workers: int = 4, force: bool = False) -> dict:
-    if not force and os.path.exists(PANEL_PATH):
-        with open(PANEL_PATH) as f:
+    path = _panel_path(start)
+    if not force and os.path.exists(path):
+        with open(path) as f:
             c = json.load(f)
         if c.get("start") == start and c.get("schema") == 2:
             print(f"[cache] v2 面板 {len(c['stocks'])} 檔（--force 可重抓）", file=sys.stderr)
@@ -123,9 +131,9 @@ def build_cache_v2(start: str = "2025-01-01", workers: int = 4, force: bool = Fa
         raise RuntimeError("TAIEX 抓取失敗 (可能 rate limit)，不寫入快取 — 稍後重跑 build")
     c = {"schema": 2, "start": start, "stocks": stocks,
          "ex_dates": ex_dates, "taiex": taiex}
-    with open(PANEL_PATH, "w") as f:
+    with open(path, "w") as f:
         json.dump(c, f)
-    print(f"[fetch] 完成 {len(stocks)} 檔 → {PANEL_PATH}", file=sys.stderr)
+    print(f"[fetch] 完成 {len(stocks)} 檔 → {path}", file=sys.stderr)
     return c
 
 
