@@ -98,6 +98,14 @@ def _render_sw(rows: list[dict]) -> str:
         '依 2026-07 子群回測，⭐ 組 20d 超額 +11.9%、▽ 組 ≈0'
         '</p>'
     )
+    parts.append(
+        '<p style="font-size:0.8em; color:#a06000; background:#fdf6e8; '
+        'padding:6px 10px; border-radius:4px; margin:6px 0 0;">'
+        '📌 <b>使用時機</b>：本策略 edge 集中在<b>動能市</b>（2022-24 三年 OOS 超額 ≈0、'
+        '2022 熊市為負，大盤轉弱時停用或降倉）；持有約 <b>20 個交易日</b>（短抱 5-10 天期望為負）；'
+        '報酬樂透型（中位數 -3~-4%）→ <b>分散持有、勿單押</b>；候選 ≠ 買入訊號，進場前自查急跌非利空所致。'
+        '<a href="/second-wave-backtest">→ 完整回測與限制</a></p>'
+    )
     return "\n".join(parts)
 
 

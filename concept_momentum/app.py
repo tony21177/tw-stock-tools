@@ -3922,6 +3922,26 @@ def _render_second_wave_backtest_page(data: dict | None = None, error: str = "")
       f'扣 {r["cost"]}% 來回成本。universe = {r.get("universe_label","概念股子集")} {r["universe"]} 檔。'
       '</div></section>')
 
+    usage = (
+      '<section style="border-left:4px solid #e8a000;">'
+      '<h3>📌 使用時機與限制</h3><div class="small" style="line-height:1.8">'
+      '<b>✅ 適用時機</b><br>'
+      '• <b>動能市（多頭、資金追強勢股的市況）</b>：分年 OOS 顯示本策略的 edge 集中在 2025-26 '
+      '動能市（2026 全樣本 +2.4%、早期+大額 ⭐ 層 +12.9%）；<b>2022-2024 三年全策略超額 ≈0</b>，'
+      '2022 熊市為負 — 大盤轉弱時應停用或大幅降低倉位。<br>'
+      '• <b>持有約 20 個交易日</b>：短抱 5-10 天期望為負（訊號後第一週常還在洗盤）。<br>'
+      '• <b>分散持有整份名單</b>：報酬是樂透型（中位數 -3~-4%、靠少數大贏家），'
+      '單押一兩檔大概率體驗到中位數。<br>'
+      '• 名單是「pattern 已成形的候選池」，進場前自查基本面沒轉壞、急跌非利空所致。<br>'
+      '<b>❌ 不適用 / 已知限制</b><br>'
+      '• 盤整或空頭市（regime 判斷可搭配主 dashboard 的「大盤寬度」分頁：'
+      '股價&gt;20MA% 高檔、200日新高家數多 = 動能市特徵）。<br>'
+      '• 短線交易（5-10 日無 edge）、重倉單押。<br>'
+      '• 純技術面訊號：不看基本面與消息，急跌若是基本面惡化（非洗盤）照樣入選。<br>'
+      '<b>🔭 regime 即時監測</b>：訊號成效頁的 ⭐ 分層桶就是活體檢測 — '
+      '⭐ 組持續領先 = 動能 regime 健在；⭐ 開始失效 = regime 轉換警訊，考慮停用本策略。'
+      '<a href="/signal-outcomes">→ 訊號成效</a></div></section>')
+
     is_all = p.get("universe") == "all" or r.get("universe_label") == "全市場"
     uni_cav = ('3. universe 為<b>全市場</b>（含小型低液性股），與正式 cron 一致；'
                '但這段多頭友善，空頭盤 edge 可能不同。<br>'
@@ -3959,7 +3979,7 @@ new Chart(document.getElementById('eq'),{{type:'line',
         "贏大盤率 (beat rate)", "中位數 vs 均值", "累積淨超額 / 權益曲線",
         "point-in-time", "CI / 信賴區間", "t 統計量",
         "日期配對基準 (date-matched)", "除權息剔除"])
-    return head + cards + meta + tbl + charts + method + glossary + caveat + js + tail
+    return head + cards + usage + meta + tbl + charts + method + glossary + caveat + js + tail
 
 
 @app.route("/second-wave-backtest")
