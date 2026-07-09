@@ -27,6 +27,7 @@ Phase 3 急殺把短線散戶洗出去，籌碼鎖定後重新發動。
 """
 
 import argparse
+import bisect
 import gzip
 import json
 import os
@@ -67,6 +68,23 @@ def classify_tier(today_vs_peak: float, turn20_ntd: float) -> str:
     if today_vs_peak < TIER_EARLY_TVP:
         return "⭐" if turn20_ntd >= TIER_BIG_TURNOVER_NTD else "◐"
     return "▽"
+
+
+# 借券急跌變化標記 (2026-07-09, episode 條件化回測, 詳 README「籌碼確認」節):
+# 急跌期 (peak_date→trough_date) 借券賣出餘額變化 (%)，標記非濾網
+SBL_TAG_DROP = -5.0   # ≤ -5% = 回補 (空方撤退, 洗盤跡象)
+SBL_TAG_RISE = 5.0    # ≥ +5% = 增加 (空方加碼, 跨年較穩的避開訊號)
+
+
+def classify_sbl_tag(sbl_chg_pct):
+    """急跌期借券賣餘變化 → 借↓(空方回補=洗盤跡象) / 借↑(空方加碼=避開) / —。None → —。"""
+    if sbl_chg_pct is None:
+        return "—"
+    if sbl_chg_pct <= SBL_TAG_DROP:
+        return "借↓"
+    if sbl_chg_pct >= SBL_TAG_RISE:
+        return "借↑"
+    return "—"
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
 DEFAULT_CHAT_ID = "-5229750819"
@@ -242,6 +260,65 @@ def _ex_dates_cached(code: str, token: str) -> list[str]:
     return ex
 
 
+def _sbl_chg_cached(code: str, peak_date: str, trough_date: str) -> float | None:
+    """急跌期 (peak_date→trough_date) 借券賣出餘額變化 % — fail-open (任何錯誤 → None)。
+
+    cache 存原始 series（當日 TTL），每檔 1 次 FinMind 呼叫。
+    bal@X = 日期 ≤ X 的最後一筆 SBLShortSalesCurrentDayBalance；
+    bal@peak ≤ 0 或資料缺 → None（避免除以 0 / 無意義變化率）。
+    """
+    today_str = datetime.now().strftime("%Y%m%d")
+    cache_path = os.path.join(CACHE_DIR, f"sbl_{code}_{today_str}.json")
+    series = None
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path) as f:
+                series = json.load(f)
+        except Exception:
+            series = None
+    if series is None:
+        token = os.environ.get("FINMIND_TOKEN", "")
+        if not token:
+            return None
+        try:
+            if HERE not in sys.path:
+                sys.path.insert(0, HERE)
+            import finmind_client
+            start = (datetime.strptime(peak_date, "%Y-%m-%d") - timedelta(days=10)).strftime("%Y-%m-%d")
+            end = datetime.now().strftime("%Y-%m-%d")
+            raw = finmind_client.fetch_short_sale_balances(code, start, end, token)
+            series = [{"date": r.get("date", ""),
+                       "balance": r.get("SBLShortSalesCurrentDayBalance")}
+                      for r in raw if r.get("date")]
+            with open(cache_path, "w") as f:
+                json.dump(series, f)
+        except Exception as e:
+            print(f"[WARN] sbl fetch {code}: {e}", file=sys.stderr)
+            return None
+
+    try:
+        dates = sorted(r["date"] for r in series)
+        by_date = {r["date"]: r.get("balance") for r in series}
+
+        def _bal_at(target: str):
+            idx = bisect.bisect_right(dates, target) - 1
+            if idx < 0:
+                return None
+            return by_date.get(dates[idx])
+
+        bal_peak = _bal_at(peak_date)
+        bal_trough = _bal_at(trough_date)
+        if bal_peak is None or bal_trough is None:
+            return None
+        bal_peak = float(bal_peak)
+        bal_trough = float(bal_trough)
+        if bal_peak <= 0:
+            return None
+        return (bal_trough / bal_peak - 1) * 100
+    except Exception:
+        return None
+
+
 # ============================================================
 # Pattern detection
 # ============================================================
@@ -351,8 +428,11 @@ def process_one(code: str, name: str, args) -> dict | None:
     last20 = rows[-20:]
     turn20_ntd = sum(r["volume"] * r["close"] for r in last20) / max(len(last20), 1)
     tier = classify_tier(sig["today_vs_peak"], turn20_ntd)
+    sbl_chg = _sbl_chg_cached(code, sig["peak_date"], sig["trough_date"])
+    sbl_tag = classify_sbl_tag(sbl_chg)
     return {"code": code, "name": name, "market": yh.get("market", ""), **sig,
-            "turn20_ntd": turn20_ntd, "tier": tier}
+            "turn20_ntd": turn20_ntd, "tier": tier,
+            "sbl_chg": sbl_chg, "sbl_tag": sbl_tag}
 
 
 # ============================================================
@@ -388,12 +468,16 @@ def format_report(survivors: list[dict], total: int) -> str:
         "⭐ 早期(<88%)+大額(≥11億/日)  ◐ 早期  ▽ 已近前高 — "
         "依 2026-07 子群回測，⭐ 組 20d 超額 +11.9%、▽ 組 ≈0"
     )
-    lines.append(f"{'層':<3}{'代號':<6}{'名稱':<10}{'前漲':<7}{'跌幅':<7}{'跌天':<5}"
+    lines.append(
+        "借↓ 空方回補(洗盤跡象, 動能市 +6.5%) 借↑ 空方加碼(跨年避開訊號, 2022 年 -5.9%)"
+    )
+    lines.append(f"{'層':<3}{'借':<4}{'代號':<6}{'名稱':<10}{'前漲':<7}{'跌幅':<7}{'跌天':<5}"
                  f"{'反彈':<7}{'反彈天':<6}{'今/峰':<6}{'量比':<6}{'峰日':<11}")
     lines.append("-" * 80)
     for s in survivors:
         lines.append(
             f"{s.get('tier', ''):<3}"
+            f"{s.get('sbl_tag', '—'):<4}"
             f"{s['code']:<6}{s['name'][:8]:<10}"
             f"{s['rally_gain']*100:>4.0f}%   "
             f"{s['drop_pct']*100:>4.1f}%   "
@@ -413,6 +497,9 @@ def format_report(survivors: list[dict], total: int) -> str:
         lines.append(f"  Phase 2 峰值：{s['peak_date']} 收 {s['peak_close']:.1f}")
         lines.append(f"  Phase 3 急跌：{s['drop_days']} td 跌 {s['drop_pct']*100:.1f}% 至 "
                      f"{s['trough_date']} 收 {s['trough_close']:.1f}")
+        sbl_chg = s.get("sbl_chg")
+        sbl_str = "—" if sbl_chg is None else f"{sbl_chg:+.1f}%"
+        lines.append(f"  籌碼：急跌期借券賣餘變化 {sbl_str} [{s.get('sbl_tag', '—')}]")
         lines.append(f"  Phase 4 反彈：低點後 {s['days_since_trough']} td，今價 {s['today_close']:.1f}"
                      f" = trough +{s['bounce_pct']*100:.1f}% / 峰值 {s['today_vs_peak']*100:.0f}%")
         lines.append(f"  量能：近 3d 均量 / 急跌期均量 = {s['vol_ratio']:.2f}x")
@@ -548,6 +635,10 @@ def main():
                         "tier": c.get("tier", ""),
                         "today_vs_peak": round(c.get("today_vs_peak", 0.0), 4),
                         "turn20_m": round(c.get("turn20_ntd", 0.0) / 1_000_000, 1),
+                        "sbl_tag": c.get("sbl_tag", "—"),
+                        "sbl_chg_pct": (
+                            round(c["sbl_chg"], 1) if c.get("sbl_chg") is not None else None
+                        ),
                     } for c in survivors
                 ],
             }, _f, ensure_ascii=False, indent=2)

@@ -210,6 +210,39 @@ def _sw_tier_summary(signals_with_ret: list[dict], horizons=(1, 5, 10, 20)) -> d
     return result
 
 
+def _sw_sbl_summary(signals_with_ret: list[dict], horizons=(1, 5, 10, 20)) -> dict:
+    """SW 借券急跌變化標記 (借↓/借↑) 分桶 — 2026-07-09 episode 條件化回測落地
+    (詳 README「籌碼確認」節)。缺 sbl_tag 欄位 (2026-07-09 前的舊訊號) 歸入 "untagged" 桶。"""
+    sw_recs = [r for r in signals_with_ret if r["strategy"] == "second_wave"]
+    if not sw_recs:
+        return {}
+
+    buckets: dict[str, dict] = {}
+    for r in sw_recs:
+        tag = r["meta"].get("sbl_tag") or "untagged"
+        b = buckets.setdefault(tag, {str(h): {"abs": [], "exc": []} for h in horizons})
+        for h, v in r["ret"].items():
+            if h in b:
+                b[h]["abs"].append(v["abs"])
+                b[h]["exc"].append(v["exc"])
+
+    result = {}
+    for lbl, hs in buckets.items():
+        result[lbl] = {}
+        for h, v in hs.items():
+            n = len(v["exc"])
+            if not n:
+                continue
+            result[lbl][h] = {
+                "n": n,
+                "exc_mean": round(sum(v["exc"]) / n, 2),
+                "exc_med": round(sorted(v["exc"])[n // 2], 2),
+                "win": round(sum(1 for x in v["abs"] if x > 0) / n * 100, 0),
+                "beat": round(sum(1 for x in v["exc"] if x > 0) / n * 100, 0),
+            }
+    return result
+
+
 def _sw_score_tercile_summary(signals_with_ret: list[dict], horizons=(1, 5, 10, 20)) -> dict:
     """SW second_wave_score 三分位分桶。"""
     sw_recs = [r for r in signals_with_ret if r["strategy"] == "second_wave"
@@ -407,6 +440,7 @@ def main():
     outcomes["abcd_buckets"] = _abcd_bucket_summary(outcomes["signals"])
     outcomes["sw_score_terciles"] = _sw_score_tercile_summary(outcomes["signals"])
     outcomes["sw_tier_buckets"] = _sw_tier_summary(outcomes["signals"])
+    outcomes["sw_sbl_buckets"] = _sw_sbl_summary(outcomes["signals"])
     outcomes["n_px_failed"] = n_failed
     outcomes["n_px_codes"] = len(codes)
     outcomes["generated"] = datetime.now().isoformat()

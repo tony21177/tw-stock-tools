@@ -88,8 +88,9 @@ _TIER_RANK = {"⭐": 0, "◐": 1, "▽": 2, "": 3}
 def load_second_wave_rows(cache_dir: str, end_date: str,
                            lookback_days: int = 10) -> list[dict]:
     """Return list of {code, name, latest_date, second_wave_score, drop_pct,
-    volume_ratio, tier, today_vs_peak, consecutive_days}, sorted by latest_date
-    desc, tier (⭐ > ◐ > ▽ > untagged) asc, today_vs_peak asc (越早期越前面)."""
+    volume_ratio, tier, today_vs_peak, sbl_tag, consecutive_days}, sorted by
+    latest_date desc, tier (⭐ > ◐ > ▽ > untagged) asc, today_vs_peak asc
+    (越早期越前面)."""
     per_day = _load_per_day(cache_dir, end_date, lookback_days, "candidates")
     if not per_day:
         return []
@@ -118,6 +119,7 @@ def load_second_wave_rows(cache_dir: str, end_date: str,
             "volume_ratio": float(latest_data.get("volume_ratio", 0.0)),
             "tier": latest_data.get("tier", ""),
             "today_vs_peak": float(latest_data.get("today_vs_peak", 0) or 0),
+            "sbl_tag": latest_data.get("sbl_tag") or "—",
             "consecutive_days": streak,
         })
     rows.sort(key=lambda r: (

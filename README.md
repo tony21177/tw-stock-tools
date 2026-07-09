@@ -791,7 +791,7 @@ python3 ~/project/tw_stock_tools/tw_limitup_signal.py --codes ... \
   - **歷史 backfill**：首次部署需 200 天 universe 快取，`market_breadth.backfill_universe()` 自動執行 (~3-5 分鐘)；之後每天 cron 1 個 FinMind 呼叫即增量更新
 - **快取**：`concept_momentum/cache/market_universe/{date}.json` (全市場日 OHLC) + `concept_momentum/cache/market_breadth/{date}.json` (計算結果)，皆 gitignored
 - **🎯 主力雷達歷史榜**：dashboard 第二分頁，10 日視窗。每日 18:00 cron 跑出的主力分點+融資連動結果累積，依「綜合分數 = 連續天數 × (log(Top 分點淨買+1) + sqrt(融資增量)) / 2」排序，Top 30
-- **🌅 盤前訊號**：dashboard 第三分頁，10 日視窗。上下兩段顯示轉機接力 (TR ABCD) 與強勢股第二波，含連續入榜天數。強勢股第二波表格自 2026-07-08 起加「層」欄 (⭐/◐/▽ 分層標記，詳「強勢股第二波」節)，排序依 latest_date desc → tier (⭐>◐>▽>未標記) → today_vs_peak asc
+- **🌅 盤前訊號**：dashboard 第三分頁，10 日視窗。上下兩段顯示轉機接力 (TR ABCD) 與強勢股第二波，含連續入榜天數。強勢股第二波表格自 2026-07-08 起加「層」欄 (⭐/◐/▽ 分層標記，詳「強勢股第二波」節)，排序依 latest_date desc → tier (⭐>◐>▽>未標記) → today_vs_peak asc；自 2026-07-09 起再加「借」欄 (借↓/借↑ 借券急跌變化標記，詳「籌碼確認（借券急跌變化）」節)
 - **🌙 借券動向**：dashboard 第四分頁，5 日視窗。上下兩段顯示借券雷達 (議借爆量) 與空頭撤退 (借券賣餘大減)，依時間/變化幅度排序
 - **歷史榜快取**：5 個新 dir — `concept_momentum/cache/{broker_radar_history,turnaround_relay_history,second_wave_history,lending_radar_history,short_retreat_history}/{date}.json`，皆 gitignored；歷史由 cron 累積，無 backfill
 
@@ -1150,6 +1150,30 @@ warm cache 後續查詢秒級。
 - **❌ OOS 驗證結果（2026-07-08，面板拉到 2022，1330 episodes）**：<88% 規則在 2022-2024 **不成立** — <88% 組 exc20 -0.05% vs ≥88% 組 -0.37%（無差異），⭐ 組 2023 +4.2%（n=17）但 2024 **-2.4%**（n=37）、2022 樣本不足。整個策略在 2022-2024 三年皆 ≈0 超額（全部 -0.25% [-1.4,+1.0]）。結論：**⭐/◐/▽ 分層是 2025-26 動能市的 regime 現象，非結構性規則 — 濾網維持 0.98 不收緊**，標記保留作透明化與 forward-test 用途，判讀時需知其 regime 依賴性。
 - ⚠ Caveats：事後子群挖掘（~20 種切法）、combo 的 2025 子樣本過小（n=11-13）無法獨立確認；正確用法是先「標記分層」讓成效追蹤器 forward-test，或把面板拉到 2022-2024 做真 OOS，再考慮改正式濾網。
 - **2026-07-08 落地**：已加上 ⭐/◐/▽ 分層標記（見上方「分層標記」節）+ 排序改 `today_vs_peak` 升冪，取代無鑑別力的 score 排序。訊號成效追蹤器 (`run_outcomes.py`) 新增 `sw_tier_buckets` 分桶統計，forward-test 這個分層結論（詳「訊號成效追蹤」節）。
+
+### 籌碼確認（借券急跌變化，2026-07-09 加入）
+
+急跌是「洗盤」還是「真跌」的籌碼判別：量測急跌期（`peak_date` → `trough_date`）借券賣出餘額變化 % —
+`sbl_chg = (bal@trough / bal@peak − 1) × 100`（bal@X = 日期 ≤ X 的最後一筆餘額）。**只加標記，不改篩選**。
+
+```python
+SBL_TAG_DROP = -5.0   # ≤ -5% = 借↓ (回補)
+SBL_TAG_RISE = 5.0    # ≥ +5% = 借↑ (增加)
+```
+
+`classify_sbl_tag(sbl_chg_pct)` 為純函式，見 `tw_second_wave.py`，測試在 `tests/test_second_wave_sbl_tag.py`。
+資料源：`finmind_client.fetch_short_sale_balances`，快取 `second_wave_cache/sbl_{code}_{today}.json`（當日 TTL，每候選 1 次呼叫）。
+Fail-open：無 token / API 失敗 / quota ban → 該檔標 `—`，名單照常出（不影響掃描）。
+
+episode 條件化回測（急跌期借券賣餘變化 × 20 日超額報酬）：
+
+| 資料窗 | n | 回補 (≤-5%) | 持平 | 增加 (≥+5%) |
+|--------|---|-------------|------|-------------|
+| 2025-26（動能市） | 529 | **+6.51%**［95% CI +2.9,+10.4］贏 51% | +0.21% | **-0.86%**（中位 -4.5%，贏 37%） |
+| OOS 2022-24 | 556 | +2.22% | +0.45% | -1.00%（單調性成立，CI 跨 0；2022 年增加組 **-5.88%**［CI 全負］；2023 反例：回補 -1.2% vs 增加 +0.6%） |
+
+不對稱結論：「借↑（空方加碼）」是跨年較穩定的**避開訊號**；「借↓（空方回補）」是 2025-26 動能市放大的加分訊號，**2023 年有反例**。
+定位 = **標記 + forward-test**，不改變第二波篩選條件。融資餘額變化已測**無鑑別力**（不採用）。
 
 ### 限制聲明
 - 純技術面 pattern，未做基本面驗證 — 使用者需自行確認「基本面沒轉壞」
@@ -1757,11 +1781,13 @@ h=20 : ~1 個月
 
 ### 產出
 
-- `concept_momentum/cache/signal_outcomes.json`：全訊號報酬記錄 + 5 策略彙總 + TR abcd 分桶 + SW score 三分位 + **SW 分層標記分桶 (`sw_tier_buckets`，2026-07-08 加入)**
+- `concept_momentum/cache/signal_outcomes.json`：全訊號報酬記錄 + 5 策略彙總 + TR abcd 分桶 + SW score 三分位 + **SW 分層標記分桶 (`sw_tier_buckets`，2026-07-08 加入)** + **SW 借券急跌標記分桶 (`sw_sbl_buckets`，2026-07-09 加入)**
 - `concept_momentum/cache/outcomes_px/`：TAIEX + 個股還原價 快取（1 天 TTL）
-- Dashboard：`/signal-outcomes` 獨立頁面（含 glossary，含 SW 分層標記分桶表）
+- Dashboard：`/signal-outcomes` 獨立頁面（含 glossary，含 SW 分層標記分桶表 + SW 借券急跌標記分桶表）
 
 **SW 分層標記分桶 (`sw_tier_buckets`)**：second_wave 訊號按 `tw_second_wave.py` 寫入的 `tier` 欄位（⭐/◐/▽）分桶，缺欄位（2026-07-08 前的舊訊號）歸入 `untagged` 桶，各桶算 h=1/5/10/20 的 n/exc_mean/win — 用來 forward-test 「子群分析」節的分層結論是否在新訊號上繼續成立。TG 週報僅當 ⭐ 或 ◐ 桶 T+5 樣本數 ≥5 才顯示分層行，避免初期噪音誤導。
+
+**SW 借券急跌標記分桶 (`sw_sbl_buckets`)**：second_wave 訊號按 `tw_second_wave.py` 寫入的 `sbl_tag` 欄位（借↓/借↑/—）分桶，缺欄位（2026-07-09 前的舊訊號）歸入 `untagged` 桶，各桶算 h=1/5/10/20 的 n/exc_mean/win — 用來 forward-test 「籌碼確認（借券急跌變化）」節的結論是否在新訊號上繼續成立。TG 週報暫不加此桶（桶尚空，待累積樣本）。
 
 ### Cron
 

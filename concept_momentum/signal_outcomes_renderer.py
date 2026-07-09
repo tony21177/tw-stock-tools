@@ -219,6 +219,51 @@ def _render_sw_tier_table(sw_tiers: dict) -> str:
     return "\n".join(parts)
 
 
+def _render_sw_sbl_table(sw_sbl: dict) -> str:
+    """SW 借券急跌變化標記 (借↓/借↑) 分桶表 — 2026-07-09 episode 條件化回測落地。"""
+    if not sw_sbl:
+        return '<p style="color:#888">無 SW 借券標記數據</p>'
+
+    parts = [
+        '<div class="table-scroll" style="overflow-x:auto;margin-bottom:24px;">',
+        '<table class="market-breadth">',
+        '<thead><tr>',
+        '<th title="借券急跌變化標記">借券標記</th>',
+    ]
+    for hk, hlabel in _HORIZONS:
+        parts.append(f'<th colspan="3" title="{hlabel}">{hlabel}</th>')
+    parts.append('</tr><tr><th></th>')
+    for _ in _HORIZONS:
+        parts.append('<th>n</th><th>超額均</th><th>贏大盤</th>')
+    parts.append('</tr></thead><tbody>')
+
+    label_map = {
+        "借↓": "借↓ 空方回補 (洗盤跡象)",
+        "借↑": "借↑ 空方加碼 (避開訊號)",
+        "—": "— 變化 ±5% 內 / 資料缺",
+        "untagged": "未標記 (2026-07-09 前的舊訊號無此欄)",
+    }
+    for bk in ["借↓", "借↑", "—", "untagged"]:
+        bd = sw_sbl.get(bk)
+        if not bd:
+            continue
+        parts.append(f'<tr><td><b>{label_map.get(bk, bk)}</b></td>')
+        for hk, _ in _HORIZONS:
+            hd = bd.get(hk)
+            if not hd:
+                parts.append('<td>—</td><td>—</td><td>—</td>')
+                continue
+            exc_cls = "pos" if hd.get("exc_mean", 0) > 0 else "neg"
+            beat = hd.get("beat")
+            parts.append(f'<td>{hd.get("n","—")}</td>')
+            parts.append(f'<td class="{exc_cls}">{hd.get("exc_mean",0):+.1f}%</td>')
+            parts.append(f'<td>{"—" if beat is None else f"{beat:.0f}%"}</td>')
+        parts.append('</tr>')
+
+    parts.append('</tbody></table></div>')
+    return "\n".join(parts)
+
+
 def _render_recent_signals(signals: list[dict], n: int = 20) -> str:
     """最近 n 筆訊號明細 (code / 策略 / 進場日 / T+5 超額)。"""
     recent = sorted(signals, key=lambda r: r.get("entry_date", ""), reverse=True)[:n]
@@ -309,6 +354,17 @@ def _glossary_section() -> str:
          "「未標記」桶是 2026-07-08 前無 tier 欄位的舊訊號，不代表分層失效。"
          "⚠ <b>2022-2024 OOS 驗證不成立</b>（面板拉到 2022、1330 episodes：⭐ 組 2024 年 -2.4%、"
          "&lt;88% 與 ≥88% 無差異）— 此分層是 2025-26 動能市的 regime 現象，大盤轉弱時參考性下降。"),
+        ("借券急跌標記 (借↓/借↑)",
+         "急跌是「洗盤」還是「真跌」的籌碼判別：量測急跌期 (峰值→低點) 借券賣出餘額變化。<br>"
+         "借↓ = 變化 ≤ -5%（空方回補），借↑ = 變化 ≥ +5%（空方加碼），"
+         "介於 ±5% 內或資料缺（fail-open）標 —。<br>"
+         "episode 條件化回測：2025-26 動能市 (n=529) 回補組 20 日超額 +6.51%（95% CI [+2.9,+10.4]，贏 51%）、"
+         "持平組 +0.21%、增加組 -0.86%（中位數 -4.5%，贏 37%，單調遞減）；"
+         "OOS 2022-24 (n=556) 回補 +2.22% / 持平 +0.45% / 增加 -1.00%（單調性成立但信賴區間跨 0，"
+         "其中 2022 年增加組 -5.88% CI 全負；<b>2023 年為反例年</b>：回補 -1.2% vs 增加 +0.6%）。<br>"
+         "⚠ 不對稱結論：<b>借↑（空方加碼）是跨年較穩定的避開訊號</b>；"
+         "<b>借↓（空方回補）是 2025-26 動能市放大的加分訊號，但 2023 年有反例</b>，非任何市況皆成立。"
+         "定位 = <b>標記 + forward-test</b>，不改變第二波篩選條件本身。融資餘額變化已測無鑑別力，不採用。"),
         ("還原價 (adjusted)",
          "TaiwanStockPriceAdj 已做除權息還原，排除配息/配股造成的價格跳空。"),
     ]
@@ -345,6 +401,7 @@ def render_tab(data: dict | None) -> str:
     abcd = data.get("abcd_buckets", {})
     sw_tercile = data.get("sw_score_terciles", {})
     sw_tiers = data.get("sw_tier_buckets", {})
+    sw_sbl = data.get("sw_sbl_buckets", {})
 
     parts = [
         f'<h2 style="margin-bottom:6px;">📈 訊號成效（後照鏡）</h2>',
@@ -370,6 +427,12 @@ def render_tab(data: dict | None) -> str:
     parts.append('<p class="meta">回答：2026-07 子群回測分層在 forward-test 中是否成立？'
                   '「未標記」桶為 2026-07-08 前的舊訊號無標記，非分層失效。</p>')
     parts.append(_render_sw_tier_table(sw_tiers))
+
+    # SW 借券急跌變化標記 (借↓/借↑)
+    parts.append('<h3 style="margin-top:20px;">🌊 強勢第二波 借券急跌標記 (借↓/借↑)</h3>')
+    parts.append('<p class="meta">回答：急跌期借券賣餘變化 (洗盤/真跌判別) 在 forward-test 中是否成立？'
+                  '「未標記」桶為 2026-07-09 前的舊訊號無此欄，非標記失效。</p>')
+    parts.append(_render_sw_sbl_table(sw_sbl))
 
     # Recent 20 signals
     parts.append('<h3 style="margin-top:20px;">最近 20 筆訊號明細</h3>')
