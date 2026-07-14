@@ -335,14 +335,21 @@ def main():
             run_money_flow(target_yyyymmdd, finmind_token, verbose=True)
         except Exception as e:
             print(f"[WARN] money_flow: {e}", file=sys.stderr)
-        mf_days = load_flow_days(target_yyyymmdd, days=60)
-        if mf_days:
-            mf_rows = build_view_rows(mf_days, concepts["themes"])
-            money_flow_html = render_money_flow_tab(mf_rows, mf_days[-1]["date"])
-            money_flow_map = {r["theme_key"]: r for r in mf_rows}
-            # 只有「今天」的資料真的存在才推 TG（勿推 stale 或空資料）
-            if mf_days[-1]["date"] == target_yyyymmdd:
-                mf_summary = build_money_flow_summary(mf_rows, target_date)
+        # fail-open：衍生計算/渲染任何失敗只 log，不能拖垮整個 run_daily
+        try:
+            mf_days = load_flow_days(target_yyyymmdd, days=60)
+            if mf_days:
+                mf_rows = build_view_rows(mf_days, concepts["themes"])
+                money_flow_html = render_money_flow_tab(mf_rows, mf_days[-1]["date"])
+                money_flow_map = {r["theme_key"]: r for r in mf_rows}
+                # 只有「今天」的資料真的存在才推 TG（勿推 stale 或空資料）
+                if mf_days[-1]["date"] == target_yyyymmdd:
+                    mf_summary = build_money_flow_summary(mf_rows, target_date)
+        except Exception as e:
+            print(f"[WARN] money_flow 渲染: {e}", file=sys.stderr)
+            money_flow_html = ""
+            money_flow_map = {}
+            mf_summary = ""
 
     # Strategy history tabs
     print("載入策略歷史榜...", file=sys.stderr)
