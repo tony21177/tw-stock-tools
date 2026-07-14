@@ -8,7 +8,7 @@ sys.path.insert(0, _REPO)
 sys.path.insert(0, os.path.join(_REPO, "concept_momentum"))
 
 from concept_money_flow_renderer import (render_tab, render_flow_cells,
-                                         build_tg_summary, _sparkline_svg)
+                                         build_tg_summary, _sparkline_svg, _tg_row)
 
 
 def _row(name, net, tag="🔥", streak=3, share_vs=0.5, foreign=None, trust=None):
@@ -83,6 +83,15 @@ class TestTgSummary(unittest.TestCase):
     def test_empty_sides(self):
         msg = build_tg_summary([_row("A", 2.0)], "2026-07-14")
         self.assertIn("（無）", msg)  # 流出側
+
+    def test_none_fields_do_not_crash(self):
+        r = _row("缺值", 2.0)
+        r["foreign_net_ntd"] = None
+        r["trust_net_ntd"] = None
+        r["share_vs_20d"] = None
+        msg = build_tg_summary([r], "2026-07-14")
+        self.assertIn("缺值", msg)
+        self.assertIn("外+0.0", msg)
 
 
 if __name__ == "__main__":

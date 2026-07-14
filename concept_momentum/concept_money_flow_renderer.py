@@ -135,8 +135,9 @@ def _tg_row(r: dict) -> str:
     s = f" 連{abs(streak)}日" if abs(streak) >= 2 else ""
     sv = r.get("share_vs_20d")
     sv_txt = f" 占比{sv:+.2f}pp" if sv is not None else ""
-    return (f"{r.get('tag', '—')} {r['name_zh']} {r['inst_net_ntd']:+.1f}億"
-            f"(外{r['foreign_net_ntd']:+.1f} 投{r['trust_net_ntd']:+.1f}){s}{sv_txt}")
+    return (f"{r.get('tag', '—')} {r['name_zh']} {(r.get('inst_net_ntd') or 0):+.1f}億"
+            f"(外{(r.get('foreign_net_ntd') or 0):+.1f} "
+            f"投{(r.get('trust_net_ntd') or 0):+.1f}){s}{sv_txt}")
 
 
 def build_tg_summary(view_rows: list[dict], date_str: str) -> str:
@@ -165,7 +166,7 @@ def build_tg_summary(view_rows: list[dict], date_str: str) -> str:
         for r in warns:
             sv = r.get("share_vs_20d")
             sv_txt = f"占比{sv:+.2f}pp " if sv is not None else ""
-            lines.append(f"  {r['name_zh']} {sv_txt}法人{r['inst_net_ntd']:+.1f}億")
+            lines.append(f"  {r['name_zh']} {sv_txt}法人{(r.get('inst_net_ntd') or 0):+.1f}億")
     streaky = [r for r in view_rows if abs(r.get("streak", 0)) >= 5]
     if streaky:
         lines.append("\n📌 連續 ≥5 日:")
