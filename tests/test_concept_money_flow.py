@@ -185,6 +185,20 @@ class TestDayFileIO(unittest.TestCase):
         out = self.cmf.run_day("20260701", token="", verbose=False)
         self.assertEqual(out["date"], "20260701")
 
+    def test_run_day_corrupt_file_refetches(self):
+        # 壞檔不 crash：skip 分支 fall-through 到重抓路徑（fetch 打樁驗證有被呼叫）
+        with open(self.cmf.day_path("20260701"), "w") as f:
+            f.write("{truncated")
+        calls = []
+        orig = self.cmf._fetch_finmind
+        self.cmf._fetch_finmind = lambda ds, di, tok: calls.append(ds) or []
+        try:
+            out = self.cmf.run_day("20260701", token="x", verbose=False)
+        finally:
+            self.cmf._fetch_finmind = orig
+        self.assertIsNone(out)          # inst 空 → fail-open 不寫檔
+        self.assertTrue(calls)          # 有走到重抓路徑
+
 
 if __name__ == "__main__":
     unittest.main()

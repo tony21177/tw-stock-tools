@@ -230,10 +230,14 @@ def run_day(date_yyyymmdd: str, token: str, themes: dict | None = None,
     os.makedirs(FLOW_DIR, exist_ok=True)
     path = day_path(date_yyyymmdd)
     if os.path.exists(path) and not force:
-        if verbose:
-            print(f"[money_flow] {date_yyyymmdd} 已存在，跳過", flush=True)
-        with open(path) as f:
-            return json.load(f)
+        try:
+            with open(path) as f:
+                cached = json.load(f)
+            if verbose:
+                print(f"[money_flow] {date_yyyymmdd} 已存在，跳過", flush=True)
+            return cached
+        except (OSError, json.JSONDecodeError):
+            pass  # 壞檔 → 重抓覆寫
     if themes is None:
         themes = load_themes()
     date_iso = _to_iso(date_yyyymmdd)
@@ -252,8 +256,10 @@ def run_day(date_yyyymmdd: str, token: str, themes: dict | None = None,
         if verbose:
             print(f"[money_flow] {date_yyyymmdd} 無成交金額資料 — 不寫檔", flush=True)
         return None
-    with open(path, "w") as f:
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(day, f, ensure_ascii=False)
+    os.replace(tmp, path)
     if verbose:
         print(f"[money_flow] wrote {path}", flush=True)
     return day
@@ -286,8 +292,14 @@ def backfill(token: str, end_yyyymmdd: str, days: int = 60,
     themes = load_themes()
     written = 0
     for d in dates:
-        if os.path.exists(day_path(d)):
-            continue
+        path = day_path(d)
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    json.load(f)
+                continue
+            except (OSError, json.JSONDecodeError):
+                pass  # 壞檔 → 重抓
         try:
             day = run_day(d, token, themes=themes, verbose=verbose)
         except Exception as e:
