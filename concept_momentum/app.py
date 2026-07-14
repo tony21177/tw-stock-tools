@@ -4443,6 +4443,31 @@ _BACKTEST_GLOSSARY.update({
 })
 
 
+_BACKTEST_GLOSSARY.update({
+    "法人淨流 (億)": (
+        "外資（含外資自營）+ 投信 + 自營商 當日淨買賣「股數」× 當日收盤價，"
+        "加總成金額（億元）。正 = 淨買（資金流入）、負 = 淨賣（流出）。"
+        "注意這是<b>近似值</b>：法人實際成交價分布在盤中各時點，這裡統一用收盤價換算。"
+        "資料源 FinMind TaiwanStockInstitutionalInvestorsBuySell（原始單位是股數）。"),
+    "成交額占比": (
+        "族群成交金額 ÷ 全市場（上市櫃 4 位數普通股）成交金額 × 100%。"
+        "代表市場資金的「注意力」有多少放在這個族群，不分買賣方向。"
+        "一檔股票可屬多個主題 → 各族群占比加總會超過 100%；"
+        "單一權值股爆量（如台積電）會讓它所屬的每個主題占比同時失真。"),
+    "資金流標記 (🔥/⚠/🧲/❄)": (
+        "占比變化與法人淨流的交叉判讀：🔥 占比升+法人買 = 真流入（熱度與真金同向）；"
+        "⚠ 占比升+法人賣 = 出貨疑慮（人氣升但法人倒貨，散戶接刀風險）；"
+        "🧲 占比降+法人買 = 低調吸收（沒人注意但法人默默買）；"
+        "❄ 占比降+法人賣 = 退潮（熱度與資金雙離開）。"
+        "門檻：占比變化 ±0.15pp 且 法人淨流 ±0.5 億，未達門檻標 —（不強行分類）。"
+        "<b>門檻為先驗設定、未經回測驗證</b>，累積數據後才能校準。"),
+    "占比 vs 20日均 (pp)": (
+        "今日成交額占比 − 過去 20 個交易日的平均占比，單位百分點 (pp)。"
+        "例：某族群平常占全市場成交額 3.0%、今日 3.8% → +0.8pp，熱度明顯升。"
+        "歷史不足 20 日時用現有天數平均並標 *（樣本不足，數字較不穩）。"),
+})
+
+
 def _render_margin_lookup_page(code: str = "", method: str = "fifo",
                                report: str = "", error: str = "") -> str:
     nav = ('<nav><a href="/">← 大盤 dashboard</a>'
@@ -5006,6 +5031,57 @@ a:hover { text-decoration:underline; }
 {body}
 </body></html>"""
     return html
+
+
+@app.route("/money-flow")
+def money_flow_page():
+    import concept_money_flow as cmf
+    import concept_money_flow_renderer as cmfr
+    from datetime import datetime as _dt
+    day_files = cmf.load_flow_days(_dt.now().strftime("%Y%m%d"), days=60)
+    rows = []
+    asof = "—"
+    if day_files:
+        try:
+            rows = cmf.build_view_rows(day_files, cmf.load_themes())
+            asof = day_files[-1]["date"]
+        except Exception:
+            rows = []
+    body = cmfr.render_tab(rows, asof)
+    glossary = _glossary_section(["法人淨流 (億)", "成交額占比",
+                                  "資金流標記 (🔥/⚠/🧲/❄)", "占比 vs 20日均 (pp)"])
+    css = """
+<style>
+body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+       background:#f5f5f7; margin:0; padding:16px; }
+h2 { font-size:1.4em; margin:0 0 4px; }
+p.meta { font-size:0.85em; color:#666; margin:0 0 12px; }
+.table-scroll { overflow-x:auto; }
+table.market-breadth { width:100%; border-collapse:collapse; background:#fff;
+  border-radius:8px; overflow:hidden; margin-bottom:16px;
+  box-shadow:0 2px 8px rgba(0,0,0,0.05); font-size:0.88em; }
+table.market-breadth th,
+table.market-breadth td { padding:6px 10px; border-bottom:1px solid #eee;
+  text-align:right; }
+table.market-breadth th { background:#fafafa; font-weight:600; text-align:center; }
+table.market-breadth td:first-child,
+table.market-breadth th:first-child { text-align:left; }
+.pos { color:#0a7e0a; }
+.neg { color:#c30; }
+a { color:#007aff; text-decoration:none; }
+a:hover { text-decoration:underline; }
+</style>"""
+    return f"""<!DOCTYPE html><html lang="zh-TW"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>💰 族群資金流</title>
+{css}
+</head><body>
+<p><a href="/">&larr; 返回主控板</a></p>
+<h2>💰 族群資金流（最近 60 個交易日）</h2>
+{body}
+{glossary}
+</body></html>"""
 
 
 if __name__ == "__main__":
