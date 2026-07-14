@@ -35,6 +35,10 @@ from premarket_signals import load_turnaround_relay_rows, load_second_wave_rows
 from premarket_signals_renderer import render_table as render_premarket_table
 from lending_history import load_lending_radar_rows, load_short_retreat_rows
 from lending_history_renderer import render_table as render_lending_table
+from concept_money_flow import (run_day as run_money_flow,
+                                load_flow_days, build_view_rows)
+from concept_money_flow_renderer import (render_tab as render_money_flow_tab,
+                                         build_tg_summary as build_money_flow_summary)
 
 DEFAULT_CHAT_ID = "-5229750819"
 TG_API_URL = "https://api.telegram.org/bot{token}"
@@ -321,6 +325,25 @@ def main():
                     rows.append(json.load(f))
             breadth_html = render_table(rows)
 
+    # 族群資金流 — 抓當日 + 渲染（fail-open：失敗只 log，dashboard 顯示到最後有資料日）
+    money_flow_html = ""
+    money_flow_map = {}
+    mf_summary = ""
+    if finmind_token:
+        print("計算族群資金流...", file=sys.stderr)
+        try:
+            run_money_flow(target_yyyymmdd, finmind_token, verbose=True)
+        except Exception as e:
+            print(f"[WARN] money_flow: {e}", file=sys.stderr)
+        mf_days = load_flow_days(target_yyyymmdd, days=60)
+        if mf_days:
+            mf_rows = build_view_rows(mf_days, concepts["themes"])
+            money_flow_html = render_money_flow_tab(mf_rows, mf_days[-1]["date"])
+            money_flow_map = {r["theme_key"]: r for r in mf_rows}
+            # 只有「今天」的資料真的存在才推 TG（勿推 stale 或空資料）
+            if mf_days[-1]["date"] == target_yyyymmdd:
+                mf_summary = build_money_flow_summary(mf_rows, target_date)
+
     # Strategy history tabs
     print("載入策略歷史榜...", file=sys.stderr)
     broker_rows = load_broker_radar_rows(BROKER_HISTORY_DIR, target_yyyymmdd, lookback_days=10)
@@ -340,6 +363,8 @@ def main():
         broker_radar_html=broker_html,
         premarket_signals_html=premarket_html,
         lending_history_html=lending_html,
+        money_flow_html=money_flow_html,
+        money_flow_map=money_flow_map,
     )
     print(f"Snapshot PNG: {png_path}")
     print(f"Trend PNG: {trend_png}")
@@ -413,7 +438,13 @@ def main():
         print("推送業務轉型摘要...", file=sys.stderr)
         ok5 = send_telegram_text(drift_summary, bot_token, args.chat_id)
 
-        if ok1 and ok_trend and ok2 and ok3 and ok4 and ok5:
+        ok_mf = True
+        if mf_summary:
+            time.sleep(1)
+            print("推送族群資金流摘要...", file=sys.stderr)
+            ok_mf = send_telegram_text(mf_summary, bot_token, args.chat_id)
+
+        if ok1 and ok_trend and ok2 and ok3 and ok4 and ok5 and ok_mf:
             print("推送成功")
         else:
             print("部分推送失敗", file=sys.stderr)

@@ -17,6 +17,8 @@ from matplotlib import font_manager
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
+from concept_money_flow_renderer import render_flow_cells
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(HERE, "static")
 TEMPLATES_DIR = os.path.join(HERE, "templates")
@@ -341,7 +343,9 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
                   breadth_table_html: str = "",
                   broker_radar_html: str = "",
                   premarket_signals_html: str = "",
-                  lending_history_html: str = "") -> str:
+                  lending_history_html: str = "",
+                  money_flow_html: str = "",
+                  money_flow_map: dict | None = None) -> str:
     """Interactive HTML dashboard with snapshot + trend + leaders."""
     os.makedirs(TEMPLATES_DIR, exist_ok=True)
 
@@ -508,6 +512,7 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
             <td>{r['volume_ratio']:.2f}</td>
             <td class="{'pos' if r['rs_20d'] > 0 else 'neg'}">{r['rs_20d']:+.2f}</td>
             <td class="{score_class}">{r['sustainability_score']:.1f}</td>
+            {render_flow_cells(r.get('theme_key', ''), money_flow_map)}
         </tr>"""
 
     html = f"""<!DOCTYPE html>
@@ -623,6 +628,7 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
       <div class="tab" onclick="showTab('premarket')">🌅 盤前訊號 (07:30/07:40)</div>
       <div class="tab" onclick="showTab('lending')">🌙 借券動向 (16:00/21:30)</div>
       <div class="tab" onclick="showTab('broker')">🎯 主力雷達 (18:00)</div>
+      <div class="tab" onclick="showTab('moneyflow')">💰 族群資金流 (17:00)</div>
       <a class="tab" href="/signal-outcomes" style="text-decoration:none;color:inherit;">📈 訊號成效 (週一)</a>
     </div>
   </div>
@@ -673,6 +679,12 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
   <p class="meta">盤後 16:00 / 21:30 cron 跑出的議借爆量 + 借券賣餘大減</p>
   {lending_history_html}
 </div>
+<div id="tab-moneyflow" class="tab-content chart-wrap">
+  <h2>💰 族群資金流（最近 60 個交易日）</h2>
+  <p class="meta">法人淨流 = 淨股數 × 收盤價（近似）| 每日 17:00 更新 |
+     <a href="/money-flow">→ 獨立頁（即時、含完整術語表）</a></p>
+  {money_flow_html}
+</div>
 <div id="tab-snap" class="tab-content chart-wrap">{snapshot_html}</div>
 <div id="tab-trend" class="tab-content chart-wrap">{trend_html}{index_html}</div>
 <div id="tab-leaders" class="tab-content chart-wrap">
@@ -694,6 +706,8 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
       <th title="族群近 5d 均量 / 近 20d 均量；>1.5 = 資金進場明顯">量比</th>
       <th title="族群 vs 大盤 (^TWII) 過去 20 日的相對強度差 (族群報酬 − 大盤報酬)">RS20d</th>
       <th title="永續性評分 (0-100)：40% 廣度 + 20% 量能 + 20% RS + 20% 持續天數；≥70 強勢，<30 弱勢">評分</th>
+      <th title="族群當日三大法人淨買賣金額（億；淨股數×收盤價近似）— 詳見 💰 族群資金流分頁">法人淨流(億)</th>
+      <th title="資金流標記：🔥 真流入（占比升+法人買）/ ⚠ 出貨疑慮（占比升+法人賣）/ 🧲 低調吸收（占比降+法人買）/ ❄ 退潮（占比降+法人賣）/ — 未達門檻。門檻 占比±0.15pp+法人±0.5億（先驗設定，未經回測）">資金流</th>
     </tr></thead>
     <tbody>{table_rows}</tbody>
   </table>
