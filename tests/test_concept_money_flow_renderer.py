@@ -1,0 +1,89 @@
+"""族群資金流 renderer 單元測試。"""
+import os
+import sys
+import unittest
+
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _REPO)
+sys.path.insert(0, os.path.join(_REPO, "concept_momentum"))
+
+from concept_money_flow_renderer import (render_tab, render_flow_cells,
+                                         build_tg_summary, _sparkline_svg)
+
+
+def _row(name, net, tag="🔥", streak=3, share_vs=0.5, foreign=None, trust=None):
+    return {"theme_key": name, "name_zh": name, "tag": tag,
+            "inst_net_ntd": net, "foreign_net_ntd": foreign if foreign is not None else net,
+            "trust_net_ntd": trust if trust is not None else 0.0,
+            "net_5d": net * 3, "streak": streak, "mkt_share_pct": 2.5,
+            "share_vs_20d": share_vs, "share_samples": 20,
+            "spark": [1.0, 2.0, -1.0], "missing": []}
+
+
+class TestRenderTab(unittest.TestCase):
+    def test_contains_key_columns_and_caveats(self):
+        html = render_tab([_row("主題A", 18.3)], "20260714")
+        for token in ["主題A", "法人淨流", "占比", "🔥", "+18.3",
+                      "近似", "未經回測", "使用時機", "20260714", "<svg"]:
+            self.assertIn(token, html)
+
+    def test_empty_state(self):
+        html = render_tab([], "—")
+        self.assertIn("backfill", html)
+
+    def test_insufficient_samples_star(self):
+        # 只檢查 <tbody> 內文 — footer 圖例本來就含「樣本不足」字樣，不能全文比對
+        full = _row("主題A", 5.0)
+        tbody = render_tab([full], "20260714").split("<tbody>")[1].split("</tbody>")[0]
+        self.assertNotIn("*", tbody)
+        part = _row("主題B", 5.0)
+        part["share_samples"] = 7
+        tbody2 = render_tab([part], "20260714").split("<tbody>")[1].split("</tbody>")[0]
+        self.assertIn("*", tbody2)
+
+
+class TestSparkline(unittest.TestCase):
+    def test_svg(self):
+        svg = _sparkline_svg([1.0, -2.0, 3.0])
+        self.assertIn("<svg", svg)
+        self.assertIn("polyline", svg)
+        self.assertIn("<line", svg)  # 有跨 0 → 畫零線
+
+    def test_degenerate(self):
+        self.assertEqual(_sparkline_svg([]), "—")
+        self.assertEqual(_sparkline_svg([1.0]), "—")
+
+
+class TestFlowCells(unittest.TestCase):
+    def test_cells(self):
+        m = {"T_A": _row("T_A", 3.2)}
+        cells = render_flow_cells("T_A", m)
+        self.assertIn("+3.2", cells)
+        self.assertIn("🔥", cells)
+
+    def test_missing_theme(self):
+        self.assertEqual(render_flow_cells("NOPE", {}), "<td>—</td><td>—</td>")
+        self.assertEqual(render_flow_cells("NOPE", None), "<td>—</td><td>—</td>")
+
+
+class TestTgSummary(unittest.TestCase):
+    def test_top5_and_warn(self):
+        rows = ([_row(f"流入{i}", 10.0 - i) for i in range(6)]
+                + [_row("出貨王", -3.1, tag="⚠", share_vs=0.6)]
+                + [_row(f"流出{i}", -5.0 - i, tag="❄", streak=-6) for i in range(6)])
+        msg = build_tg_summary(rows, "2026-07-14")
+        self.assertIn("💰 族群資金流 2026-07-14", msg)
+        self.assertIn("流入 Top5", msg)
+        self.assertIn("流出 Top5", msg)
+        self.assertNotIn("流入5", msg)   # 第 6 名不出現
+        self.assertIn("⚠ 出貨疑慮", msg)
+        self.assertIn("出貨王", msg)
+        self.assertIn("連6日賣超", msg)   # streak<=-5 的異常提示
+
+    def test_empty_sides(self):
+        msg = build_tg_summary([_row("A", 2.0)], "2026-07-14")
+        self.assertIn("（無）", msg)  # 流出側
+
+
+if __name__ == "__main__":
+    unittest.main()
