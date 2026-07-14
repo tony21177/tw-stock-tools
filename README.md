@@ -43,6 +43,8 @@
 
 23. **期現貨基差 / 外資期貨留倉監控** — 依「外資留倉沒有多空意義」一文：外資期貨留倉淨額 98% 是投行期現貨套利對沖腳、無方向意義，本工具顯示但標明 caveat；真正監控 (a) 基差 TX日盤 vs 加權現貨 vs 0.38% 套利成本帶 (b) 三訊號同步「跌+逆價差+台幣貶=外資大賣超」(c) 基差-留倉套利一致性 (正價差+大空單=純套利印證；富台期/摩台期已無流動性，文章的大台富台交叉檢查不適用) (d) 月底轉倉 (f) **外資/法人 近月 vs 遠月台指部位** — FinMind 法人部位是全契約加總無法分月，改抓 TAIFEX 大額交易人未沖銷部位表（`fetch_tx_large_trader()`，解析臺股期貨「特定法人前十大」近月月契約/週契約/所有契約，遠月=全−近−週；特定法人＝外資+投信+自營大戶 proxy，非純外資）+ `TaiwanFuturesDaily` 逐月 OI（`fetch_tx_oi_by_month()`，市場層級看轉倉）；網頁 🧭 section 顯示特定法人近月/遠月/全契約淨部位 + 市場逐月 OI (e) 富台(SGX TWN)近月未平倉口數 — **TradingView scanner 端點自動抓** `SGX:TWN1!`（`fetch_twn_oi_live()`，純 HTTP JSON、無 CAPTCHA/Cloudflare；SGX 官網本身 Akamai 擋自動化故改走 TradingView），每次更新自動記錄建立歷史，網頁顯示最新值+Δ。`--remind-twn-oi` 改為自動抓取（抓到就記錄，僅在抓取失敗時推 Telegram 提醒手動補 `--log-twn-oi`）。網頁基差走勢圖+TX/XIF留倉圖+訊號狀態表+富台 OI，17:30 cron 告警 (只對有意義訊號，不對留倉淨額)→ `tw_futures_basis.py` · `/futures-basis` · cron `--alert --telegram` (17:30) + `--remind-twn-oi --telegram` (17:35, 自動抓 OI) · 手動補登 `--log-twn-oi <口數> [--date YYYYMMDD]`
 
+24. 💰 **族群資金流** — 族群法人淨流+成交額占比輪動（/money-flow）→ `concept_momentum/`
+
 所有工具放在 `~/project/tw_stock_tools/`，cron 設定每天排程推送到 Telegram 群組。
 概念動能子模組詳見 `concept_momentum/README.md`。
 
