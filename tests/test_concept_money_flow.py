@@ -149,5 +149,42 @@ class TestBuildViewRows(unittest.TestCase):
         self.assertEqual([r["theme_key"] for r in rows], ["T_B", "T_A"])
 
 
+import tempfile
+
+
+class TestDayFileIO(unittest.TestCase):
+    def setUp(self):
+        import concept_money_flow as cmf
+        self.cmf = cmf
+        self._orig_dir = cmf.FLOW_DIR
+        self.tmp = tempfile.TemporaryDirectory()
+        cmf.FLOW_DIR = self.tmp.name
+
+    def tearDown(self):
+        self.cmf.FLOW_DIR = self._orig_dir
+        self.tmp.cleanup()
+
+    def _write(self, yyyymmdd):
+        import json as _json
+        with open(self.cmf.day_path(yyyymmdd), "w") as f:
+            _json.dump({"date": yyyymmdd, "market_turnover_ntd": 1.0, "themes": {}}, f)
+
+    def test_load_flow_days_sorted_and_capped(self):
+        for d in ["20260703", "20260701", "20260702", "20260706"]:
+            self._write(d)
+        days = self.cmf.load_flow_days("20260703", days=2)
+        # end_date 之後的檔被忽略；由舊到新；只取最後 2 個
+        self.assertEqual([x["date"] for x in days], ["20260702", "20260703"])
+
+    def test_load_flow_days_empty_dir(self):
+        self.assertEqual(self.cmf.load_flow_days("20260703"), [])
+
+    def test_run_day_skips_existing(self):
+        self._write("20260701")
+        # token 給空字串也不會打 API — 已存在直接回快取
+        out = self.cmf.run_day("20260701", token="", verbose=False)
+        self.assertEqual(out["date"], "20260701")
+
+
 if __name__ == "__main__":
     unittest.main()

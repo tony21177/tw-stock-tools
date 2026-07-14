@@ -188,3 +188,137 @@ def build_view_rows(day_files: list[dict], themes: dict) -> list[dict]:
         rows.append(row)
     rows.sort(key=lambda r: -(r["inst_net_ntd"] or 0))
     return rows
+
+
+# ---------------------------------------------------------------- I/O 層
+
+
+def load_themes() -> dict:
+    with open(os.path.join(HERE, "cache", "concepts.json")) as f:
+        return json.load(f)["themes"]
+
+
+def day_path(yyyymmdd: str) -> str:
+    return os.path.join(FLOW_DIR, f"{yyyymmdd}.json")
+
+
+def _fetch_finmind(dataset: str, date_iso: str, token: str) -> list[dict]:
+    """單日全市場查詢（sponsor tier）。API/quota 錯誤 raise RuntimeError。"""
+    params = {"dataset": dataset, "start_date": date_iso,
+              "end_date": date_iso, "token": token}
+    url = f"{FINMIND_BASE}?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            payload = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode()
+        raise RuntimeError(f"FinMind HTTP {e.code} {dataset} {date_iso}: {body[:200]}")
+    if payload.get("status") != 200:
+        raise RuntimeError(f"FinMind error {dataset} {date_iso}: {payload.get('msg', '')}")
+    return payload.get("data", [])
+
+
+def run_day(date_yyyymmdd: str, token: str, themes: dict | None = None,
+            verbose: bool = True, force: bool = False) -> dict | None:
+    """抓當日全市場兩個 dataset → aggregate → 寫日檔。
+
+    已存在（且非 force）→ 跳過並回快取內容。
+    法人未發布/非交易日（inst 空）或成交額為 0 → 不寫檔、回 None（fail-open，
+    絕不寫空檔）。API 錯誤（402 quota / 斷線）→ raise，由呼叫端決定。
+    """
+    os.makedirs(FLOW_DIR, exist_ok=True)
+    path = day_path(date_yyyymmdd)
+    if os.path.exists(path) and not force:
+        if verbose:
+            print(f"[money_flow] {date_yyyymmdd} 已存在，跳過", flush=True)
+        with open(path) as f:
+            return json.load(f)
+    if themes is None:
+        themes = load_themes()
+    date_iso = _to_iso(date_yyyymmdd)
+    inst_rows = [r for r in
+                 _fetch_finmind("TaiwanStockInstitutionalInvestorsBuySell",
+                                date_iso, token)
+                 if r.get("date") == date_iso]
+    if not inst_rows:
+        if verbose:
+            print(f"[money_flow] {date_yyyymmdd} 法人資料尚未發布或非交易日 — 不寫檔",
+                  flush=True)
+        return None
+    price_rows = _fetch_finmind("TaiwanStockPrice", date_iso, token)
+    day = aggregate_day(date_yyyymmdd, inst_rows, price_rows, themes)
+    if day["market_turnover_ntd"] <= 0:
+        if verbose:
+            print(f"[money_flow] {date_yyyymmdd} 無成交金額資料 — 不寫檔", flush=True)
+        return None
+    with open(path, "w") as f:
+        json.dump(day, f, ensure_ascii=False)
+    if verbose:
+        print(f"[money_flow] wrote {path}", flush=True)
+    return day
+
+
+def load_flow_days(end_yyyymmdd: str, days: int = 60) -> list[dict]:
+    """讀 <= end_date 的最近 `days` 個日檔，由舊到新。壞檔跳過。"""
+    if not os.path.isdir(FLOW_DIR):
+        return []
+    files = sorted(f for f in os.listdir(FLOW_DIR)
+                   if f.endswith(".json") and f[:8] <= end_yyyymmdd)[-days:]
+    out = []
+    for fname in files:
+        try:
+            with open(os.path.join(FLOW_DIR, fname)) as f:
+                out.append(json.load(f))
+        except (OSError, json.JSONDecodeError):
+            continue
+    return out
+
+
+def backfill(token: str, end_yyyymmdd: str, days: int = 60,
+             delay_seconds: float = 1.0, verbose: bool = True) -> int:
+    """回補最近 `days` 個交易日（交易日來源 = taiex.json，比照 market_breadth）。
+
+    已存在跳過（resumable，中斷重跑安全）。單日失敗記 log 續跑。
+    """
+    from market_breadth import _twii_trading_dates
+    dates = _twii_trading_dates(end_yyyymmdd, days)
+    themes = load_themes()
+    written = 0
+    for d in dates:
+        if os.path.exists(day_path(d)):
+            continue
+        try:
+            day = run_day(d, token, themes=themes, verbose=verbose)
+        except Exception as e:
+            print(f"[money_flow] {d} 失敗: {e}", file=sys.stderr, flush=True)
+            time.sleep(delay_seconds)
+            continue
+        if day:
+            written += 1
+        time.sleep(delay_seconds)
+    if verbose:
+        print(f"[money_flow] 回補完成，新寫 {written} 日", flush=True)
+    return written
+
+
+def main():
+    from datetime import datetime
+    p = argparse.ArgumentParser(description="族群資金流 日檔快取（抓取+回補）")
+    p.add_argument("--date", help="單日 YYYYMMDD（預設今天）")
+    p.add_argument("--backfill", type=int, metavar="N", help="回補最近 N 個交易日")
+    p.add_argument("--force", action="store_true", help="已存在也重抓")
+    args = p.parse_args()
+    token = os.environ.get("FINMIND_TOKEN", "")
+    if not token:
+        print("需要 FINMIND_TOKEN 環境變數", file=sys.stderr)
+        sys.exit(1)
+    if args.backfill:
+        backfill(token, datetime.now().strftime("%Y%m%d"), days=args.backfill)
+    else:
+        d = args.date or datetime.now().strftime("%Y%m%d")
+        run_day(d, token, force=args.force)
+
+
+if __name__ == "__main__":
+    main()
