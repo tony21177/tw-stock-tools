@@ -189,6 +189,37 @@ class TestForeignMarketSplitAndTop(unittest.TestCase):
         self.assertAlmostEqual(fv["recent"][1]["total"], 112.2 - 0.5 + 0.3)  # 含無分類 7777 的 0.3
         self.assertEqual(fv["top_buy"][0]["code"], "1111")
 
+    def test_parse_tpex_summary(self):
+        from concept_money_flow import _parse_tpex_summary
+        payload = {"tables": [{"data": [
+            ["外資及陸資合計", "65,471,530,902", "72,016,337,696", "-6,544,806,794"],
+            ["　外資自營商", "0", "0", "0"],
+        ]}]}
+        self.assertAlmostEqual(_parse_tpex_summary(payload), -65.45)
+        self.assertIsNone(_parse_tpex_summary({"tables": [{"data": []}]}))
+        self.assertIsNone(_parse_tpex_summary({}))
+
+    def test_build_foreign_view_prefers_official(self):
+        from concept_money_flow import build_foreign_view
+        day = aggregate_day("20260713", self.inst_rows, self.price_rows, THEMES,
+                            market_map=self.market_map, names=self.names)
+        day["foreign_mkt_official"] = {"twse_ntd": -14.15, "tpex_ntd": -65.45}
+        fv = build_foreign_view([day])
+        r = fv["recent"][-1]
+        self.assertAlmostEqual(r["twse"], -14.15)   # 官方優先於近似 112.2
+        self.assertAlmostEqual(r["tpex"], -65.45)
+        self.assertAlmostEqual(r["total"], -79.6)   # 官方兩者齊 → 合計 = 相加
+        self.assertTrue(r["official"])
+
+    def test_build_foreign_view_fallback_approx(self):
+        from concept_money_flow import build_foreign_view
+        day = aggregate_day("20260713", self.inst_rows, self.price_rows, THEMES,
+                            market_map=self.market_map, names=self.names)
+        fv = build_foreign_view([day])   # 無官方欄位 → 近似回填
+        r = fv["recent"][-1]
+        self.assertAlmostEqual(r["twse"], 112.2)
+        self.assertFalse(r["official"])
+
     def test_build_foreign_view_empty(self):
         from concept_money_flow import build_foreign_view
         self.assertIsNone(build_foreign_view([]))

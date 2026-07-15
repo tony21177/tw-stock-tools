@@ -179,9 +179,44 @@ def aggregate_day(date_yyyymmdd: str, inst_rows: list[dict],
     return out
 
 
+def _parse_tpex_summary(payload: dict) -> float | None:
+    """TPEx 三大法人彙總 JSON → 外資及陸資合計買賣超（億）。找不到回 None。"""
+    try:
+        rows = payload["tables"][0]["data"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    for row in rows:
+        if not row or "外資及陸資合計" not in str(row[0]):
+            continue
+        try:
+            return round(float(str(row[3]).replace(",", "")) / YI, 2)
+        except (IndexError, ValueError):
+            return None
+    return None
+
+
+def fetch_tpex_inst_official(date_iso: str) -> float | None:
+    """櫃買中心官方：上櫃外資及陸資買賣超金額（億，實際成交金額口徑）。
+
+    非交易日/斷線/格式變動 → None（呼叫端 fail-open 回近似值）。
+    """
+    url = ("https://www.tpex.org.tw/www/zh-tw/insti/summary?"
+           + urllib.parse.urlencode({"date": date_iso.replace("-", "/"),
+                                     "type": "Daily", "response": "json"}))
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        return None
+    return _parse_tpex_summary(payload)
+
+
 def build_foreign_view(day_files: list[dict], days: int = 10) -> dict | None:
     """外資買賣超區塊的 view：近 `days` 日上市/上櫃拆分 + 最新一日 Top15。
 
+    上市/上櫃優先用官方公布值（foreign_mkt_official，實際成交金額口徑），
+    缺官方時回填近似值（淨股數×收盤）並以 official=False 標示。
     舊日檔（無 foreign_mkt 欄位）在 recent 列以 None 容忍；
     沒有任何日檔帶 top_foreign → 回 None（renderer 不渲染該區塊）。
     """
@@ -194,11 +229,20 @@ def build_foreign_view(day_files: list[dict], days: int = 10) -> dict | None:
     recent = []
     for df in day_files[-days:]:
         fm = df.get("foreign_mkt") or {}
+        fmo = df.get("foreign_mkt_official") or {}
+        official = "twse_ntd" in fmo and "tpex_ntd" in fmo
+        twse = fmo.get("twse_ntd", fm.get("twse_ntd"))
+        tpex = fmo.get("tpex_ntd", fm.get("tpex_ntd"))
+        if official:
+            total = round(fmo["twse_ntd"] + fmo["tpex_ntd"], 2)
+        else:
+            total = fm.get("total_ntd")
         recent.append({
             "date": df.get("date"),
-            "twse": fm.get("twse_ntd"),
-            "tpex": fm.get("tpex_ntd"),
-            "total": fm.get("total_ntd"),
+            "twse": twse,
+            "tpex": tpex,
+            "total": total,
+            "official": official,
         })
     return {
         "asof": latest_with_top["date"],
@@ -365,6 +409,23 @@ def run_day(date_yyyymmdd: str, token: str, themes: dict | None = None,
         if verbose:
             print(f"[money_flow] {date_yyyymmdd} 無成交金額資料 — 不寫檔", flush=True)
         return None
+    # 官方口徑市場層外資（上市: FinMind 官方彙總；上櫃: 櫃買中心 open data）— fail-open：
+    # 任一缺就不寫該 key，顯示端回填近似值並標示
+    official = {}
+    try:
+        from market_breadth import fetch_institutional_one_day
+        official["twse_ntd"] = fetch_institutional_one_day(date_iso, token)["foreign_yi"]
+    except Exception as e:
+        if verbose:
+            print(f"[money_flow] {date_yyyymmdd} 上市官方外資抓取失敗: {e}", flush=True)
+    tpex_official = fetch_tpex_inst_official(date_iso)
+    if tpex_official is not None:
+        official["tpex_ntd"] = tpex_official
+    elif verbose:
+        print(f"[money_flow] {date_yyyymmdd} 上櫃官方外資抓取失敗（fail-open 用近似）",
+              flush=True)
+    if official:
+        day["foreign_mkt_official"] = official
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(day, f, ensure_ascii=False)

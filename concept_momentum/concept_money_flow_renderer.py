@@ -70,25 +70,33 @@ def render_foreign_section(fv: dict | None) -> str:
     if not fv:
         return ""
     parts = ['<h3 style="margin-top:24px;">🌏 外資買賣超（上市/上櫃）</h3>',
-             '<p class="meta">全市場全部證券（個股+ETF 等，貼近官方口徑）外資淨買賣金額'
-             '（淨股數 × 收盤價近似，與官方差約數億）；下方個股榜排除 ETF | 近 10 個交易日</p>',
+             '<p class="meta">官方公布值（TWSE / 櫃買中心，實際成交金額口徑，與新聞數字一致）；'
+             '缺官方資料的日子以近似值回填並加 ~ 標示 | 近 10 個交易日</p>',
              '<div class="table-scroll" style="overflow-x:auto;">',
              '<table class="market-breadth">',
              '<thead><tr>'
              '<th title="交易日">日期</th>'
-             '<th title="上市（TWSE）外資淨買賣金額（億，近似）">上市外資(億)</th>'
-             '<th title="上櫃（TPEx）外資淨買賣金額（億，近似）">上櫃外資(億)</th>'
-             '<th title="上市 + 上櫃 + 未分類，全市場外資合計（億，近似）">合計(億)</th>'
+             '<th title="上市（TWSE）外資及陸資買賣超金額（億）— 官方公布值；'
+             '~ 開頭 = 該日缺官方資料，以淨股數×收盤價近似回填">上市外資(億)</th>'
+             '<th title="上櫃（TPEx）外資及陸資買賣超金額（億）— 櫃買中心官方公布值；'
+             '~ 開頭 = 近似回填">上櫃外資(億)</th>'
+             '<th title="上市 + 上櫃 合計（億）">合計(億)</th>'
              '</tr></thead><tbody>']
     for r in fv.get("recent", []):
         d = r.get("date", "")
         d_txt = f"{d[:4]}/{d[4:6]}/{d[6:8]}" if len(d) == 8 else d
+        approx = "" if r.get("official") else "~"
+
+        def _v(key, _r=r, _a=approx):
+            v = _r.get(key)
+            return f"{_a}{v:+.2f}" if v is not None else "—"
+
         parts.append(
             '<tr>'
             f'<td>{d_txt}</td>'
-            f'<td class="{_cls_yi(r.get("twse"))}">{_fmt_yi(r.get("twse"))}</td>'
-            f'<td class="{_cls_yi(r.get("tpex"))}">{_fmt_yi(r.get("tpex"))}</td>'
-            f'<td class="{_cls_yi(r.get("total"))}">{_fmt_yi(r.get("total"))}</td>'
+            f'<td class="{_cls_yi(r.get("twse"))}">{_v("twse")}</td>'
+            f'<td class="{_cls_yi(r.get("tpex"))}">{_v("tpex")}</td>'
+            f'<td class="{_cls_yi(r.get("total"))}">{_v("total")}</td>'
             '</tr>')
     parts.append('</tbody></table></div>')
 
