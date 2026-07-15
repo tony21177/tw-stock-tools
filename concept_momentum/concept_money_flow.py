@@ -29,8 +29,9 @@ FINMIND_BASE = "https://api.finmindtrade.com/api/v4/data"
 YI = 1e8  # 億 NTD
 
 # 四象限交叉判讀門檻 — 先驗設定、未經回測驗證（上線累積數據後可校準）
-FLOW_SHARE_PP = 0.15   # |占比 vs 20日均| >= 0.15pp 才算熱度升/降
-FLOW_INST_NTD = 0.5    # |法人淨流| >= 0.5 億才算法人買/賣
+FLOW_SHARE_PP = 0.15        # |占比 vs 20日均| >= 0.15pp 才算熱度升/降
+FLOW_INST_NTD = 0.5         # |法人淨流| >= 0.5 億才算法人買/賣
+FLOW_NET_GROSS_RATIO = 0.10  # 且 |淨流| >= 總流量(|外|+|投|+|自營|) 的 10% — 擋外資投信對沖日的雜訊殘差
 
 # FinMind name 欄位 → 法人身分（Foreign_Dealer_Self 依 TWSE 慣例併外資）
 _FOREIGN = {"Foreign_Investor", "Foreign_Dealer_Self"}
@@ -38,11 +39,20 @@ _TRUST = {"Investment_Trust"}
 _DEALER = {"Dealer_self", "Dealer_Hedging"}
 
 
-def classify_flow_tag(share_vs_20d: float | None, inst_net_ntd: float | None) -> str:
-    """占比變化 × 法人淨流 四象限。缺值或未達門檻 → '—'（fail-open）。"""
+def classify_flow_tag(share_vs_20d: float | None, inst_net_ntd: float | None,
+                      gross_ntd: float | None = None) -> str:
+    """占比變化 × 法人淨流 四象限。缺值或未達門檻 → '—'（fail-open）。
+
+    gross_ntd = |外資|+|投信|+|自營| 總流量（億）。給定時，淨流門檻改為
+    max(FLOW_INST_NTD, FLOW_NET_GROSS_RATIO × gross) — 外資投信大額對沖後
+    的雜訊殘差（如 66 億對 66 億剩 +2.77 億）不再誤判為方向訊號。
+    """
     if share_vs_20d is None or inst_net_ntd is None:
         return "—"
-    if abs(share_vs_20d) < FLOW_SHARE_PP or abs(inst_net_ntd) < FLOW_INST_NTD:
+    net_floor = FLOW_INST_NTD
+    if gross_ntd is not None:
+        net_floor = max(net_floor, FLOW_NET_GROSS_RATIO * gross_ntd)
+    if abs(share_vs_20d) < FLOW_SHARE_PP or abs(inst_net_ntd) < net_floor:
         return "—"
     if share_vs_20d > 0:
         return "🔥" if inst_net_ntd > 0 else "⚠"
@@ -184,7 +194,12 @@ def build_view_rows(day_files: list[dict], themes: dict) -> list[dict]:
             "spark": rolling_5d_cum(series_net)[-60:],
             "missing": cur.get("missing", []),
         }
-        row["tag"] = classify_flow_tag(share_vs_20d, row["inst_net_ntd"])
+        # 總流量 = |外資|+|投信|+|自營|（自營 = 淨流 − 外資 − 投信，日檔未單獨落地）
+        f = cur.get("foreign_net_ntd") or 0.0
+        t = cur.get("trust_net_ntd") or 0.0
+        d = (cur.get("inst_net_ntd") or 0.0) - f - t
+        gross = abs(f) + abs(t) + abs(d)
+        row["tag"] = classify_flow_tag(share_vs_20d, row["inst_net_ntd"], gross_ntd=gross)
         rows.append(row)
     rows.sort(key=lambda r: -(r["inst_net_ntd"] or 0))
     return rows

@@ -1,16 +1,20 @@
 """族群資金流 renderer — 排行表 + sparkline + 動能表欄位 + TG 摘要（純渲染）。"""
 
-from concept_money_flow import FLOW_SHARE_PP, FLOW_INST_NTD
+from concept_money_flow import FLOW_SHARE_PP, FLOW_INST_NTD, FLOW_NET_GROSS_RATIO
 
 _TAG_DESC = {
-    "🔥": "真流入：成交額占比升 + 法人買（熱度與真金同向）",
+    "🔥": "真流入：成交額占比升 + 法人買（熱度與真金同向）。"
+          "注意：大跌爆量日也可能出現（散戶恐慌賣、外資接刀/回補空單），"
+          "≠ 看多訊號，需搭配價格判讀",
     "⚠": "出貨疑慮：成交額占比升 + 法人賣（散戶接刀風險）",
     "🧲": "低調吸收：成交額占比降 + 法人買（沒人注意但法人默默買）",
     "❄": "退潮：成交額占比降 + 法人賣（熱度與資金雙離開）",
-    "—": "未達門檻，不強行分類",
+    "—": "未達門檻或外資投信對沖（淨流是雜訊殘差），不強行分類",
 }
 
-_THRESHOLD_NOTE = (f"門檻：占比變化 ±{FLOW_SHARE_PP}pp 且 法人淨流 ±{FLOW_INST_NTD}億，"
+_THRESHOLD_NOTE = (f"門檻：占比變化 ±{FLOW_SHARE_PP}pp 且 法人淨流 ±{FLOW_INST_NTD}億、"
+                   f"且淨流須 ≥ 總流量(|外|+|投|+|自營|)的 {FLOW_NET_GROSS_RATIO:.0%}"
+                   "（外資買 66 億、投信賣 66 億剩 +2.77 億這種對沖殘差不算方向訊號），"
                    "未達則標 —。門檻為先驗設定、未經回測驗證。")
 
 

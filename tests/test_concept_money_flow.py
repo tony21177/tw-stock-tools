@@ -44,6 +44,24 @@ class TestClassifyFlowTag(unittest.TestCase):
         self.assertEqual(classify_flow_tag(None, 3.0), "—")
         self.assertEqual(classify_flow_tag(0.5, None), "—")
 
+    def test_hedge_day_dash(self):
+        # 對沖日：外資+66.6 vs 投信-66.8，淨流 +2.77 過絕對門檻但只佔總流量 2%
+        # → 雜訊級殘差不給標記（2026-07-14 被動元件真實案例）
+        self.assertEqual(classify_flow_tag(1.105, 2.77, gross_ntd=136.1), "—")
+
+    def test_gross_ratio_boundary(self):
+        # 淨流恰等於總流量 10% → 達門檻
+        self.assertEqual(classify_flow_tag(0.5, 10.0, gross_ntd=100.0), "🔥")
+        # 差一點 → —
+        self.assertEqual(classify_flow_tag(0.5, 9.9, gross_ntd=100.0), "—")
+
+    def test_gross_none_keeps_absolute_rule(self):
+        # 不給 gross（舊呼叫方式）→ 只用絕對門檻，行為不變
+        self.assertEqual(classify_flow_tag(0.5, 3.0), "🔥")
+        # gross 很小時 max(0.5, 10%×gross) 仍以 0.5 億為下限
+        self.assertEqual(classify_flow_tag(0.5, 0.5, gross_ntd=1.0), "🔥")
+        self.assertEqual(classify_flow_tag(0.5, 0.49, gross_ntd=1.0), "—")
+
 
 class TestAggregateDay(unittest.TestCase):
     def setUp(self):
