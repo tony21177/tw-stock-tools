@@ -64,12 +64,19 @@ def _to_iso(yyyymmdd: str) -> str:
 
 
 def aggregate_day(date_yyyymmdd: str, inst_rows: list[dict],
-                  price_rows: list[dict], themes: dict) -> dict:
+                  price_rows: list[dict], themes: dict,
+                  market_map: dict | None = None,
+                  names: dict | None = None) -> dict:
     """單日全市場原始列 → 族群加總日檔 dict。
 
     inst_rows 單位是股數；金額 = 淨股數 × 收盤價（近似）。
     全市場成交額只計 4 位數字代號（排除 ETF/權證）。
     FinMind start=end 查詢會夾帶次日列 — 這裡按 date 過濾。
+
+    給定 market_map（code→上市/上櫃）與 names（code→中文名）時，額外產出：
+      foreign_mkt: {twse_ntd, tpex_ntd, total_ntd} — 外資淨買賣金額按市場拆分（億）
+      top_foreign: {buy: [...], sell: [...]} — 外資買/賣超前 15 大個股
+    不給 maps 時不產生這兩個欄位（回溯相容）。
     """
     date_iso = _to_iso(date_yyyymmdd)
 
@@ -95,14 +102,14 @@ def aggregate_day(date_yyyymmdd: str, inst_rows: list[dict],
         if row.get("date") != date_iso:
             continue
         code = str(row.get("stock_id", ""))
+        c = row.get("close")
+        if c and c > 0:
+            close[code] = float(c)  # 全代號都收（外資市場加總要含 ETF/5位數）
         if not re.fullmatch(r"\d{4}", code):
-            continue
+            continue  # 成交額占比的分母維持 4 位數普通股口徑
         m = float(row.get("Trading_money", 0) or 0)
         money[code] = m
         market_turnover += m
-        c = row.get("close")
-        if c and c > 0:
-            close[code] = float(c)
 
     out_themes = {}
     for tkey, tval in themes.items():
@@ -131,8 +138,74 @@ def aggregate_day(date_yyyymmdd: str, inst_rows: list[dict],
                                if market_turnover > 0 else None),
             "missing": missing,
         }
-    return {"date": date_yyyymmdd, "market_turnover_ntd": market_turnover,
-            "themes": out_themes}
+    out = {"date": date_yyyymmdd, "market_turnover_ntd": market_turnover,
+           "themes": out_themes}
+
+    # 全市場外資：市場拆分 + 買/賣超 Top15（維持 4 位數普通股池；金額同為近似）
+    if market_map is not None or names is not None:
+        market_map = market_map or {}
+        names = names or {}
+        # 全部有收盤價的證券都計入（含 ETF/受益憑證等）— 2026-07-15 校驗：
+        # 只算 4 位數個股會差官方 ~55 億（外資單日買 ETF 就 +91.6 億）；
+        # 全範圍 + 收盤近似後與官方差 ~4.5 億（價格近似殘差）
+        foreign_ntd: dict[str, float] = {}
+        for code, slot in net.items():
+            px = close.get(code)
+            if px is None or slot["f"] == 0:
+                continue
+            foreign_ntd[code] = slot["f"] * px
+        twse = sum(v for c, v in foreign_ntd.items() if market_map.get(c) == "上市")
+        tpex = sum(v for c, v in foreign_ntd.items() if market_map.get(c) == "上櫃")
+        total = sum(foreign_ntd.values())
+        out["foreign_mkt"] = {
+            "twse_ntd": round(twse / YI, 2),
+            "tpex_ntd": round(tpex / YI, 2),
+            "total_ntd": round(total / YI, 2),
+        }
+
+        def _entry(code: str) -> dict:
+            return {"code": code, "name": names.get(code, code),
+                    "mkt": market_map.get(code, "?"),
+                    "ntd": round(foreign_ntd[code] / YI, 2)}
+
+        # 個股榜只列 4 位數且非 00 開頭的個股；市場加總含 ETF 等全部證券（貼近官方口徑）
+        stocks_only = [c for c in foreign_ntd
+                       if re.fullmatch(r"\d{4}", c) and not c.startswith("00")]
+        ranked = sorted(stocks_only, key=lambda c: -foreign_ntd[c])
+        out["top_foreign"] = {
+            "buy": [_entry(c) for c in ranked[:15] if foreign_ntd[c] > 0],
+            "sell": [_entry(c) for c in ranked[::-1][:15] if foreign_ntd[c] < 0],
+        }
+    return out
+
+
+def build_foreign_view(day_files: list[dict], days: int = 10) -> dict | None:
+    """外資買賣超區塊的 view：近 `days` 日上市/上櫃拆分 + 最新一日 Top15。
+
+    舊日檔（無 foreign_mkt 欄位）在 recent 列以 None 容忍；
+    沒有任何日檔帶 top_foreign → 回 None（renderer 不渲染該區塊）。
+    """
+    if not day_files:
+        return None
+    latest_with_top = next((df for df in reversed(day_files)
+                            if df.get("top_foreign")), None)
+    if latest_with_top is None:
+        return None
+    recent = []
+    for df in day_files[-days:]:
+        fm = df.get("foreign_mkt") or {}
+        recent.append({
+            "date": df.get("date"),
+            "twse": fm.get("twse_ntd"),
+            "tpex": fm.get("tpex_ntd"),
+            "total": fm.get("total_ntd"),
+        })
+    return {
+        "asof": latest_with_top["date"],
+        "recent": recent,
+        "top_buy": latest_with_top["top_foreign"].get("buy", []),
+        "top_sell": latest_with_top["top_foreign"].get("sell", []),
+    }
 
 
 def inst_streak(nets: list[float]) -> int:
@@ -213,6 +286,26 @@ def load_themes() -> dict:
         return json.load(f)["themes"]
 
 
+def load_market_map() -> dict:
+    """code → 上市/上櫃（cache/stock_names_market.json，data_fetcher 維護）。缺檔回 {}。"""
+    path = os.path.join(HERE, "cache", "stock_names_market.json")
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def load_stock_names() -> dict:
+    """code → 中文名（cache/stock_names.json 的 names 欄）。缺檔回 {}。"""
+    path = os.path.join(HERE, "cache", "stock_names.json")
+    try:
+        with open(path) as f:
+            return json.load(f).get("names", {})
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 def day_path(yyyymmdd: str) -> str:
     return os.path.join(FLOW_DIR, f"{yyyymmdd}.json")
 
@@ -266,7 +359,8 @@ def run_day(date_yyyymmdd: str, token: str, themes: dict | None = None,
                   flush=True)
         return None
     price_rows = _fetch_finmind("TaiwanStockPrice", date_iso, token)
-    day = aggregate_day(date_yyyymmdd, inst_rows, price_rows, themes)
+    day = aggregate_day(date_yyyymmdd, inst_rows, price_rows, themes,
+                        market_map=load_market_map(), names=load_stock_names())
     if day["market_turnover_ntd"] <= 0:
         if verbose:
             print(f"[money_flow] {date_yyyymmdd} 無成交金額資料 — 不寫檔", flush=True)
@@ -297,10 +391,12 @@ def load_flow_days(end_yyyymmdd: str, days: int = 60) -> list[dict]:
 
 
 def backfill(token: str, end_yyyymmdd: str, days: int = 60,
-             delay_seconds: float = 1.0, verbose: bool = True) -> int:
+             delay_seconds: float = 1.0, verbose: bool = True,
+             force: bool = False) -> int:
     """回補最近 `days` 個交易日（交易日來源 = taiex.json，比照 market_breadth）。
 
     已存在跳過（resumable，中斷重跑安全）。單日失敗記 log 續跑。
+    force=True 時已存在也重抓（日檔 schema 升級後用來 enrich 舊檔）。
     """
     from market_breadth import _twii_trading_dates
     dates = _twii_trading_dates(end_yyyymmdd, days)
@@ -308,7 +404,7 @@ def backfill(token: str, end_yyyymmdd: str, days: int = 60,
     written = 0
     for d in dates:
         path = day_path(d)
-        if os.path.exists(path):
+        if os.path.exists(path) and not force:
             try:
                 with open(path) as f:
                     json.load(f)
@@ -316,7 +412,7 @@ def backfill(token: str, end_yyyymmdd: str, days: int = 60,
             except (OSError, json.JSONDecodeError):
                 pass  # 壞檔 → 重抓
         try:
-            day = run_day(d, token, themes=themes, verbose=verbose)
+            day = run_day(d, token, themes=themes, verbose=verbose, force=force)
         except Exception as e:
             print(f"[money_flow] {d} 失敗: {e}", file=sys.stderr, flush=True)
             time.sleep(delay_seconds)
@@ -341,7 +437,8 @@ def main():
         print("需要 FINMIND_TOKEN 環境變數", file=sys.stderr)
         sys.exit(1)
     if args.backfill:
-        backfill(token, datetime.now().strftime("%Y%m%d"), days=args.backfill)
+        backfill(token, datetime.now().strftime("%Y%m%d"), days=args.backfill,
+                 force=args.force)
     else:
         d = args.date or datetime.now().strftime("%Y%m%d")
         run_day(d, token, force=args.force)

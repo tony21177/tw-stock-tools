@@ -42,6 +42,35 @@ class TestRenderTab(unittest.TestCase):
         self.assertIn("*", tbody2)
 
 
+def _fv():
+    return {
+        "asof": "20260714",
+        "recent": [
+            {"date": "20260710", "twse": None, "tpex": None, "total": None},
+            {"date": "20260713", "twse": -120.5, "tpex": 15.3, "total": -105.2},
+            {"date": "20260714", "twse": 80.1, "tpex": -3.2, "total": 76.9},
+        ],
+        "top_buy": [{"code": "2330", "name": "台積電", "mkt": "上市", "ntd": 55.2}],
+        "top_sell": [{"code": "2454", "name": "聯發科", "mkt": "上市", "ntd": -31.8}],
+    }
+
+
+class TestForeignSection(unittest.TestCase):
+    def test_rendered_with_foreign_view(self):
+        html = render_tab([_row("主題A", 5.0)], "20260714", foreign_view=_fv())
+        for token in ["外資買賣超", "上市", "上櫃", "買超 Top", "賣超 Top",
+                      "台積電", "聯發科", "+55.2", "-31.8", "+80.1", "-120.5"]:
+            self.assertIn(token, html)
+        # 舊檔 None 值容忍：顯示 — 而非 crash
+        self.assertIn("—", html)
+
+    def test_no_foreign_view_no_section(self):
+        html = render_tab([_row("主題A", 5.0)], "20260714")
+        self.assertNotIn("外資買賣超", html)
+        html2 = render_tab([_row("主題A", 5.0)], "20260714", foreign_view=None)
+        self.assertNotIn("買超 Top", html2)
+
+
 class TestSparkline(unittest.TestCase):
     def test_svg(self):
         svg = _sparkline_svg([1.0, -2.0, 3.0])

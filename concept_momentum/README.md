@@ -345,6 +345,12 @@ top_count = news_top_theme 的提及次數
 
 入口：dashboard「訊號監控」群組 tab（17:00 烤入）＋ `/money-flow` 獨立頁（即時）＋ 動能排行表兩欄 ＋ 每日 TG 摘要（流入/流出 Top5、⚠、連續 ≥5 日）。
 
+同頁附「🌏 外資買賣超」區（2026-07-15 加入）：上市/上櫃外資淨買賣金額近 10 日表 ＋
+當日外資買超/賣超 Top15 個股（代號/名稱/市場/金額，榜單排除 ETF）。同一資料源零額外 API 呼叫。
+口徑：市場加總含**全部證券**（個股+ETF 等）— 實測 2026-07-15 外資單日買 ETF +91.6 億，
+只算個股會與官方差 ~55 億；含 ETF 後與官方僅差 ~4.5 億（收盤價近似殘差）。
+市場分類來自 `cache/stock_names_market.json`（data_fetcher 每週維護）。
+
 資料：`cache/money_flow/{yyyymmdd}.json`（一天一檔；FinMind 單日全市場 2 次呼叫）。
 回補：`python3 concept_money_flow.py --backfill 60`（resumable、已存在跳過、需 FINMIND_TOKEN）。
 Fail-open：法人未發布/API 失敗不寫檔，dashboard 顯示到最後有資料日。

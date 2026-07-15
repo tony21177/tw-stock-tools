@@ -36,7 +36,8 @@ from premarket_signals_renderer import render_table as render_premarket_table
 from lending_history import load_lending_radar_rows, load_short_retreat_rows
 from lending_history_renderer import render_table as render_lending_table
 from concept_money_flow import (run_day as run_money_flow,
-                                load_flow_days, build_view_rows)
+                                load_flow_days, build_view_rows,
+                                build_foreign_view)
 from concept_money_flow_renderer import (render_tab as render_money_flow_tab,
                                          build_tg_summary as build_money_flow_summary)
 
@@ -340,7 +341,9 @@ def main():
             mf_days = load_flow_days(target_yyyymmdd, days=60)
             if mf_days:
                 mf_rows = build_view_rows(mf_days, concepts["themes"])
-                money_flow_html = render_money_flow_tab(mf_rows, mf_days[-1]["date"])
+                money_flow_html = render_money_flow_tab(
+                    mf_rows, mf_days[-1]["date"],
+                    foreign_view=build_foreign_view(mf_days))
                 money_flow_map = {r["theme_key"]: r for r in mf_rows}
                 # 只有「今天」的資料真的存在才推 TG（勿推 stale 或空資料）
                 if mf_days[-1]["date"] == target_yyyymmdd:

@@ -54,8 +54,81 @@ def _fmt_streak(streak: int) -> str:
     return "—"
 
 
-def render_tab(view_rows: list[dict], asof: str) -> str:
-    """排行表（34 主題全列，依法人淨流降冪）+ 圖例 + 使用時機盒。"""
+def _fmt_yi(v: float | None) -> str:
+    """億元格式化；None（舊日檔無此欄）→ —。"""
+    return f"{v:+.1f}" if v is not None else "—"
+
+
+def _cls_yi(v: float | None) -> str:
+    if v is None or v == 0:
+        return ""
+    return "pos" if v > 0 else "neg"
+
+
+def render_foreign_section(fv: dict | None) -> str:
+    """🌏 外資買賣超（上市/上櫃 近10日 + 當日買賣超 Top15 個股）。fv=None → 空字串。"""
+    if not fv:
+        return ""
+    parts = ['<h3 style="margin-top:24px;">🌏 外資買賣超（上市/上櫃）</h3>',
+             '<p class="meta">全市場全部證券（個股+ETF 等，貼近官方口徑）外資淨買賣金額'
+             '（淨股數 × 收盤價近似，與官方差約數億）；下方個股榜排除 ETF | 近 10 個交易日</p>',
+             '<div class="table-scroll" style="overflow-x:auto;">',
+             '<table class="market-breadth">',
+             '<thead><tr>'
+             '<th title="交易日">日期</th>'
+             '<th title="上市（TWSE）外資淨買賣金額（億，近似）">上市外資(億)</th>'
+             '<th title="上櫃（TPEx）外資淨買賣金額（億，近似）">上櫃外資(億)</th>'
+             '<th title="上市 + 上櫃 + 未分類，全市場外資合計（億，近似）">合計(億)</th>'
+             '</tr></thead><tbody>']
+    for r in fv.get("recent", []):
+        d = r.get("date", "")
+        d_txt = f"{d[:4]}/{d[4:6]}/{d[6:8]}" if len(d) == 8 else d
+        parts.append(
+            '<tr>'
+            f'<td>{d_txt}</td>'
+            f'<td class="{_cls_yi(r.get("twse"))}">{_fmt_yi(r.get("twse"))}</td>'
+            f'<td class="{_cls_yi(r.get("tpex"))}">{_fmt_yi(r.get("tpex"))}</td>'
+            f'<td class="{_cls_yi(r.get("total"))}">{_fmt_yi(r.get("total"))}</td>'
+            '</tr>')
+    parts.append('</tbody></table></div>')
+
+    def _top_table(title: str, rows: list[dict]) -> str:
+        if not rows:
+            return (f'<h3 style="margin-top:16px;">{title}</h3>'
+                    '<p class="meta">（無）</p>')
+        body = [f'<h3 style="margin-top:16px;">{title}</h3>',
+                '<div class="table-scroll" style="overflow-x:auto;">',
+                '<table class="market-breadth">',
+                '<thead><tr>'
+                '<th title="名次（依外資淨買賣金額排序）">#</th>'
+                '<th title="股票代號">代號</th>'
+                '<th title="股票中文名稱">名稱</th>'
+                '<th title="上市 / 上櫃（? = 分類快取缺此檔）">市場</th>'
+                '<th title="外資淨買賣金額（億，淨股數×收盤價近似）">外資(億)</th>'
+                '</tr></thead><tbody>']
+        for i, s in enumerate(rows, 1):
+            ntd = s.get("ntd")
+            body.append(
+                '<tr>'
+                f'<td>{i}</td>'
+                f'<td>{s.get("code", "")}</td>'
+                f'<td>{s.get("name", s.get("code", ""))}</td>'
+                f'<td>{s.get("mkt", "?")}</td>'
+                f'<td class="{_cls_yi(ntd)}">{_fmt_yi(ntd)}</td>'
+                '</tr>')
+        body.append('</tbody></table></div>')
+        return "\n".join(body)
+
+    asof = fv.get("asof", "")
+    asof_txt = f"{asof[:4]}/{asof[4:6]}/{asof[6:8]}" if len(asof) == 8 else asof
+    parts.append(_top_table(f'📈 外資買超 Top15 個股（{asof_txt}）', fv.get("top_buy", [])))
+    parts.append(_top_table(f'📉 外資賣超 Top15 個股（{asof_txt}）', fv.get("top_sell", [])))
+    return "\n".join(parts)
+
+
+def render_tab(view_rows: list[dict], asof: str,
+               foreign_view: dict | None = None) -> str:
+    """排行表（34 主題全列，依法人淨流降冪）+ 外資買賣超區 + 圖例 + 使用時機盒。"""
     if not view_rows:
         return ('<p class="empty-state" style="text-align:center;padding:20px;color:#888;">'
                 '尚無資金流資料 — 請先執行 '
@@ -105,6 +178,9 @@ def render_tab(view_rows: list[dict], asof: str) -> str:
             f'<td>{_sparkline_svg(r.get("spark", []))}</td>'
             '</tr>')
     parts.append('</tbody></table></div>')
+    foreign_html = render_foreign_section(foreign_view)
+    if foreign_html:
+        parts.append(foreign_html)
     parts.append(
         '<p style="font-size:0.8em; color:#888; margin:4px 0 0;">'
         '🔥 真流入（占比升+法人買）　⚠ 出貨疑慮（占比升+法人賣）　'

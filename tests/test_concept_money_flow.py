@@ -115,6 +115,88 @@ class TestAggregateDay(unittest.TestCase):
         self.assertAlmostEqual(day["themes"]["T_A"]["foreign_net_ntd"], 10.0)
 
 
+class TestForeignMarketSplitAndTop(unittest.TestCase):
+    def setUp(self):
+        d = "2026-07-13"
+        self.inst_rows = [
+            _inst(d, "1111", "Foreign_Investor", 10_000_000, 0),    # 上市 外資 +10 億
+            _inst(d, "2222", "Foreign_Investor", 0, 1_000_000),     # 上櫃 外資 -0.5 億
+            _inst(d, "9999", "Foreign_Investor", 2_000_000, 0),     # 上市 外資 +0.2 億
+            _inst(d, "8888", "Investment_Trust", 5_000_000, 0),     # 投信 → 不入外資統計
+            _inst(d, "7777", "Foreign_Investor", 1_000_000, 0),     # 無市場分類 → 不入上市櫃加總
+            _inst(d, "0050", "Foreign_Investor", 50_000_000, 0),    # ETF：入市場加總、不入個股榜
+            _inst(d, "00878", "Foreign_Investor", 10_000_000, 0),   # 5位數 ETF：同樣入加總不入榜
+        ]
+        self.price_rows = [
+            _px(d, "1111", 100.0, 5_000_000),
+            _px(d, "2222", 50.0, 3_000_000),
+            _px(d, "9999", 10.0, 2_000_000),
+            _px(d, "8888", 20.0, 1_000_000),
+            _px(d, "7777", 30.0, 1_000_000),
+            _px(d, "0050", 200.0, 9_000_000),
+            _px(d, "00878", 20.0, 4_000_000),
+        ]
+        self.market_map = {"1111": "上市", "9999": "上市", "2222": "上櫃",
+                           "8888": "上櫃", "0050": "上市", "00878": "上市"}
+        self.names = {"1111": "甲公司", "2222": "乙公司", "9999": "丙公司"}
+
+    def test_foreign_market_split(self):
+        day = aggregate_day("20260713", self.inst_rows, self.price_rows, THEMES,
+                            market_map=self.market_map, names=self.names)
+        fm = day["foreign_mkt"]
+        # 1111 +10 + 9999 +0.2 + 0050 +100 + 00878 +2（ETF 含 5 位數都入加總）
+        self.assertAlmostEqual(fm["twse_ntd"], 112.2)
+        self.assertAlmostEqual(fm["tpex_ntd"], -0.5)   # 2222 -0.5
+        # 7777 無分類：不進上市櫃加總
+
+    def test_top_foreign_lists(self):
+        day = aggregate_day("20260713", self.inst_rows, self.price_rows, THEMES,
+                            market_map=self.market_map, names=self.names)
+        buy = day["top_foreign"]["buy"]
+        sell = day["top_foreign"]["sell"]
+        # 0050/00878 外資買很大但都是 ETF（00 開頭）→ 不入「個股」榜
+        codes_all = [b["code"] for b in buy]
+        self.assertNotIn("0050", codes_all)
+        self.assertNotIn("00878", codes_all)
+        self.assertEqual(buy[0]["code"], "1111")
+        self.assertEqual(buy[0]["name"], "甲公司")
+        self.assertEqual(buy[0]["mkt"], "上市")
+        self.assertAlmostEqual(buy[0]["ntd"], 10.0)
+        # 7777 有外資買但無分類 → 仍列入 top（mkt 標 ?），名稱 fallback 代號
+        codes_buy = [b["code"] for b in buy]
+        self.assertIn("7777", codes_buy)
+        self.assertEqual(sell[0]["code"], "2222")
+        self.assertAlmostEqual(sell[0]["ntd"], -0.5)
+        # 投信單獨買的 8888 不在外資榜
+        self.assertNotIn("8888", codes_buy)
+
+    def test_without_maps_fields_absent(self):
+        # 不給 maps（舊呼叫）→ 不產生新欄位，行為回溯相容
+        day = aggregate_day("20260713", self.inst_rows, self.price_rows, THEMES)
+        self.assertNotIn("foreign_mkt", day)
+        self.assertNotIn("top_foreign", day)
+
+    def test_build_foreign_view(self):
+        day = aggregate_day("20260713", self.inst_rows, self.price_rows, THEMES,
+                            market_map=self.market_map, names=self.names)
+        old = {"date": "20260710", "market_turnover_ntd": 1.0, "themes": {}}  # 舊檔無新欄位
+        from concept_money_flow import build_foreign_view
+        fv = build_foreign_view([old, day])
+        self.assertEqual(fv["asof"], "20260713")
+        self.assertEqual(len(fv["recent"]), 2)
+        self.assertIsNone(fv["recent"][0]["twse"])     # 舊檔 → None 容忍
+        self.assertAlmostEqual(fv["recent"][1]["twse"], 112.2)
+        self.assertAlmostEqual(fv["recent"][1]["total"], 112.2 - 0.5 + 0.3)  # 含無分類 7777 的 0.3
+        self.assertEqual(fv["top_buy"][0]["code"], "1111")
+
+    def test_build_foreign_view_empty(self):
+        from concept_money_flow import build_foreign_view
+        self.assertIsNone(build_foreign_view([]))
+        # 全部舊檔（無 top_foreign）→ None
+        old = {"date": "20260710", "market_turnover_ntd": 1.0, "themes": {}}
+        self.assertIsNone(build_foreign_view([old]))
+
+
 class TestStreakAndRolling(unittest.TestCase):
     def test_streak(self):
         self.assertEqual(inst_streak([1.0, 2.0, 3.0]), 3)

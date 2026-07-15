@@ -4466,6 +4466,13 @@ _BACKTEST_GLOSSARY.update({
         "注意 🔥 在大跌爆量日也可能出現（散戶恐慌賣、外資接刀/回補空單），"
         "≠ 看多訊號，需搭配價格判讀。"
         "<b>門檻為先驗設定、未經回測驗證</b>，累積數據後才能校準。"),
+    "外資買賣超 (上市/上櫃)": (
+        "全市場<b>全部證券</b>（個股 + ETF + 受益憑證等）外資淨買賣「股數」× 當日收盤價，"
+        "按上市（TWSE）/上櫃（TPEx）分開加總的金額（億元）。正 = 外資淨買、負 = 淨賣。"
+        "必須含 ETF 才貼近官方口徑：實測 2026-07-15 外資單日買 ETF 就 +91.6 億，"
+        "只算個股會與新聞數字差數十億；含 ETF 後與官方差 ~4.5 億（官方用實際成交金額、"
+        "這裡用收盤價近似的殘差）。"
+        "個股 Top15 榜<b>排除 ETF</b>（只列 4 位數個股）；市場欄 ? = 分類快取缺該檔（極少數）。"),
     "占比 vs 20日均 (pp)": (
         "今日成交額占比 − 過去 20 個交易日的平均占比，單位百分點 (pp)。"
         "例：某族群平常占全市場成交額 3.0%、今日 3.8% → +0.8pp，熱度明顯升。"
@@ -5046,15 +5053,19 @@ def money_flow_page():
     day_files = cmf.load_flow_days(_dt.now().strftime("%Y%m%d"), days=60)
     rows = []
     asof = "—"
+    foreign_view = None
     if day_files:
         try:
             rows = cmf.build_view_rows(day_files, cmf.load_themes())
             asof = day_files[-1]["date"]
+            foreign_view = cmf.build_foreign_view(day_files)
         except Exception:
             rows = []
-    body = cmfr.render_tab(rows, asof)
+            foreign_view = None
+    body = cmfr.render_tab(rows, asof, foreign_view=foreign_view)
     glossary = _glossary_section(["法人淨流 (億)", "成交額占比",
-                                  "資金流標記 (🔥/⚠/🧲/❄)", "占比 vs 20日均 (pp)"])
+                                  "資金流標記 (🔥/⚠/🧲/❄)", "占比 vs 20日均 (pp)",
+                                  "外資買賣超 (上市/上櫃)"])
     css = """
 <style>
 body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
