@@ -1340,6 +1340,250 @@ def broker_band_progression(stock_code: str, broker_id: str,
     return progression
 
 
+# ---------------------------------------------------------------------------
+# 分點行為分類 (broker behavior classification)
+#
+# Reproduces the narrative style of manual 分點 analysis: classify each
+# broker branch as 外資 / 散戶指標 / 內資 by name, then tag same-day and
+# cross-day behavior (低接 / 追高 / 當沖 / 隔日沖 / 純倒貨 / 殺低出).
+# Thresholds are 先驗設定、未回測 — disclosed in the report footer.
+# ---------------------------------------------------------------------------
+
+# Domestic-firm name prefixes checked BEFORE foreign patterns so branches
+# like 群益高盛 (contains 高盛) classify as domestic.
+_DOMESTIC_PREFIXES = (
+    "群益", "永豐", "國泰", "富邦", "凱基", "元大", "統一", "兆豐", "華南",
+    "第一金", "元富", "玉山", "台新", "新光", "宏遠", "康和", "大展", "大昌",
+    "中國信託", "合庫", "土銀", "臺銀", "台銀", "彰銀", "日盛", "亞東",
+    "福邦", "致和", "德信", "光和", "石橋", "口袋", "犇亞", "美好",
+)
+
+# Foreign-broker name fragments (BSR names come space-stripped, sometimes
+# truncated: 台灣摩根 = 台灣摩根士丹利, 上海匯豐 = 香港上海匯豐).
+_FOREIGN_PATTERNS = (
+    "摩根士丹利", "台灣摩根", "摩根大通", "美商高盛", "港商野村", "野村國際",
+    "美林", "瑞銀", "花旗環球", "匯豐", "法銀巴黎", "麥格理", "大和國泰",
+    "德意志", "瑞士信貸", "巴克萊", "東方匯理", "星展",
+)
+
+# Branches conventionally read as retail-order proxies (經驗法則,
+# 大型網路下單通路). Exact match after space-stripping.
+_RETAIL_PROXY_NAMES = {"永豐金", "國泰敦南"}
+
+# Activity floor: broker must trade max(100張, 0.2% of day volume) on the
+# relevant side before any behavior tag applies (shares).
+BEHAVIOR_MIN_SHARES = 100_000
+BEHAVIOR_VOL_RATIO = 0.002
+
+
+def classify_broker_type(name: str) -> str:
+    """Classify a BSR broker name as 'foreign' / 'retail_proxy' / 'domestic'.
+
+    Retail-proxy check runs first (永豐金 also matches the 永豐 domestic
+    prefix), then domestic prefixes (so 群益高盛 isn't misread as 高盛),
+    then foreign patterns. Everything else is domestic.
+    """
+    n = name.replace(" ", "").replace("　", "")
+    if n in _RETAIL_PROXY_NAMES:
+        return "retail_proxy"
+    if n.startswith(_DOMESTIC_PREFIXES):
+        return "domestic"
+    if any(p in n for p in _FOREIGN_PATTERNS):
+        return "foreign"
+    return "domestic"
+
+
+def _behavior_tags(stat: dict, low: float, high: float, thr: int,
+                   prev_net: int | None) -> list[str]:
+    """Behavior tags for one broker's day stats.
+
+    stat = {buy, sell, buy_avg, sell_avg} (shares / NTD). prev_net is the
+    broker's previous-trading-day net shares, or None when no prior BSR
+    cache exists (隔日沖 then undetectable).
+    """
+    buy, sell = stat["buy"], stat["sell"]
+    net = buy - sell
+    rng = (high - low) or 1.0
+    tags = []
+    if buy >= thr and sell >= thr and min(buy, sell) / max(buy, sell) >= 0.7:
+        tags.append("當沖")
+    # 隔日沖: bought big yesterday, dumped a comparable chunk today.
+    if (prev_net is not None and prev_net >= thr
+            and net <= -max(thr, 0.4 * prev_net)):
+        tags.append("隔日沖")
+    if sell >= thr and buy < 0.15 * sell:
+        tags.append("純倒貨")
+    if buy >= thr and stat["buy_avg"]:
+        pos = (stat["buy_avg"] - low) / rng
+        if pos <= 0.35:
+            tags.append(f"低接@{pos:.0%}位階")
+        elif pos >= 0.65:
+            tags.append(f"追高@{pos:.0%}位階")
+    if sell >= thr and stat["sell_avg"]:
+        pos = (stat["sell_avg"] - low) / rng
+        if pos <= 0.35 and "隔日沖" not in tags and "當沖" not in tags:
+            tags.append("殺低出")
+    return tags
+
+
+def _broker_day_stats(rows: list[dict]) -> dict[str, dict]:
+    """Aggregate BSR rows per broker: shares + value-weighted avg prices."""
+    stats: dict[str, dict] = {}
+    for r in rows:
+        s = stats.setdefault(r["broker_id"], {
+            "broker_id": r["broker_id"],
+            "broker_name": r["broker_name"].replace(" ", "").replace("　", ""),
+            "buy": 0, "sell": 0, "_bv": 0.0, "_sv": 0.0,
+        })
+        s["buy"] += r["buy"]
+        s["sell"] += r["sell"]
+        s["_bv"] += r["buy"] * r["price"]
+        s["_sv"] += r["sell"] * r["price"]
+    for s in stats.values():
+        s["buy_avg"] = round(s["_bv"] / s["buy"], 2) if s["buy"] else 0.0
+        s["sell_avg"] = round(s["_sv"] / s["sell"], 2) if s["sell"] else 0.0
+        s["net"] = s["buy"] - s["sell"]
+        del s["_bv"], s["_sv"]
+    return stats
+
+
+def build_behavior_view(rows: list[dict], low: float, high: float,
+                        prev_rows: list[dict] | None = None,
+                        prev_date: str = "", top_n: int = 5) -> dict:
+    """Build the 分點行為分類 section data (JSON-serializable).
+
+    prev_rows enables 隔日沖 detection; pass None when no prior-day BSR
+    cache exists.
+    """
+    stats = _broker_day_stats(rows)
+    total = sum(s["buy"] for s in stats.values())
+    thr = max(BEHAVIOR_MIN_SHARES, int(total * BEHAVIOR_VOL_RATIO))
+    prev_net: dict[str, int] = {}
+    if prev_rows:
+        prev_net = {bid: s["net"]
+                    for bid, s in _broker_day_stats(prev_rows).items()}
+
+    items = []
+    for bid, s in stats.items():
+        s["type"] = classify_broker_type(s["broker_name"])
+        s["prev_net"] = prev_net.get(bid, 0) if prev_rows else None
+        s["tags"] = _behavior_tags(s, low, high, thr, s["prev_net"])
+        items.append(s)
+
+    def _top(group, side):
+        pool = [s for s in items if s["type"] == group]
+        pool.sort(key=lambda s: s["net"], reverse=(side == "buy"))
+        keep = [s for s in pool if (s["net"] > 0) == (side == "buy")
+                and abs(s["net"]) >= thr]
+        return keep[:top_n]
+
+    view = {
+        "prev_date": prev_date,
+        "threshold_shares": thr,
+        "foreign": {
+            "net": sum(s["net"] for s in items if s["type"] == "foreign"),
+            "buys": _top("foreign", "buy"),
+            "sells": _top("foreign", "sell"),
+        },
+        "retail": {
+            "net": sum(s["net"] for s in items if s["type"] == "retail_proxy"),
+            "items": sorted(
+                (s for s in items if s["type"] == "retail_proxy"),
+                key=lambda s: -abs(s["net"])),
+        },
+        "domestic": {
+            "buys": _top("domestic", "buy"),
+            "sells": _top("domestic", "sell"),
+        },
+        "next_day_dump": sorted(
+            (s for s in items if "隔日沖" in s["tags"]),
+            key=lambda s: s["net"]),
+        "day_trade": sorted(
+            (s for s in items if "當沖" in s["tags"]),
+            key=lambda s: -(s["buy"] + s["sell"])),
+    }
+    return view
+
+
+def _fmt_behavior_item(s: dict, with_avg: bool = True) -> str:
+    tag_str = "".join(f" [{t}]" for t in s["tags"])
+    avg = ""
+    if with_avg:
+        if s["net"] >= 0 and s["buy_avg"]:
+            avg = f" 買均${s['buy_avg']:.1f}"
+        elif s["net"] < 0 and s["sell_avg"]:
+            avg = f" 賣均${s['sell_avg']:.1f}"
+    return (f"  {s['broker_id']} {s['broker_name']} "
+            f"{s['net'] / 1000:+,.0f}張{avg}{tag_str}")
+
+
+def _format_behavior(view: dict) -> list[str]:
+    """Render 【🧭 分點行為分類】 lines from build_behavior_view output."""
+    lines = []
+    prev = view.get("prev_date", "")
+    header = "【🧭 分點行為分類】"
+    header += (f"(隔日沖比對 {_fmt_date(prev)})" if prev
+               else "(無前日 BSR cache — 隔日沖無法判定)")
+    lines.append(header)
+
+    f = view["foreign"]
+    lines.append(f"🌏 外資分點 合計淨 {f['net'] / 1000:+,.0f} 張")
+    for s in f["buys"]:
+        lines.append(_fmt_behavior_item(s))
+    for s in f["sells"]:
+        lines.append(_fmt_behavior_item(s))
+
+    r = view["retail"]
+    if r["items"]:
+        lines.append(f"🏠 散戶指標分點 (永豐金/國泰敦南) 合計 "
+                     f"{r['net'] / 1000:+,.0f} 張")
+        for s in r["items"]:
+            lines.append(_fmt_behavior_item(s))
+
+    d = view["domestic"]
+    if d["buys"] or d["sells"]:
+        lines.append("🏦 內資主要動向")
+        for s in d["buys"]:
+            lines.append(_fmt_behavior_item(s))
+        for s in d["sells"]:
+            lines.append(_fmt_behavior_item(s))
+
+    if view["next_day_dump"]:
+        names = ", ".join(f"{s['broker_name']}({s['net'] / 1000:+,.0f})"
+                          for s in view["next_day_dump"])
+        lines.append(f"⚡ 隔日沖名單: {names}")
+    if view["day_trade"]:
+        dt = view["day_trade"]
+        names = ", ".join(s["broker_name"] for s in dt[:10])
+        more = f" …等 {len(dt)} 分點" if len(dt) > 10 else ""
+        lines.append(f"🔁 當沖分點: {names}{more}")
+
+    lines.append("⚠ 外資分點含客戶委託、非全為外資自營；散戶指標為經驗 proxy；"
+                 "行為門檻先驗未回測")
+    return lines
+
+
+def _load_prev_day_rows(stock_code: str,
+                        trading_date: str) -> tuple[list[dict], str]:
+    """Load the most recent bsr_cache *_prices.json strictly before
+    trading_date. Returns (rows, date) or ([], "")."""
+    for d in _list_bsr_cache_dates(stock_code):
+        if d >= trading_date:
+            continue
+        path = os.path.join(HERE, "bsr_cache",
+                            f"{stock_code}_{d}_prices.json")
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path) as fh:
+                cached = json.load(fh)
+            if cached.get("rows"):
+                return cached["rows"], d
+        except Exception:
+            continue
+    return [], ""
+
+
 def _fmt_date(yyyymmdd: str) -> str:
     return f"{yyyymmdd[:4]}/{yyyymmdd[4:6]}/{yyyymmdd[6:8]}"
 
@@ -1555,6 +1799,11 @@ def format_report(data: dict) -> str:
             )
             _emit_broker_detail(w, "sell")
             _emit_broker_detail(w, "buy")
+
+    # 分點行為分類 — 外資/散戶指標/內資 grouping + behavior tags
+    if data.get("behavior"):
+        lines.append("")
+        lines.extend(_format_behavior(data["behavior"]))
 
     # Continuity footer — pull recent history (default 5 trading days)
     continuity = _format_continuity(data, days=5)
@@ -2104,6 +2353,17 @@ def analyze(stock_code: str, date: str | None = None,
     except Exception:
         name = ""
 
+    # 4b. 分點行為分類 — cross-day 隔日沖 needs the previous trading day's
+    # per-price cache; degrade gracefully (no 隔日沖 tags) when absent.
+    try:
+        prev_rows, prev_date = _load_prev_day_rows(stock_code, trading_date)
+        behavior = build_behavior_view(
+            bsr["rows"], ohlc["low"], ohlc["high"],
+            prev_rows=prev_rows or None, prev_date=prev_date)
+    except Exception as e:
+        print(f"[WARN] behavior view failed: {e}", file=sys.stderr)
+        behavior = {}
+
     result = {
         "stock_code": stock_code,
         "name": name,
@@ -2116,6 +2376,7 @@ def analyze(stock_code: str, date: str | None = None,
         "stage_basis": stage_basis,
         "fingerprint": fingerprint,
         "wash_candidates": wash,
+        "behavior": behavior,
     }
     # 5. Archive to per-stock history (rolling 10 trading days). Idempotent —
     # re-running on the same day overwrites the same file. Skip on --no-fetch
