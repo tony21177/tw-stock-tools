@@ -89,29 +89,31 @@ class TestGenerate(NarrativeDirMixin):
         result_p, _ = chip_narrative._paths("2313", "20260716")
         chip_narrative._write_atomic(result_p, {
             "code": "2313", "date": "20260716", "narrative": "舊的"})
-        with mock.patch.object(chip_narrative.threading, "Thread") as th:
+        with mock.patch.object(chip_narrative.subprocess, "Popen") as po:
             st = chip_narrative.start("2313", "20260716")
         self.assertEqual(st["state"], "done")
-        th.assert_not_called()
+        po.assert_not_called()
 
     def test_start_force_regenerates(self):
         result_p, _ = chip_narrative._paths("2313", "20260716")
         chip_narrative._write_atomic(result_p, {
             "code": "2313", "date": "20260716", "narrative": "舊的"})
-        with mock.patch.object(chip_narrative.threading, "Thread") as th:
+        with mock.patch.object(chip_narrative.subprocess, "Popen") as po:
             st = chip_narrative.start("2313", "20260716", force=True)
         self.assertEqual(st["state"], "running")
-        th.assert_called_once()
+        po.assert_called_once()
+        self.assertTrue(
+            po.call_args.kwargs.get("start_new_session"))
         self.assertFalse(os.path.exists(result_p))
 
     def test_start_skips_when_already_running(self):
         _, status_p = chip_narrative._paths("2313", "20260716")
         chip_narrative._write_atomic(
             status_p, {"state": "running", "started_at": time.time()})
-        with mock.patch.object(chip_narrative.threading, "Thread") as th:
+        with mock.patch.object(chip_narrative.subprocess, "Popen") as po:
             st = chip_narrative.start("2313", "20260716")
         self.assertEqual(st["state"], "running")
-        th.assert_not_called()
+        po.assert_not_called()
 
 
 class TestFullMode(NarrativeDirMixin):
@@ -132,11 +134,13 @@ class TestFullMode(NarrativeDirMixin):
             "none")
 
     def test_start_full_passes_mode_to_worker(self):
-        with mock.patch.object(chip_narrative.threading, "Thread") as th:
+        with mock.patch.object(chip_narrative.subprocess, "Popen") as po:
             st = chip_narrative.start("2313", "20260716", mode="full")
         self.assertEqual(st["state"], "running")
-        self.assertEqual(th.call_args.kwargs["args"],
-                         ("2313", "20260716", "full"))
+        cmd = po.call_args.args[0]
+        self.assertIn("--full", cmd)
+        self.assertIn("2313", cmd)
+        self.assertIn("20260716", cmd)
 
     def test_start_unknown_mode_errors(self):
         st = chip_narrative.start("2313", "20260716", mode="bogus")

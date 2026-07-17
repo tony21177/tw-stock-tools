@@ -14,7 +14,6 @@ import os
 import shutil
 import subprocess
 import sys
-import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -252,8 +251,18 @@ def start(code: str, date: str, mode: str = "quick",
         except OSError:
             pass
     _write_atomic(status_p, {"state": "running", "started_at": time.time()})
-    threading.Thread(target=_generate, args=(code, date, mode),
-                     daemon=True).start()
+    # Detached subprocess (own session), NOT an in-process thread: a Flask
+    # service restart would kill the thread mid-run and strand the status
+    # file at "running" until stale timeout (happened 2026-07-17 deploying
+    # while a 3491 full run was in flight). The CLI entrypoint of this
+    # module runs _generate and writes the result/error files itself.
+    cmd = [sys.executable, os.path.abspath(__file__), code, date]
+    if mode == "full":
+        cmd.append("--full")
+    log_path = os.path.join(NARRATIVE_DIR, "worker.log")
+    with open(log_path, "a") as lg:
+        subprocess.Popen(cmd, stdout=lg, stderr=lg,
+                         start_new_session=True, cwd=REPO)
     return {"state": "running", "mode": mode, "started_at": time.time()}
 
 
