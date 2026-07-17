@@ -69,6 +69,30 @@ def _save_cache(dates: list[str]) -> None:
         json.dump({"dates": dates}, f, ensure_ascii=False)
 
 
+def _verify_traded(date_iso: str, token: str) -> bool | None:
+    """臨時休市驗證 — 日曆說是交易日後，查 2330 該日有無實際成交。
+
+    FinMind 的 TaiwanStockTradingDate 是預排日曆，**不含臨時停市**
+    (2026-07-10 颱風假事件：實際休市但日曆列為交易日 → 所有盤後 cron
+    誤跑，TWSE BSR 回傳前一日資料被錯標)。收盤資料 FinMind ~14:00 後
+    可得，所以只對「過去日期」或「今天且已過 15:00」做此驗證。
+
+    True=有成交, False=臨時休市, None=查不到(fail-open 照日曆)。
+    """
+    q = urllib.parse.urlencode({
+        "dataset": "TaiwanStockPrice", "data_id": "2330",
+        "start_date": date_iso, "end_date": date_iso, "token": token})
+    try:
+        req = urllib.request.Request(f"{FINMIND_API}?{q}")
+        with urllib.request.urlopen(req, timeout=20) as r:
+            d = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return None
+    if str(d.get("msg", "")).lower() != "success":
+        return None   # token 額度/API 異常 → 不可信，fail-open
+    return any(x.get("date") == date_iso for x in d.get("data", []))
+
+
 def is_trading_day(date_iso: str) -> bool | None:
     """True=交易日, False=休市, None=無法判定(讓呼叫端 fail-safe)。"""
     cal = _load_cache()
@@ -102,6 +126,18 @@ if __name__ == "__main__":
         res = wd in ("1", "2", "3", "4", "5")
         sys.stderr.write(f"[is_trading_day] {date_iso} 無日曆，fallback 週間判斷={res}\n")
     if res:
+        # 第二層：臨時休市驗證 (颱風假等日曆沒有的停市)。
+        # 只在收盤資料應已存在時查：過去日期、或今天且已過 15:00。
+        today_iso = subprocess.run(["date", "+%Y-%m-%d"], capture_output=True,
+                                   text=True).stdout.strip()
+        hour = int(subprocess.run(["date", "+%H"], capture_output=True,
+                                  text=True).stdout.strip())
+        if date_iso < today_iso or (date_iso == today_iso and hour >= 15):
+            v = _verify_traded(date_iso, _token())
+            if v is False:
+                sys.stderr.write(f"[is_trading_day] {date_iso} 日曆列交易日"
+                                 f"但無成交資料 (臨時休市?)，跳過\n")
+                sys.exit(1)
         sys.exit(0)                             # 交易日 → 跑
     sys.stderr.write(f"[is_trading_day] {date_iso} 非交易日，跳過\n")
     sys.exit(1)                                 # 休市 → 不跑

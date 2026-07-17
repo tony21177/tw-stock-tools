@@ -40,6 +40,17 @@ run_if_missing() {
   local out="$1" after="$2" jlog="$3"; shift 3; shift  # drop the "--"
   [ -f "$out" ] && return 0
   [ "$HOUR" -lt "$after" ] && return 0   # 還沒到排程時間，交給正常 cron
+  # 長工防雙跑：輸出檔在 job 結束才寫，主力雷達要跑 26-105 分鐘 —
+  # 正常 cron 還在跑時檔案不存在，補跑會開第二個 instance (2026-07-13
+  # 主力雷達雙跑事件)。同 script 已有 process 在跑就跳過，下一輪再檢查。
+  # 注意 tw_lending_monitor.py 供 lending/sbl 兩個 job 共用，可能互相
+  # false-positive 跳過 — 無害，hourly 下一輪會補。
+  local a script=""
+  for a in "$@"; do case "$a" in *.py) script="$a"; break;; esac; done
+  if [ -n "$script" ] && pgrep -f "$(basename "$script")" > /dev/null; then
+    log "$(basename "$script") 執行中，跳過補跑 $(basename "$out")"
+    return 0
+  fi
   log "缺 $(basename "$out") → 補跑: $*"
   TG_BOT_TOKEN="$TG" FINMIND_TOKEN="$FM" "$@" >> "$jlog" 2>&1
   log "補跑結束 (exit $?): $(basename "$out")"
