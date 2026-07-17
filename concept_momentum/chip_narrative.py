@@ -22,8 +22,12 @@ REPO = os.path.dirname(HERE)
 sys.path.insert(0, REPO)
 
 NARRATIVE_DIR = os.path.join(HERE, "cache", "chip_narrative")
-CLAUDE_TIMEOUT = 300          # seconds
-STALE_RUNNING_SEC = 420       # running 狀態超過 7 分鐘視為死掉，可重跑
+
+# quick = 純文字（只餵序列，無工具）；full = agentic（帶工具跑三線整合）
+MODES = {
+    "quick": {"timeout": 300, "stale": 420, "suffix": ""},
+    "full": {"timeout": 1500, "stale": 1800, "suffix": "_full"},
+}
 
 _PROMPT_TEMPLATE = """你是台股籌碼分析師。以下是 {code} {name} {date_fmt} 的分點多日連續買賣序列。
 格式說明：每分點一行序列，`MM/DD 淨買賣張數@位階%`；@% = 當日買(賣)均價在該日
@@ -45,8 +49,34 @@ k = 千張。
 - 直接輸出分析，不要開場白、不要重複資料表"""
 
 
-def _paths(code: str, date: str) -> tuple[str, str]:
-    base = os.path.join(NARRATIVE_DIR, f"{code}_{date}")
+_PROMPT_FULL_TEMPLATE = """你是台股籌碼分析師，工作目錄 {repo}（有 Bash/Read 等工具可用）。
+目標：對 {code} {name} 以 {date_fmt} 為基準日做「三線整合 + 分點行為序列」完整籌碼分析，
+最後只輸出一篇敘事判讀（不要輸出過程）。
+
+規則：
+- 先讀 ~/.claude/skills/chip/SKILL.md 與 ~/.claude/skills/chip-price/SKILL.md，
+  遵守全部判讀紀律（30 天內除權息強制查核 — 借券人最後過戶日前強制還券、
+  制度性還券潮 ≠ 主動撤退；借券≠賣空、還券≠平倉；隔日沖需完整 買→倒 cycle；
+  真累積 vs 沖來沖去；不可只挑符合敘事的分點）
+- FINMIND_TOKEN 從 `crontab -l` 解析
+- 資料收集：
+  1. `python3 tw_chip_price.py {code} --date {date} --no-fetch` — 當日 BSR 已有
+     cache，讀完整 8 段報告，特別是【🧭 分點行為 — 近N日連續買賣序列】
+  2. 借券/融資線：依 chip skill 流程抓借券餘額、SBL 賣空、融資維持率，
+     並查 FinMind TaiwanStockDividend 確認 30 天內有無除權息事件
+  3. 需要時查 FinMind 價量確認走勢背景
+- 禁止：推 Telegram、寫入或修改任何檔案、跑 cron/systemctl、重抓 BSR 網站
+  （只用既有 cache；--no-fetch 失敗就在敘事中明講缺當日 BSR）
+- 任一條線抓不到就明講「缺」，不要編造數字
+
+輸出（繁體中文，直接輸出、無開場白、不要重複原始資料表）：
+🌏 外資動向 → 🏦 內資逐分點點名 → 🏠 散戶 → 🧷 借券/融資/除權息交叉檢核
+→ 📌 結論（今天買賣壓主體是誰 + 明日觀察重點）"""
+
+
+def _paths(code: str, date: str, mode: str = "quick") -> tuple[str, str]:
+    base = os.path.join(NARRATIVE_DIR,
+                        f"{code}_{date}{MODES[mode]['suffix']}")
     return base + ".json", base + ".status.json"
 
 
@@ -112,18 +142,43 @@ def build_prompt(code: str, date: str) -> str:
         series_text=series_text, o=o, h=h, l=low, c=c, chg=chg, vol=vol)
 
 
-def _run_claude(prompt: str) -> str:
-    """Call headless Claude CLI; returns narrative text. Raises on failure."""
+def build_prompt_full(code: str, date: str) -> str:
+    """Prompt for the agentic full run (三線整合). Same precondition as
+    quick: the day's BSR cache must exist."""
+    import tw_chip_price as cp
+    if not cp._load_day_broker_stats(code, date):
+        raise RuntimeError(f"{code} {date} 無分點序列資料 "
+                           f"(bsr_cache 缺當日檔，先跑一次籌碼價量分析)")
+    name = ""
+    try:
+        from stock_names import get_name
+        name = get_name(code, "")
+    except Exception:
+        pass
+    return _PROMPT_FULL_TEMPLATE.format(
+        repo=REPO, code=code, name=name, date=date,
+        date_fmt=f"{date[:4]}/{date[4:6]}/{date[6:8]}")
+
+
+def _run_claude(prompt: str, mode: str = "quick") -> str:
+    """Call headless Claude CLI; returns narrative text. Raises on failure.
+
+    quick: 純文字單回合（無工具）。full: agentic，帶
+    --dangerously-skip-permissions 讓它能跑 repo 內的查詢工具（僅本機
+    自用 dashboard 觸發；prompt 已禁止寫檔/推播/抓站）。
+    """
     claude = shutil.which("claude")
     if not claude:
         fallback = os.path.expanduser("~/.local/bin/claude")
         claude = fallback if os.path.exists(fallback) else None
     if not claude:
         raise RuntimeError("claude CLI 不存在 — 需安裝 Claude Code")
+    cmd = [claude, "-p", "--output-format", "text"]
+    if mode == "full":
+        cmd.append("--dangerously-skip-permissions")
     proc = subprocess.run(
-        [claude, "-p", "--output-format", "text"],
-        input=prompt, capture_output=True, text=True,
-        timeout=CLAUDE_TIMEOUT, cwd=REPO)
+        cmd, input=prompt, capture_output=True, text=True,
+        timeout=MODES[mode]["timeout"], cwd=REPO)
     out = (proc.stdout or "").strip()
     if proc.returncode != 0 or not out:
         err = (proc.stderr or "").strip()[:400]
@@ -131,37 +186,40 @@ def _run_claude(prompt: str) -> str:
     return out
 
 
-def load_cached(code: str, date: str) -> dict | None:
+def load_cached(code: str, date: str, mode: str = "quick") -> dict | None:
     """Return the finished narrative dict, or None."""
-    result, _ = _paths(code, date)
+    result, _ = _paths(code, date, mode)
     return _read_json(result)
 
 
-def get_status(code: str, date: str) -> dict:
+def get_status(code: str, date: str, mode: str = "quick") -> dict:
     """{state: none|running|done|error, ...}"""
-    result_p, status_p = _paths(code, date)
+    result_p, status_p = _paths(code, date, mode)
     done = _read_json(result_p)
     if done:
-        return {"state": "done", **done}
+        return {"state": "done", "mode": mode, **done}
     st = _read_json(status_p)
     if st and st.get("state") == "running":
-        if time.time() - st.get("started_at", 0) > STALE_RUNNING_SEC:
-            return {"state": "error", "error": "上次執行逾時未完成，可重試"}
-        return {"state": "running", "started_at": st.get("started_at")}
+        if time.time() - st.get("started_at", 0) > MODES[mode]["stale"]:
+            return {"state": "error", "mode": mode,
+                    "error": "上次執行逾時未完成，可重試"}
+        return {"state": "running", "mode": mode,
+                "started_at": st.get("started_at")}
     if st and st.get("state") == "error":
-        return st
-    return {"state": "none"}
+        return {**st, "mode": mode}
+    return {"state": "none", "mode": mode}
 
 
-def _generate(code: str, date: str) -> None:
+def _generate(code: str, date: str, mode: str = "quick") -> None:
     """Worker: build prompt → claude → save. Errors land in status file."""
-    result_p, status_p = _paths(code, date)
+    result_p, status_p = _paths(code, date, mode)
     try:
-        prompt = build_prompt(code, date)
+        prompt = (build_prompt_full(code, date) if mode == "full"
+                  else build_prompt(code, date))
         t0 = time.time()
-        text = _run_claude(prompt)
+        text = _run_claude(prompt, mode)
         _write_atomic(result_p, {
-            "code": code, "date": date, "narrative": text,
+            "code": code, "date": date, "mode": mode, "narrative": text,
             "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "elapsed_sec": round(time.time() - t0, 1),
         })
@@ -174,35 +232,39 @@ def _generate(code: str, date: str) -> None:
                                  "error": f"{type(e).__name__}: {e}"})
 
 
-def start(code: str, date: str, force: bool = False) -> dict:
+def start(code: str, date: str, mode: str = "quick",
+          force: bool = False) -> dict:
     """Kick off narrative generation in a background thread (idempotent).
 
     Returns current status. With force=True, discards existing result.
     """
-    result_p, status_p = _paths(code, date)
-    st = get_status(code, date)
+    if mode not in MODES:
+        return {"state": "error", "error": f"未知 mode: {mode}"}
+    result_p, status_p = _paths(code, date, mode)
+    st = get_status(code, date, mode)
     if st["state"] == "running":
         return st
     if st["state"] == "done" and not force:
         return st
     if force:
-        for p in (result_p,):
-            try:
-                os.remove(p)
-            except OSError:
-                pass
+        try:
+            os.remove(result_p)
+        except OSError:
+            pass
     _write_atomic(status_p, {"state": "running", "started_at": time.time()})
-    threading.Thread(target=_generate, args=(code, date),
+    threading.Thread(target=_generate, args=(code, date, mode),
                      daemon=True).start()
-    return {"state": "running", "started_at": time.time()}
+    return {"state": "running", "mode": mode, "started_at": time.time()}
 
 
 if __name__ == "__main__":
-    # CLI 測試: python3 chip_narrative.py 2313 20260716 [--prompt-only]
+    # CLI 測試: python3 chip_narrative.py <code> <date> [--full] [--prompt-only]
     _code, _date = sys.argv[1], sys.argv[2]
+    _mode = "full" if "--full" in sys.argv else "quick"
     if "--prompt-only" in sys.argv:
-        print(build_prompt(_code, _date))
+        print(build_prompt_full(_code, _date) if _mode == "full"
+              else build_prompt(_code, _date))
     else:
-        _generate(_code, _date)
-        print(json.dumps(get_status(_code, _date), ensure_ascii=False,
+        _generate(_code, _date, _mode)
+        print(json.dumps(get_status(_code, _date, _mode), ensure_ascii=False,
                          indent=1))

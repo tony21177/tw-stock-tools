@@ -4584,21 +4584,23 @@ def chip_narrative_start():
     """觸發 AI 行為敘事產生 (背景 thread, 每次 = 一次 Claude 呼叫)。"""
     code = (request.form.get("code") or "").strip()
     date = (request.form.get("date") or "").strip()
+    mode = (request.form.get("mode") or "full").strip()
     force = request.form.get("force") == "1"
     if not code or not date:
         return jsonify({"state": "error", "error": "缺 code/date"}), 400
     import chip_narrative
-    return jsonify(chip_narrative.start(code, date, force=force))
+    return jsonify(chip_narrative.start(code, date, mode=mode, force=force))
 
 
 @app.route("/api/chip-narrative", methods=["GET"])
 def chip_narrative_status():
     code = (request.args.get("code") or "").strip()
     date = (request.args.get("date") or "").strip()
+    mode = (request.args.get("mode") or "full").strip()
     if not code or not date:
         return jsonify({"state": "error", "error": "缺 code/date"}), 400
     import chip_narrative
-    return jsonify(chip_narrative.get_status(code, date))
+    return jsonify(chip_narrative.get_status(code, date, mode=mode))
 
 
 def _md_lite(text: str) -> str:
@@ -4623,60 +4625,96 @@ def _md_lite(text: str) -> str:
 
 
 def _render_narrative_block(code: str, date: str) -> str:
-    """【🤖 AI 行為敘事】 section: cached result or trigger button +
-    polling JS."""
+    """【🤖 AI 行為敘事】 section: cached result (完整版優先) or trigger
+    buttons + polling JS. 完整版 = agentic 三線整合 (~5-10 分)；快速版 =
+    只讀序列 (~1-2 分)。"""
     import chip_narrative
-    st = chip_narrative.get_status(code, date)
+    st_full = chip_narrative.get_status(code, date, mode="full")
+    st_quick = chip_narrative.get_status(code, date, mode="quick")
     code_js = html_lib.escape(code)
     date_js = html_lib.escape(date)
-    explain = ('<p class="small">AI 讀「近 10 日分點連續買賣序列」寫的行為判讀'
-               '（誰在真累積、誰是隔日沖慣犯、誰在倒貨、散戶動向），'
-               '由本機 Claude CLI 產生，約 1-2 分鐘；'
-               '每次產生消耗一次 Claude 用量，同一天同一檔會存快取。'
+    explain = ('<p class="small">AI 產生的籌碼行為判讀，由本機 Claude CLI 執行。'
+               '<b>完整版</b>＝跑三線整合（分點多日序列 + 借券/SBL + 融資 + '
+               '30 天內除權息查核）再交叉寫敘事，約 5-10 分鐘；'
+               '<b>快速版</b>＝只讀「近 10 日分點連續買賣序列」，約 1-2 分鐘。'
+               '每次產生消耗一次 Claude 用量，同檔同日同版本存快取。'
                '⚠ 判讀基於分點慣性推論，非投資建議。</p>')
-    if st["state"] == "done":
+
+    def _done_body(st, label):
         body = _md_lite(st.get("narrative", ""))
-        meta = (f'<p class="small muted">產生於 {_esc(st.get("generated_at", "?"))}'
-                f' (耗時 {_esc(st.get("elapsed_sec", "?"))}s)</p>')
-        controls = (f'<button id="cn-btn" class="secondary" '
-                    f'onclick="cnStart(\'{code_js}\',\'{date_js}\',true)">'
-                    f'🔄 重新產生</button> <span id="cn-status" class="small"></span>')
-        inner = body + meta + controls
-    elif st["state"] == "running":
-        inner = ('<p id="cn-status">⏳ 產生中 (約 1-2 分鐘)，完成後自動顯示…</p>'
-                 f'<script>setTimeout(function(){{cnPoll("{code_js}","{date_js}")}}, 5000);</script>')
+        meta = (f'<p class="small muted">{label}・產生於 '
+                f'{_esc(st.get("generated_at", "?"))} '
+                f'(耗時 {_esc(st.get("elapsed_sec", "?"))}s)</p>')
+        return body + meta
+
+    shown = ""
+    if st_full["state"] == "done":
+        shown = _done_body(st_full, "完整版 (三線整合)")
+    elif st_quick["state"] == "done":
+        shown = _done_body(st_quick, "快速版 (僅序列)")
+
+    running = None
+    if st_full["state"] == "running":
+        running = ("full", "完整版 (約 5-10 分鐘)")
+    elif st_quick["state"] == "running":
+        running = ("quick", "快速版 (約 1-2 分鐘)")
+
+    err = ""
+    for st, label in ((st_full, "完整版"), (st_quick, "快速版")):
+        if st["state"] == "error":
+            err += (f'<p class="small" style="color:#c00">⚠ {label}上次失敗：'
+                    f'{_esc(st.get("error", ""))}</p>')
+
+    if running:
+        mode_js, label = running
+        inner = (shown + err +
+                 f'<p id="cn-status">⏳ {label}產生中，完成後自動顯示…</p>'
+                 f'<script>setTimeout(function(){{cnPoll("{code_js}","{date_js}","{mode_js}")}}, 8000);</script>')
     else:
-        err = (f'<p class="small" style="color:#c00">⚠ 上次失敗：'
-               f'{_esc(st.get("error", ""))}</p>'
-               if st["state"] == "error" else "")
-        inner = (err + f'<button id="cn-btn" '
-                 f'onclick="cnStart(\'{code_js}\',\'{date_js}\',false)">'
-                 f'🤖 產生 AI 行為敘事</button> '
+        full_label = ("🔄 重新產生完整版" if st_full["state"] == "done"
+                      else "🤖 完整版敘事 (三線整合, ~5-10分)")
+        quick_label = ("🔄 重新產生快速版" if st_quick["state"] == "done"
+                       else "⚡ 快速版 (僅序列, ~1-2分)")
+        full_force = "true" if st_full["state"] == "done" else "false"
+        quick_force = "true" if st_quick["state"] == "done" else "false"
+        inner = (shown + err +
+                 f'<button id="cn-btn" '
+                 f'onclick="cnStart(\'{code_js}\',\'{date_js}\',\'full\',{full_force})">'
+                 f'{full_label}</button> '
+                 f'<button id="cn-btn2" class="secondary" '
+                 f'onclick="cnStart(\'{code_js}\',\'{date_js}\',\'quick\',{quick_force})">'
+                 f'{quick_label}</button> '
                  f'<span id="cn-status" class="small"></span>')
     js = """<script>
-function cnPoll(code, date) {
-  fetch('/api/chip-narrative?code=' + code + '&date=' + date)
+function cnPoll(code, date, mode) {
+  fetch('/api/chip-narrative?code=' + code + '&date=' + date + '&mode=' + mode)
     .then(function(r){ return r.json(); })
     .then(function(s){
       if (s.state === 'done') { location.reload(); }
       else if (s.state === 'error') {
         var el = document.getElementById('cn-status');
         if (el) el.textContent = '⚠ ' + (s.error || '失敗');
-        var b = document.getElementById('cn-btn');
-        if (b) b.disabled = false;
-      } else { setTimeout(function(){ cnPoll(code, date); }, 5000); }
+        var b1 = document.getElementById('cn-btn');
+        var b2 = document.getElementById('cn-btn2');
+        if (b1) b1.disabled = false;
+        if (b2) b2.disabled = false;
+      } else { setTimeout(function(){ cnPoll(code, date, mode); }, 8000); }
     });
 }
-function cnStart(code, date, force) {
-  var b = document.getElementById('cn-btn');
-  if (b) b.disabled = true;
+function cnStart(code, date, mode, force) {
+  var b1 = document.getElementById('cn-btn');
+  var b2 = document.getElementById('cn-btn2');
+  if (b1) b1.disabled = true;
+  if (b2) b2.disabled = true;
   var el = document.getElementById('cn-status');
-  if (el) el.textContent = '⏳ 產生中 (約 1-2 分鐘)…';
+  if (el) el.textContent = mode === 'full'
+      ? '⏳ 完整版產生中 (約 5-10 分鐘)…' : '⏳ 快速版產生中 (約 1-2 分鐘)…';
   fetch('/api/chip-narrative', {
     method: 'POST',
     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-    body: 'code=' + code + '&date=' + date + '&force=' + (force ? 1 : 0)
-  }).then(function(){ setTimeout(function(){ cnPoll(code, date); }, 5000); });
+    body: 'code=' + code + '&date=' + date + '&mode=' + mode +
+          '&force=' + (force ? 1 : 0)
+  }).then(function(){ setTimeout(function(){ cnPoll(code, date, mode); }, 8000); });
 }
 </script>"""
     return (f'<section id="narrative"><h2>🤖 AI 行為敘事 '

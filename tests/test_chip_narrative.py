@@ -27,8 +27,8 @@ class NarrativeDirMixin(unittest.TestCase):
 
 class TestStatusLifecycle(NarrativeDirMixin):
     def test_none_initially(self):
-        self.assertEqual(chip_narrative.get_status("2313", "20260716"),
-                         {"state": "none"})
+        st = chip_narrative.get_status("2313", "20260716")
+        self.assertEqual(st["state"], "none")
 
     def test_done_after_result_written(self):
         result_p, _ = chip_narrative._paths("2313", "20260716")
@@ -70,7 +70,7 @@ class TestGenerate(NarrativeDirMixin):
              mock.patch.object(chip_narrative, "_run_claude",
                                return_value="敘事內容") as rc:
             chip_narrative._generate("2313", "20260716")
-        rc.assert_called_once_with("PROMPT")
+        rc.assert_called_once_with("PROMPT", "quick")
         st = chip_narrative.get_status("2313", "20260716")
         self.assertEqual(st["state"], "done")
         self.assertEqual(st["narrative"], "敘事內容")
@@ -112,6 +112,48 @@ class TestGenerate(NarrativeDirMixin):
             st = chip_narrative.start("2313", "20260716")
         self.assertEqual(st["state"], "running")
         th.assert_not_called()
+
+
+class TestFullMode(NarrativeDirMixin):
+    def test_paths_mode_suffix(self):
+        q, _ = chip_narrative._paths("2313", "20260716", "quick")
+        f, _ = chip_narrative._paths("2313", "20260716", "full")
+        self.assertTrue(q.endswith("2313_20260716.json"))
+        self.assertTrue(f.endswith("2313_20260716_full.json"))
+
+    def test_modes_cached_independently(self):
+        fq, _ = chip_narrative._paths("2313", "20260716", "quick")
+        chip_narrative._write_atomic(fq, {"narrative": "快"})
+        self.assertEqual(
+            chip_narrative.get_status("2313", "20260716", "quick")["state"],
+            "done")
+        self.assertEqual(
+            chip_narrative.get_status("2313", "20260716", "full")["state"],
+            "none")
+
+    def test_start_full_passes_mode_to_worker(self):
+        with mock.patch.object(chip_narrative.threading, "Thread") as th:
+            st = chip_narrative.start("2313", "20260716", mode="full")
+        self.assertEqual(st["state"], "running")
+        self.assertEqual(th.call_args.kwargs["args"],
+                         ("2313", "20260716", "full"))
+
+    def test_start_unknown_mode_errors(self):
+        st = chip_narrative.start("2313", "20260716", mode="bogus")
+        self.assertEqual(st["state"], "error")
+
+    def test_run_claude_full_uses_skip_permissions(self):
+        fake = mock.Mock(returncode=0, stdout="ok", stderr="")
+        with mock.patch.object(chip_narrative.subprocess, "run",
+                               return_value=fake) as run, \
+             mock.patch.object(chip_narrative.shutil, "which",
+                               return_value="/usr/bin/claude"):
+            chip_narrative._run_claude("p", mode="full")
+            self.assertIn("--dangerously-skip-permissions",
+                          run.call_args.args[0])
+            chip_narrative._run_claude("p", mode="quick")
+            self.assertNotIn("--dangerously-skip-permissions",
+                             run.call_args.args[0])
 
 
 class TestRunClaude(NarrativeDirMixin):
