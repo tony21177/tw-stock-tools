@@ -1341,12 +1341,14 @@ def broker_band_progression(stock_code: str, broker_id: str,
 
 
 # ---------------------------------------------------------------------------
-# 分點行為分類 (broker behavior classification)
+# 分點行為序列 (broker multi-day behavior series)
 #
-# Reproduces the narrative style of manual 分點 analysis: classify each
-# broker branch as 外資 / 散戶指標 / 內資 by name, then tag same-day and
-# cross-day behavior (低接 / 追高 / 當沖 / 隔日沖 / 純倒貨 / 殺低出).
-# Thresholds are 先驗設定、未回測 — disclosed in the report footer.
+# Surfaces each notable broker's day-by-day net buy/sell series (with
+# value-weighted avg-price position in that day's range) grouped as
+# 外資 / 散戶指標 / 內資, so behavior habits — 連續低接, 隔日沖慣犯,
+# 當沖, 波段出貨 — can be read off the actual multi-day sequence instead
+# of single-day threshold rules. Interpretation is intentionally left to
+# the analyst (skill layer), not hard-coded tags.
 # ---------------------------------------------------------------------------
 
 # Domestic-firm name prefixes checked BEFORE foreign patterns so branches
@@ -1370,8 +1372,8 @@ _FOREIGN_PATTERNS = (
 # 大型網路下單通路). Exact match after space-stripping.
 _RETAIL_PROXY_NAMES = {"永豐金", "國泰敦南"}
 
-# Activity floor: broker must trade max(100張, 0.2% of day volume) on the
-# relevant side before any behavior tag applies (shares).
+# Inclusion floor for the series view: brokers below max(100張, 0.2% of
+# day volume) net on the day don't make the list (shares).
 BEHAVIOR_MIN_SHARES = 100_000
 BEHAVIOR_VOL_RATIO = 0.002
 
@@ -1393,37 +1395,46 @@ def classify_broker_type(name: str) -> str:
     return "domestic"
 
 
-def _behavior_tags(stat: dict, low: float, high: float, thr: int,
-                   prev_net: int | None) -> list[str]:
-    """Behavior tags for one broker's day stats.
+def _load_day_broker_stats(stock_code: str, date: str,
+                           cache_dir: str | None = None
+                           ) -> dict[str, dict] | None:
+    """Per-broker stats for one cached day.
 
-    stat = {buy, sell, buy_avg, sell_avg} (shares / NTD). prev_net is the
-    broker's previous-trading-day net shares, or None when no prior BSR
-    cache exists (隔日沖 then undetectable).
+    Prefers `{code}_{date}_prices.json` (per-price rows → value-weighted
+    avg prices); falls back to the plain aggregate `{code}_{date}.json`
+    written by broker_monitor (shares only, avgs 0.0). None when neither
+    cache file exists or both are unreadable.
     """
-    buy, sell = stat["buy"], stat["sell"]
-    net = buy - sell
-    rng = (high - low) or 1.0
-    tags = []
-    if buy >= thr and sell >= thr and min(buy, sell) / max(buy, sell) >= 0.7:
-        tags.append("當沖")
-    # 隔日沖: bought big yesterday, dumped a comparable chunk today.
-    if (prev_net is not None and prev_net >= thr
-            and net <= -max(thr, 0.4 * prev_net)):
-        tags.append("隔日沖")
-    if sell >= thr and buy < 0.15 * sell:
-        tags.append("純倒貨")
-    if buy >= thr and stat["buy_avg"]:
-        pos = (stat["buy_avg"] - low) / rng
-        if pos <= 0.35:
-            tags.append(f"低接@{pos:.0%}位階")
-        elif pos >= 0.65:
-            tags.append(f"追高@{pos:.0%}位階")
-    if sell >= thr and stat["sell_avg"]:
-        pos = (stat["sell_avg"] - low) / rng
-        if pos <= 0.35 and "隔日沖" not in tags and "當沖" not in tags:
-            tags.append("殺低出")
-    return tags
+    cache_dir = cache_dir or os.path.join(HERE, "bsr_cache")
+    prices_path = os.path.join(cache_dir, f"{stock_code}_{date}_prices.json")
+    if os.path.exists(prices_path):
+        try:
+            with open(prices_path) as fh:
+                cached = json.load(fh)
+            if cached.get("rows"):
+                return _broker_day_stats(cached["rows"])
+        except Exception:
+            pass
+    plain_path = os.path.join(cache_dir, f"{stock_code}_{date}.json")
+    if os.path.exists(plain_path):
+        try:
+            with open(plain_path) as fh:
+                cached = json.load(fh)
+            brokers = cached.get("brokers") or {}
+            stats = {}
+            for bid, b in brokers.items():
+                buy, sell = b.get("buy", 0), b.get("sell", 0)
+                stats[bid] = {
+                    "broker_id": bid,
+                    "broker_name": (b.get("name", "")
+                                    .replace(" ", "").replace("　", "")),
+                    "buy": buy, "sell": sell, "net": buy - sell,
+                    "buy_avg": 0.0, "sell_avg": 0.0,
+                }
+            return stats or None
+        except Exception:
+            pass
+    return None
 
 
 def _broker_day_stats(rows: list[dict]) -> dict[str, dict]:
@@ -1447,141 +1458,205 @@ def _broker_day_stats(rows: list[dict]) -> dict[str, dict]:
     return stats
 
 
-def build_behavior_view(rows: list[dict], low: float, high: float,
-                        prev_rows: list[dict] | None = None,
-                        prev_date: str = "", top_n: int = 5) -> dict:
-    """Build the 分點行為分類 section data (JSON-serializable).
+def _fetch_ohlc_map(stock_code: str, trading_date: str,
+                    lookback_days: int = 30) -> dict:
+    """{yyyymmdd: {low, high, close}} for the series window via one
+    FinMind call. Empty dict on any failure (位階 then omitted)."""
+    token = _get_token()
+    if not token:
+        return {}
+    import finmind_client
+    end_dt = datetime.strptime(trading_date, "%Y%m%d")
+    start_dt = end_dt - timedelta(days=lookback_days)
+    try:
+        rows = finmind_client.fetch_stock_price(
+            stock_code, start_dt.strftime("%Y-%m-%d"),
+            end_dt.strftime("%Y-%m-%d"), token)
+    except Exception:
+        return {}
+    out = {}
+    for r in rows or []:
+        d = str(r.get("date", "")).replace("-", "")
+        if len(d) == 8:
+            out[d] = {"low": r.get("min", 0.0), "high": r.get("max", 0.0),
+                      "close": r.get("close", 0.0)}
+    return out
 
-    prev_rows enables 隔日沖 detection; pass None when no prior-day BSR
-    cache exists.
+
+def build_behavior_series(stock_code: str, trading_date: str,
+                          days: int = 10, top_n: int = 8,
+                          ohlc_map: dict | None = None,
+                          cache_dir: str | None = None) -> dict:
+    """Multi-day per-broker behavior series (JSON-serializable).
+
+    Loads up to `days` cached trading days ending at trading_date and, for
+    each notable broker (today's top_n buyers + top_n sellers, plus every
+    外資/散戶指標 branch above the inclusion floor), emits the full
+    day-by-day sequence: net shares, buy/sell shares, avg prices and —
+    when ohlc_map has that day — the dominant-side avg price's position
+    in the day's low-high range (0=貼著最低, 1=貼著最高).
+
+    No behavior verdicts here: the sequence itself is the deliverable and
+    interpretation (低接/隔日沖/當沖/出貨…) happens at the skill layer.
     """
-    stats = _broker_day_stats(rows)
-    total = sum(s["buy"] for s in stats.values())
-    thr = max(BEHAVIOR_MIN_SHARES, int(total * BEHAVIOR_VOL_RATIO))
-    prev_net: dict[str, int] = {}
-    if prev_rows:
-        prev_net = {bid: s["net"]
-                    for bid, s in _broker_day_stats(prev_rows).items()}
+    all_dates = _list_bsr_cache_dates(stock_code, max_days=60,
+                                      cache_dir=cache_dir)
+    dates = sorted(d for d in all_dates if d <= trading_date)[-days:]
+    day_stats = {}
+    for d in dates:
+        s = _load_day_broker_stats(stock_code, d, cache_dir=cache_dir)
+        if s:
+            day_stats[d] = s
+    # Drop stale-duplicate days: BSR fetched on a non-publishing day (e.g.
+    # market holiday) serves the prior day's data and gets cached under the
+    # wrong date — every broker's (buy, sell) then matches the previous
+    # cached day exactly (seen 2026-07-10: 215/215 files duplicated 07/09).
+    prev_sig = None
+    for d in list(dates):
+        s = day_stats.get(d)
+        if s is None:
+            continue
+        sig = {bid: (v["buy"], v["sell"]) for bid, v in s.items()}
+        if sig == prev_sig:
+            del day_stats[d]
+            dates.remove(d)
+            continue
+        prev_sig = sig
+    if trading_date not in day_stats:
+        return {}
 
-    items = []
-    for bid, s in stats.items():
-        s["type"] = classify_broker_type(s["broker_name"])
-        s["prev_net"] = prev_net.get(bid, 0) if prev_rows else None
-        s["tags"] = _behavior_tags(s, low, high, thr, s["prev_net"])
-        items.append(s)
+    today = day_stats[trading_date]
+    total = sum(s["buy"] for s in today.values())
+    floor = max(BEHAVIOR_MIN_SHARES, int(total * BEHAVIOR_VOL_RATIO))
 
-    def _top(group, side):
-        pool = [s for s in items if s["type"] == group]
-        pool.sort(key=lambda s: s["net"], reverse=(side == "buy"))
-        keep = [s for s in pool if (s["net"] > 0) == (side == "buy")
-                and abs(s["net"]) >= thr]
-        return keep[:top_n]
+    ranked = sorted(today.values(), key=lambda s: s["net"])
+    sellers = [s for s in ranked if s["net"] <= -floor][:top_n]
+    buyers = [s for s in ranked[::-1] if s["net"] >= floor][:top_n]
+    picked = {s["broker_id"] for s in buyers + sellers}
+    for s in today.values():
+        if s["broker_id"] in picked or abs(s["net"]) < floor:
+            continue
+        if classify_broker_type(s["broker_name"]) in ("foreign",
+                                                      "retail_proxy"):
+            picked.add(s["broker_id"])
 
-    view = {
-        "prev_date": prev_date,
-        "threshold_shares": thr,
-        "foreign": {
-            "net": sum(s["net"] for s in items if s["type"] == "foreign"),
-            "buys": _top("foreign", "buy"),
-            "sells": _top("foreign", "sell"),
+    def _pos(day: str, stat: dict) -> float | None:
+        o = (ohlc_map or {}).get(day)
+        avg = stat["buy_avg"] if stat["net"] >= 0 else stat["sell_avg"]
+        if not o or not avg:
+            return None
+        rng = o["high"] - o["low"]
+        if rng <= 0:
+            return None
+        return round(min(1.0, max(0.0, (avg - o["low"]) / rng)), 2)
+
+    brokers = []
+    for bid in picked:
+        t = today[bid]
+        series = []
+        cum = 0
+        for d in dates:
+            stat = day_stats.get(d, {}).get(bid)
+            if stat is None:
+                series.append({"date": d, "net": None})
+                continue
+            cum += stat["net"]
+            series.append({
+                "date": d, "net": stat["net"],
+                "buy": stat["buy"], "sell": stat["sell"],
+                "buy_avg": stat["buy_avg"], "sell_avg": stat["sell_avg"],
+                "pos": _pos(d, stat),
+            })
+        brokers.append({
+            "broker_id": bid,
+            "broker_name": t["broker_name"],
+            "type": classify_broker_type(t["broker_name"]),
+            "today_net": t["net"],
+            "cum_net": cum,
+            "series": series,
+        })
+
+    def _grp(gtype, buy_side=None):
+        pool = [b for b in brokers if b["type"] == gtype]
+        if buy_side is not None:
+            pool = [b for b in pool if (b["today_net"] > 0) == buy_side]
+        return sorted(pool, key=lambda b: -abs(b["today_net"]))
+
+    return {
+        "trading_date": trading_date,
+        "dates": dates,
+        "floor_shares": floor,
+        "foreign_net_today": sum(s["net"] for s in today.values()
+                                 if classify_broker_type(s["broker_name"])
+                                 == "foreign"),
+        "retail_net_today": sum(s["net"] for s in today.values()
+                                if classify_broker_type(s["broker_name"])
+                                == "retail_proxy"),
+        "groups": {
+            "foreign": _grp("foreign"),
+            "retail": _grp("retail_proxy"),
+            "domestic_buy": _grp("domestic", buy_side=True),
+            "domestic_sell": _grp("domestic", buy_side=False),
         },
-        "retail": {
-            "net": sum(s["net"] for s in items if s["type"] == "retail_proxy"),
-            "items": sorted(
-                (s for s in items if s["type"] == "retail_proxy"),
-                key=lambda s: -abs(s["net"])),
-        },
-        "domestic": {
-            "buys": _top("domestic", "buy"),
-            "sells": _top("domestic", "sell"),
-        },
-        "next_day_dump": sorted(
-            (s for s in items if "隔日沖" in s["tags"]),
-            key=lambda s: s["net"]),
-        "day_trade": sorted(
-            (s for s in items if "當沖" in s["tags"]),
-            key=lambda s: -(s["buy"] + s["sell"])),
     }
-    return view
 
 
-def _fmt_behavior_item(s: dict, with_avg: bool = True) -> str:
-    tag_str = "".join(f" [{t}]" for t in s["tags"])
-    avg = ""
-    if with_avg:
-        if s["net"] >= 0 and s["buy_avg"]:
-            avg = f" 買均${s['buy_avg']:.1f}"
-        elif s["net"] < 0 and s["sell_avg"]:
-            avg = f" 賣均${s['sell_avg']:.1f}"
-    return (f"  {s['broker_id']} {s['broker_name']} "
-            f"{s['net'] / 1000:+,.0f}張{avg}{tag_str}")
+def _fmt_k(shares: int) -> str:
+    """Compact 張 formatting: +6.0k = 6,041張, -156 = -156張."""
+    z = shares / 1000
+    if abs(z) >= 1000:
+        return f"{z / 1000:+.1f}k"
+    return f"{z:+,.0f}"
+
+
+def _fmt_series_line(b: dict) -> list[str]:
+    head = (f"  {b['broker_id']} {b['broker_name']} "
+            f"今日 {b['today_net'] / 1000:+,.0f}張 / "
+            f"{sum(1 for s in b['series'] if s['net'] is not None)}日累計 "
+            f"{b['cum_net'] / 1000:+,.0f}張")
+    cells = []
+    for s in b["series"]:
+        d = f"{s['date'][4:6]}/{s['date'][6:8]}"
+        if s["net"] is None:
+            cells.append(f"{d} —")
+            continue
+        cell = f"{d} {_fmt_k(s['net'])}"
+        if s.get("pos") is not None:
+            cell += f"@{s['pos']:.0%}"
+        cells.append(cell)
+    return [head, "    " + " | ".join(cells)]
 
 
 def _format_behavior(view: dict) -> list[str]:
-    """Render 【🧭 分點行為分類】 lines from build_behavior_view output."""
-    lines = []
-    prev = view.get("prev_date", "")
-    header = "【🧭 分點行為分類】"
-    header += (f"(隔日沖比對 {_fmt_date(prev)})" if prev
-               else "(無前日 BSR cache — 隔日沖無法判定)")
-    lines.append(header)
-
-    f = view["foreign"]
-    lines.append(f"🌏 外資分點 合計淨 {f['net'] / 1000:+,.0f} 張")
-    for s in f["buys"]:
-        lines.append(_fmt_behavior_item(s))
-    for s in f["sells"]:
-        lines.append(_fmt_behavior_item(s))
-
-    r = view["retail"]
-    if r["items"]:
-        lines.append(f"🏠 散戶指標分點 (永豐金/國泰敦南) 合計 "
-                     f"{r['net'] / 1000:+,.0f} 張")
-        for s in r["items"]:
-            lines.append(_fmt_behavior_item(s))
-
-    d = view["domestic"]
-    if d["buys"] or d["sells"]:
-        lines.append("🏦 內資主要動向")
-        for s in d["buys"]:
-            lines.append(_fmt_behavior_item(s))
-        for s in d["sells"]:
-            lines.append(_fmt_behavior_item(s))
-
-    if view["next_day_dump"]:
-        names = ", ".join(f"{s['broker_name']}({s['net'] / 1000:+,.0f})"
-                          for s in view["next_day_dump"])
-        lines.append(f"⚡ 隔日沖名單: {names}")
-    if view["day_trade"]:
-        dt = view["day_trade"]
-        names = ", ".join(s["broker_name"] for s in dt[:10])
-        more = f" …等 {len(dt)} 分點" if len(dt) > 10 else ""
-        lines.append(f"🔁 當沖分點: {names}{more}")
-
-    lines.append("⚠ 外資分點含客戶委託、非全為外資自營；散戶指標為經驗 proxy；"
-                 "行為門檻先驗未回測")
+    """Render 【🧭 分點行為 — 近N日連續買賣序列】 from
+    build_behavior_series output."""
+    if not view:
+        return []
+    dates = view["dates"]
+    lines = [f"【🧭 分點行為 — 近{len(dates)}日連續買賣序列】"
+             f"({_fmt_date(dates[0])} ~ {_fmt_date(dates[-1])})"]
+    g = view["groups"]
+    lines.append(f"🌏 外資分點 今日合計 "
+                 f"{view['foreign_net_today'] / 1000:+,.0f} 張")
+    for b in g["foreign"]:
+        lines.extend(_fmt_series_line(b))
+    if g["retail"]:
+        lines.append(f"🏠 散戶指標分點 (永豐金/國泰敦南) 今日合計 "
+                     f"{view['retail_net_today'] / 1000:+,.0f} 張")
+        for b in g["retail"]:
+            lines.extend(_fmt_series_line(b))
+    if g["domestic_buy"]:
+        lines.append("🏦 內資今日買方")
+        for b in g["domestic_buy"]:
+            lines.extend(_fmt_series_line(b))
+    if g["domestic_sell"]:
+        lines.append("🏦 內資今日賣方")
+        for b in g["domestic_sell"]:
+            lines.extend(_fmt_series_line(b))
+    lines.append("⚠ @% = 當日買(賣)均價在該日高低區間位階 (0%=最低價,"
+                 " 100%=最高價)；— = 該日無 cache；"
+                 "外資分點含客戶委託、非全為外資自營；散戶指標為經驗 proxy")
     return lines
-
-
-def _load_prev_day_rows(stock_code: str,
-                        trading_date: str) -> tuple[list[dict], str]:
-    """Load the most recent bsr_cache *_prices.json strictly before
-    trading_date. Returns (rows, date) or ([], "")."""
-    for d in _list_bsr_cache_dates(stock_code):
-        if d >= trading_date:
-            continue
-        path = os.path.join(HERE, "bsr_cache",
-                            f"{stock_code}_{d}_prices.json")
-        if not os.path.exists(path):
-            continue
-        try:
-            with open(path) as fh:
-                cached = json.load(fh)
-            if cached.get("rows"):
-                return cached["rows"], d
-        except Exception:
-            continue
-    return [], ""
 
 
 def _fmt_date(yyyymmdd: str) -> str:
@@ -2018,14 +2093,15 @@ def _compute_broker_cost_basis(stock_code: str, dates: list[str]) -> dict[str, d
     return out
 
 
-def _list_bsr_cache_dates(stock_code: str, max_days: int = 30) -> list[str]:
+def _list_bsr_cache_dates(stock_code: str, max_days: int = 30,
+                          cache_dir: str | None = None) -> list[str]:
     """Return up to `max_days` most-recent bsr_cache dates for stock_code,
     sorted desc (newest first). Includes dates with either plain
     `{code}_{date}.json` OR `{code}_{date}_prices.json` cache file —
     _aggregate_broker_full_bsr handles both.
     """
     here = os.path.dirname(os.path.abspath(__file__))
-    bsr_dir = os.path.join(here, "bsr_cache")
+    bsr_dir = cache_dir or os.path.join(here, "bsr_cache")
     import glob as _glob
     files = _glob.glob(os.path.join(bsr_dir, f"{stock_code}_*.json"))
     dates: set[str] = set()
@@ -2353,15 +2429,14 @@ def analyze(stock_code: str, date: str | None = None,
     except Exception:
         name = ""
 
-    # 4b. 分點行為分類 — cross-day 隔日沖 needs the previous trading day's
-    # per-price cache; degrade gracefully (no 隔日沖 tags) when absent.
+    # 4b. 分點行為序列 — day-by-day series for notable brokers from
+    # bsr_cache; window OHLC (one FinMind call) adds avg-price 位階.
     try:
-        prev_rows, prev_date = _load_prev_day_rows(stock_code, trading_date)
-        behavior = build_behavior_view(
-            bsr["rows"], ohlc["low"], ohlc["high"],
-            prev_rows=prev_rows or None, prev_date=prev_date)
+        behavior = build_behavior_series(
+            stock_code, trading_date,
+            ohlc_map=_fetch_ohlc_map(stock_code, trading_date))
     except Exception as e:
-        print(f"[WARN] behavior view failed: {e}", file=sys.stderr)
+        print(f"[WARN] behavior series failed: {e}", file=sys.stderr)
         behavior = {}
 
     result = {
