@@ -12,7 +12,7 @@ import math
 import os
 import sys
 from datetime import datetime
-from flask import Flask, request, send_from_directory, send_file
+from flask import Flask, jsonify, request, send_from_directory, send_file
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -1231,8 +1231,15 @@ def _render_chip_price_page(code: str | None = None,
         for c, d in recent
     ) or "<em>(尚無快取)</em>"
     report_block = ""
+    narrative_block = ""
     if data:
         report_block = _render_report_html(data)
+        try:
+            narrative_block = _render_narrative_block(
+                code or data.get("stock_code", ""), data.get("date", ""))
+        except Exception as e:
+            narrative_block = (f'<section><h2>🤖 AI 行為敘事</h2>'
+                               f'<p class="small">⚠ 無法載入：{_esc(e)}</p></section>')
     if error:
         report_block = f'<div class="error">⚠ {html_lib.escape(error)}</div>'
     code_attr = html_lib.escape(code or "")
@@ -1341,6 +1348,7 @@ def _render_chip_price_page(code: str | None = None,
 
 {source_block}
 {report_block}
+{narrative_block}
 {broker_html}
 </body>
 </html>"""
@@ -4569,6 +4577,111 @@ def adr_premium():
     except Exception:
         mixed = None
     return _render_adr_premium_page(period=period, data=data, mixed=mixed)
+
+
+@app.route("/api/chip-narrative", methods=["POST"])
+def chip_narrative_start():
+    """觸發 AI 行為敘事產生 (背景 thread, 每次 = 一次 Claude 呼叫)。"""
+    code = (request.form.get("code") or "").strip()
+    date = (request.form.get("date") or "").strip()
+    force = request.form.get("force") == "1"
+    if not code or not date:
+        return jsonify({"state": "error", "error": "缺 code/date"}), 400
+    import chip_narrative
+    return jsonify(chip_narrative.start(code, date, force=force))
+
+
+@app.route("/api/chip-narrative", methods=["GET"])
+def chip_narrative_status():
+    code = (request.args.get("code") or "").strip()
+    date = (request.args.get("date") or "").strip()
+    if not code or not date:
+        return jsonify({"state": "error", "error": "缺 code/date"}), 400
+    import chip_narrative
+    return jsonify(chip_narrative.get_status(code, date))
+
+
+def _md_lite(text: str) -> str:
+    """Escape then convert the narrative's markdown subset (## / **) to
+    HTML. Paragraphs split on blank lines; single newlines become <br>."""
+    esc = html_lib.escape(text)
+    import re as _re
+    esc = _re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", esc)
+    parts = []
+    for block in esc.split("\n\n"):
+        b = block.strip()
+        if not b:
+            continue
+        if b.startswith("## "):
+            parts.append(f"<h3>{b[3:]}</h3>")
+        elif b.startswith("# "):
+            parts.append(f"<h3>{b[2:]}</h3>")
+        else:
+            # list blocks keep line breaks
+            parts.append("<p>" + b.replace("\n", "<br>") + "</p>")
+    return "\n".join(parts)
+
+
+def _render_narrative_block(code: str, date: str) -> str:
+    """【🤖 AI 行為敘事】 section: cached result or trigger button +
+    polling JS."""
+    import chip_narrative
+    st = chip_narrative.get_status(code, date)
+    code_js = html_lib.escape(code)
+    date_js = html_lib.escape(date)
+    explain = ('<p class="small">AI 讀「近 10 日分點連續買賣序列」寫的行為判讀'
+               '（誰在真累積、誰是隔日沖慣犯、誰在倒貨、散戶動向），'
+               '由本機 Claude CLI 產生，約 1-2 分鐘；'
+               '每次產生消耗一次 Claude 用量，同一天同一檔會存快取。'
+               '⚠ 判讀基於分點慣性推論，非投資建議。</p>')
+    if st["state"] == "done":
+        body = _md_lite(st.get("narrative", ""))
+        meta = (f'<p class="small muted">產生於 {_esc(st.get("generated_at", "?"))}'
+                f' (耗時 {_esc(st.get("elapsed_sec", "?"))}s)</p>')
+        controls = (f'<button id="cn-btn" class="secondary" '
+                    f'onclick="cnStart(\'{code_js}\',\'{date_js}\',true)">'
+                    f'🔄 重新產生</button> <span id="cn-status" class="small"></span>')
+        inner = body + meta + controls
+    elif st["state"] == "running":
+        inner = ('<p id="cn-status">⏳ 產生中 (約 1-2 分鐘)，完成後自動顯示…</p>'
+                 f'<script>setTimeout(function(){{cnPoll("{code_js}","{date_js}")}}, 5000);</script>')
+    else:
+        err = (f'<p class="small" style="color:#c00">⚠ 上次失敗：'
+               f'{_esc(st.get("error", ""))}</p>'
+               if st["state"] == "error" else "")
+        inner = (err + f'<button id="cn-btn" '
+                 f'onclick="cnStart(\'{code_js}\',\'{date_js}\',false)">'
+                 f'🤖 產生 AI 行為敘事</button> '
+                 f'<span id="cn-status" class="small"></span>')
+    js = """<script>
+function cnPoll(code, date) {
+  fetch('/api/chip-narrative?code=' + code + '&date=' + date)
+    .then(function(r){ return r.json(); })
+    .then(function(s){
+      if (s.state === 'done') { location.reload(); }
+      else if (s.state === 'error') {
+        var el = document.getElementById('cn-status');
+        if (el) el.textContent = '⚠ ' + (s.error || '失敗');
+        var b = document.getElementById('cn-btn');
+        if (b) b.disabled = false;
+      } else { setTimeout(function(){ cnPoll(code, date); }, 5000); }
+    });
+}
+function cnStart(code, date, force) {
+  var b = document.getElementById('cn-btn');
+  if (b) b.disabled = true;
+  var el = document.getElementById('cn-status');
+  if (el) el.textContent = '⏳ 產生中 (約 1-2 分鐘)…';
+  fetch('/api/chip-narrative', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: 'code=' + code + '&date=' + date + '&force=' + (force ? 1 : 0)
+  }).then(function(){ setTimeout(function(){ cnPoll(code, date); }, 5000); });
+}
+</script>"""
+    return (f'<section id="narrative"><h2>🤖 AI 行為敘事 '
+            f'<small>(分點多日序列判讀)</small></h2>'
+            f'{explain}{inner}{js}</section>')
 
 
 @app.route("/chip-price")
