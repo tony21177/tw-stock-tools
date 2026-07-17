@@ -4734,6 +4734,14 @@ def chip_price():
     if source.startswith("error:"):
         return _render_chip_price_page(code=code, error=source[7:].strip(),
                                         broker_query=broker_query)
+    # 快取日期比今天舊 → 提醒（BSR ~17:30 後公布當日資料；AI 敘事跟著
+    # 顯示中的報告日期跑，避免使用者以為看的是今天）
+    today_str = datetime.now().strftime("%Y%m%d")
+    d_shown = (data or {}).get("date", "")
+    if data and source.startswith("快取") and d_shown < today_str:
+        source += (f' — ⚠ 這是 {d_shown[4:6]}/{d_shown[6:8]} 的資料，'
+                   f'AI 敘事也會以該日為基準；要今天的請按'
+                   f'「即時抓取」(當日 BSR 約 17:30 後公布)')
     broker_html = ""
     if broker_query and data:
         broker_html = _render_broker_drilldown(
