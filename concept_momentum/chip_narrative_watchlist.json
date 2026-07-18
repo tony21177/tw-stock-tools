@@ -2,8 +2,7 @@
   "codes": ["2313", "3491", "5347"],
   "mode": "full",
   "line_recipients": [
-    "Ca0735be1455a5cd170f23e13ab77aebc",
     "C96e49f2168988377be09c302fd6ed3cf"
   ],
-  "_note": "line_recipients: C開頭=群組 (田尾三人幫=Ca07…, 睏霸數錢=C96e…)；個人 1:1=Ua148a24d31d1aeb4f9bff5a955fa6504 (2026-07-18 依指示移除)；免費額度 200 則/月, 目前 2群×3檔×22日≈132"
+  "_note": "line_recipients: 目前只推 睏霸數錢=C96e…。已移除: 田尾三人幫=Ca0735be1455a5cd170f23e13ab77aebc、個人 1:1=Ua148a24d31d1aeb4f9bff5a955fa6504 (2026-07-18 依指示)；免費額度 200 則/月, 目前 1群×3檔×22日≈66"
 }
