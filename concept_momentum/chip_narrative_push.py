@@ -34,7 +34,30 @@ sys.path.insert(0, REPO)
 
 WATCHLIST_PATH = os.path.join(HERE, "chip_narrative_watchlist.json")
 LINE_PUSH_API = "https://api.line.me/v2/bot/message/push"
+LINE_TOKEN_API = "https://api.line.me/v2/oauth/accessToken"
 LINE_TEXT_LIMIT = 4900   # 官方上限 5000，留 buffer
+
+
+def mint_line_token(channel_id: str, channel_secret: str) -> str:
+    """用 Channel ID + secret 換發 channel access token (效期 30 天)。
+
+    每次執行都換新 → 不用管理 long-lived token 的過期問題。失敗回 ""。
+    """
+    import urllib.parse
+    data = urllib.parse.urlencode({
+        "grant_type": "client_credentials",
+        "client_id": channel_id,
+        "client_secret": channel_secret,
+    }).encode()
+    req = urllib.request.Request(
+        LINE_TOKEN_API, data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.load(resp).get("access_token", "")
+    except Exception as e:
+        _log(f"[ERROR] LINE token 換發失敗: {e}")
+        return ""
 
 
 def _log(msg: str) -> None:
@@ -166,9 +189,15 @@ def main():
              if args.codes else cfg["codes"])
     mode = cfg.get("mode", "full")
     token = os.environ.get("LINE_CHANNEL_TOKEN", "")
+    if not token:
+        cid = os.environ.get("LINE_CHANNEL_ID", "")
+        secret = os.environ.get("LINE_CHANNEL_SECRET", "")
+        if cid and secret:
+            token = mint_line_token(cid, secret)
     user_id = os.environ.get("LINE_USER_ID", "")
     if not (token and user_id) and not args.dry_run:
-        _log("[WARN] LINE_CHANNEL_TOKEN / LINE_USER_ID 未設定 — "
+        _log("[WARN] LINE 憑證未設定/換發失敗 (LINE_CHANNEL_TOKEN 或 "
+             "LINE_CHANNEL_ID+LINE_CHANNEL_SECRET, 加 LINE_USER_ID) — "
              "僅產生敘事快取，不推播")
 
     fails = 0
