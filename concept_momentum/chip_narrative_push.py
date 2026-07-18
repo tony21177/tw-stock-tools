@@ -100,14 +100,14 @@ def _split_chunks(text: str, limit: int = LINE_TEXT_LIMIT) -> list[str]:
     return chunks
 
 
-def push_line(text: str, token: str, user_id: str) -> bool:
-    """推一段文字到 LINE (自動切塊，單次 push 最多 5 則訊息)。"""
+def push_line(text: str, token: str, recipient: str) -> bool:
+    """推一段文字到一個 LINE 收件者 (U=個人 / C=群組)，自動切塊。"""
     chunks = _split_chunks(text, LINE_TEXT_LIMIT)
     ok = True
     # Messaging API 一次 push 最多 5 messages
     for i in range(0, len(chunks), 5):
         payload = {
-            "to": user_id,
+            "to": recipient,
             "messages": [{"type": "text", "text": c}
                          for c in chunks[i:i + 5]],
         }
@@ -132,9 +132,9 @@ def push_line(text: str, token: str, user_id: str) -> bool:
     return ok
 
 
-def run_one(code: str, mode: str, token: str, user_id: str,
+def run_one(code: str, mode: str, token: str, recipients: list[str],
             dry_run: bool = False) -> bool:
-    """單檔：確保當日 BSR → 產生(或重用)敘事 → 推 LINE。"""
+    """單檔：確保當日 BSR → 產生(或重用)敘事 → 推給所有 LINE 收件者。"""
     import tw_chip_price
     import chip_narrative
 
@@ -167,15 +167,19 @@ def run_one(code: str, mode: str, token: str, user_id: str,
 
     if dry_run:
         _log(f"[dry-run] 訊息 {len(text)} 字元，"
-             f"{len(_split_chunks(text))} 塊：\n{text[:300]}…")
+             f"{len(_split_chunks(text))} 塊，收件者 {recipients}：\n"
+             f"{text[:300]}…")
         return True
-    if not (token and user_id):
+    if not (token and recipients):
         _log(f"{code} 敘事已快取 (網頁可看)；LINE 未設定，不推播")
         return True
-    if push_line(text, token, user_id):
-        _log(f"{code} 已推 LINE ✅")
-        return True
-    return False
+    ok = True
+    for r in recipients:
+        if push_line(text, token, r):
+            _log(f"{code} 已推 LINE → {r[:6]}… ✅")
+        else:
+            ok = False
+    return ok
 
 
 def main():
@@ -194,16 +198,20 @@ def main():
         secret = os.environ.get("LINE_CHANNEL_SECRET", "")
         if cid and secret:
             token = mint_line_token(cid, secret)
-    user_id = os.environ.get("LINE_USER_ID", "")
-    if not (token and user_id) and not args.dry_run:
-        _log("[WARN] LINE 憑證未設定/換發失敗 (LINE_CHANNEL_TOKEN 或 "
-             "LINE_CHANNEL_ID+LINE_CHANNEL_SECRET, 加 LINE_USER_ID) — "
-             "僅產生敘事快取，不推播")
+    # 收件者：config line_recipients 優先，否則退回 env LINE_USER_ID
+    recipients = cfg.get("line_recipients") or []
+    env_uid = os.environ.get("LINE_USER_ID", "")
+    if not recipients and env_uid:
+        recipients = [env_uid]
+    if not (token and recipients) and not args.dry_run:
+        _log("[WARN] LINE 憑證/收件者未設定 (LINE_CHANNEL_TOKEN 或 "
+             "LINE_CHANNEL_ID+LINE_CHANNEL_SECRET；收件者用 config "
+             "line_recipients 或 env LINE_USER_ID) — 僅產生敘事快取，不推播")
 
     fails = 0
     for code in codes:      # 逐檔 sequential — 避免同時多個 claude 進程
         try:
-            if not run_one(code, mode, token, user_id,
+            if not run_one(code, mode, token, recipients,
                            dry_run=args.dry_run):
                 fails += 1
         except Exception as e:

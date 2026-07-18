@@ -1,4 +1,9 @@
 {
   "codes": ["2313", "3491", "5347"],
-  "mode": "full"
+  "mode": "full",
+  "line_recipients": [
+    "Ua148a24d31d1aeb4f9bff5a955fa6504",
+    "Ca0735be1455a5cd170f23e13ab77aebc"
+  ],
+  "_note": "line_recipients: U開頭=個人 1:1, C開頭=群組 (田尾三人幫=Ca07…)；另一群 睏霸數錢=C96e49f2168988377be09c302fd6ed3cf 未啟用"
 }
