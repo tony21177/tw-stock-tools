@@ -10,6 +10,7 @@
 import argparse
 import json
 import sys
+import time
 import urllib.request
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -125,16 +126,35 @@ def fetch_tpex_sbl_balance(code: str, date_str: str) -> dict:
     return fetch_twse_sbl_balance(code, date_str)
 
 
-def fetch_return_details(code: str, start_date: str, end_date: str) -> list[dict]:
+def fetch_return_details(code: str, start_date: str, end_date: str,
+                         retries: int = 3, backoff_sec: int = 25) -> list[dict]:
     """Fetch return details (還券明細) from TWSE t13sa870.
-    Returns completed returns with borrowing date, return date, volume, fee rate."""
+    Returns completed returns with borrowing date, return date, volume, fee rate.
+
+    TWSE 這個 endpoint 偶爾 rate-limit（短時間多次呼叫時回 HTML 錯誤頁 →
+    JSON parse 失敗）。失敗時等 backoff_sec 重試最多 retries 次，全部失敗
+    才回空 — 否則「被限流」跟「當日真的無還券」都回 []，下游無從分辨
+    （2026-07-18 教訓：5347 敘事誤報 07/17 明細缺）。stat != OK 的正常
+    「查無資料」回應不重試。
+    """
     url = f"{TWSE_SBL_RETURN_URL}?startDate={start_date}&endDate={end_date}&stockNo={code}&response=json"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read().decode())
-    except Exception as e:
-        print(f"[ERROR] t13sa870 API: {e}", file=sys.stderr)
+    data = None
+    last_err = None
+    for attempt in range(retries):
+        if attempt:
+            time.sleep(backoff_sec)
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode())
+            break
+        except Exception as e:
+            last_err = e
+            print(f"[WARN] t13sa870 attempt {attempt + 1}/{retries}: {e}",
+                  file=sys.stderr)
+    if data is None:
+        print(f"[ERROR] t13sa870 API 重試 {retries} 次均失敗 "
+              f"(疑似 rate-limit): {last_err}", file=sys.stderr)
         return []
 
     if data.get("stat") != "OK" or not data.get("data"):
