@@ -36,6 +36,7 @@
 17. **存貨 5 項拆分** — 從 MOPS 財報 PDF 解析原料/在製品/半成品/製成品/副產品/物料拆分，疊圖顯示（2026-05-17 加；2026-05-22 加平行下載 + ProcessPool 解析 20 季 80s→30s、網頁拆分回看年數下拉、解讀邏輯 YoY 為主 + QoQ 連 2 季同向加倍強化 ⚡ + 營收交叉警訊「存貨雙升 vs 營收沒跟上 → 庫存壓力劇增 🔴」、拆分表多 4 欄存貨總額 / 季營收 / 存貨銷售比 / DSI 天 色碼，存銷比 + DSI 互相驗證跨季節更穩定）→ `mops_pdf.py` · `/inventory?breakdown=1`
 18. **族群點火警示** — 偵測族群評分「休眠 → 轉強」事件（昨 <3 → 今 ≥10, Δ ≥8），自動標真假機率 + 5 日後續追蹤倍率（concept_momentum 17:00 cron + dashboard 🔥 族群點火 tab，2026-05-18 加）→ `concept_momentum/run_daily.py` · `/`
 19. **分點 N 日時段 pattern** — 給定 (股號, 分點)，自動算過去 N 日該分點在早/中/尾盤的買賣分布 + 配對 OHLC 走勢 + 6 種行為標籤（尾盤低接 / 早盤追擊 / etc）+ 可展開的專有名詞詳細解讀（2026-05-20 加）→ `broker_timing_pattern()` in `tw_chip_price.py` · `/chip-price?code=X&broker=Y`
+    - **📱 每日敘事 LINE 推播** (2026-07-18 加) — 22:00 平日 cron（`is_trading_day` 守門）跑 `concept_momentum/chip_narrative_push.py`：讀 `chip_narrative_watchlist.json`（動態清單，改 JSON 即生效，預設 2313/3491/5347、mode=full），逐檔抓當日 BSR → 產生完整版敘事（同日已有快取直接重用、不重複扣 Claude 用量）→ 推 **LINE Messaging API**（`LINE_CHANNEL_TOKEN` + `LINE_USER_ID` 環境變數，LINE Notify 已於 2025-03 停服）。訊息自動去 markdown、依 5000 字元上限切塊（單次 push ≤5 則）。**LINE 憑證未設定時退化成只產生敘事快取**（網頁 /chip-price 可看），不浪費。逐檔 sequential 避免多個 claude 進程並行。測試：`--dry-run [--codes 2313]`。選 22:00 是因為借券賣出餘額 21:30 公布，三線資料全齊
     - **🤖 AI 行為敘事按鈕** (2026-07-17 加，同日加完整版) — `/chip-price` 報告頁一鍵觸發本機 headless Claude CLI 產生敘事分析，完成後自動顯示在頁面。**兩檔模式**：(a) **完整版（主按鈕，預設）** — `claude -p --dangerously-skip-permissions` agentic 執行，讀 chip/chip-price 兩個 SKILL.md 紀律後實際跑三線整合（分點多日序列 + 借券/SBL + 融資 + 30 天內除權息查核）再交叉寫敘事（外資動向 → 內資逐分點 → 散戶 → 借券/融資/除權息交叉檢核 → 結論 + 明日觀察重點），約 5-10 分鐘，timeout 25 分；prompt 明文禁止推 Telegram/寫檔/重抓 BSR 網站（只用既有 cache）。(b) **快速版** — 純文字單回合，只餵「近 10 日分點連續買賣序列」+ 內嵌判讀紀律，約 1-2 分鐘。背景 thread + 檔案狀態機（`cache/chip_narrative/{code}_{date}[_full].json` + `.status.json`，跨 process 安全、stale 自動可重試：quick 7 分 / full 30 分）；同 (code, date, mode) 有快取直接顯示（**每次產生 = 一次 Claude 用量，完整版較高**），顯示優先完整版，可各自「重新產生」。CLI 測試：`python3 chip_narrative.py 2313 20260716 [--full] [--prompt-only]`。API：`POST/GET /api/chip-narrative?code=&date=&mode=full|quick`
 20. **前十大股東 + 集保大戶分布** — 輸入股號查 (a) MOPS 年報前十大股東（姓名 + 持有股數 + 持股比例 + 停止過戶日 + **關係人備註**；候選頁逐一解析容錯各家 layout、F04「主要股東名單」乾淨排名表為主、F17 前十大股東相互間關係表 fallback、按持股比率排序、<5 筆視為失敗、JSON+負快取）。關係人欄列出年報揭露的前十大股東相互間配偶/二親等/法人關係（如 2313 吳家三代、2408 台塑集團交叉持股、法人股東代表人/董事長）；可載入 **N 年（3/5/8/10）變化矩陣**（股東 × 年度持股% + ▲▼ 趨勢 + ★新進/已退榜，跨年用 F17 標準表 + 名稱正規化合併同一實體）；(b) 集保 TDCC 每週股權分散表，4 群組摘要（散戶/中實戶/大戶/千張大戶）+ 籌碼集中度趨勢線 + 級距長條圖 + 各群組週變化表（%/張數/人數）（2026-05-28 加）→ `fetch_major_shareholders()` in `mops_pdf.py` · `fetch_holding_distribution()` in `finmind_client.py` · `/shareholders?code=X`
 
@@ -59,7 +60,7 @@
 - **借入交易** (lending_lookup + lending_monitor) → FinMind `TaiwanStockSecuritiesLending`，解決 TWSE rate-limit 問題
 - **借券賣出餘額** → FinMind `TaiwanDailyShortSaleBalances`（TWSE + TPEx 統一）
 - **日線價格** (second_wave + dormant_giants + concept_momentum + limitup_signal Yahoo 部分) → FinMind `TaiwanStockPrice`
-- **還券明細** (lending_lookup) — **仍用 TWSE t13sa870**（FinMind 無此 dataset）
+- **還券明細** (lending_lookup) — **仍用 TWSE t13sa870**（FinMind 無此 dataset）；2026-07-18 起內建 rate-limit retry（3 次、間隔 25s — 之前被限流會靜默回空、與「真無還券」無法分辨，5347 敘事因此誤報缺資料）。⚠ 其 startDate/endDate 為**借入日**區間非還券日
 - **分點 BSR** (broker_monitor + broker_lookup) — **仍用 TWSE/TPEx + Playwright**（FinMind sponsor 無 per-broker dataset）
 
 新增共用模組 `finmind_client.py`（thin FinMind v4 wrapper），所有工具透過它存取 FinMind。
