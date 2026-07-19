@@ -61,7 +61,8 @@ run_if_missing "$C/turnaround_relay_history/$TODAY.json" 8 "$ROOT/daily_screen.l
   $PY "$ROOT/tw_daily_screen.py" --json-out "$C/turnaround_relay_history/$TODAY.json"
 # 07:40 強勢股第二波
 run_if_missing "$C/second_wave_history/$TODAY.json" 8 "$ROOT/second_wave.log" -- \
-  $PY "$ROOT/tw_second_wave.py" --quiet --telegram --json-out "$C/second_wave_history/$TODAY.json"
+  env LINE_CHANNEL_ID=2010753214 LINE_CHANNEL_SECRET=7ef0ecbc27bb3d5557890ac7c59617f3 \
+  $PY "$ROOT/tw_second_wave.py" --quiet --telegram --line-to Ca0735be1455a5cd170f23e13ab77aebc --json-out "$C/second_wave_history/$TODAY.json"
 # 16:00 借券動向
 run_if_missing "$C/lending_radar_history/$TODAY.json" 17 "$ROOT/lending_monitor.log" -- \
   $PY "$ROOT/tw_lending_monitor.py" --mode lending --telegram --json-out-lending "$C/lending_radar_history/$TODAY.json"

@@ -29,7 +29,7 @@
 10. ABCD 接力型訊號分析（轉機接力 Layer 2 / 或 standalone CLI）→ `tw_limitup_signal.py`
 11. **轉機接力** — 每日兩層篩選工作流（盤前 07:30 cron）→ `tw_daily_screen.py`
 12. **沉睡巨人** — 曾 5 倍、跌 ≥30%、沉睡 ≥5y、量縮整理（CLI）→ `tw_dormant_giants.py`
-13. **強勢股第二波** — 強勢漲 → 急殺 → 反彈啟動（盤前 07:40 cron）→ `tw_second_wave.py`
+13. **強勢股第二波** — 強勢漲 → 急殺 → 反彈啟動（盤前 07:40 cron）→ `tw_second_wave.py`。2026-07-19 加 `--line-to <U/C開頭ID,可逗號多個>`：報告同步推 LINE（共用 `line_push.py` 模組，憑證 env `LINE_CHANNEL_ID`+`LINE_CHANNEL_SECRET` 自動換發 token）；cron + cron_catchup 均已掛 田尾三人幫 群組
 14. **日內籌碼×價格** — 當日 BSR broker × price 二維分析（CLI / Skill）→ `tw_chip_price.py`
 15. **合約負債歷史** — 單檔近 N 年每季合約負債 + QoQ/YoY/CAGR（CLI + 網頁；FinMind 缺資料時 fallback MOPS 季報 PDF 附註，2026-05-20 加 fallback）→ `tw_contract_liabilities.py` · `mops_pdf.py` · `/contract-liabilities?pdf=1`
 16. **存貨歷史 + 衍生指標** — 單檔近 N 年每季存貨 + 週轉率/DSI/存貨營收比 + 圖表（CLI + 網頁，2026-05-15 加）→ `tw_inventory.py` · `/inventory`

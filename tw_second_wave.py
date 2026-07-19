@@ -577,6 +577,9 @@ def main():
     p.add_argument("--json-out", help="將今日候選寫到 JSON 路徑（dashboard 用）")
     p.add_argument("--bot-token", default=os.environ.get("TG_BOT_TOKEN", ""))
     p.add_argument("--chat-id", default=DEFAULT_CHAT_ID)
+    p.add_argument("--line-to", help="LINE 收件者 ID (U=個人/C=群組，逗號分隔多個)；"
+                                     "憑證用 env LINE_CHANNEL_TOKEN 或 "
+                                     "LINE_CHANNEL_ID+LINE_CHANNEL_SECRET")
     p.add_argument("--workers", type=int, default=6)
     args = p.parse_args()
 
@@ -650,6 +653,19 @@ def main():
             sys.exit(1)
         ok = send_telegram(report, args.bot_token, args.chat_id)
         print(f"\nTelegram: {'✅' if ok else '❌'}", file=sys.stderr)
+
+    if args.line_to:
+        import line_push
+        token = line_push.resolve_token()
+        if not token:
+            print("[ERROR] LINE 憑證未設定/換發失敗 (LINE_CHANNEL_TOKEN 或 "
+                  "LINE_CHANNEL_ID+LINE_CHANNEL_SECRET)", file=sys.stderr)
+        else:
+            for rcpt in [r.strip() for r in args.line_to.split(",")
+                         if r.strip()]:
+                ok = line_push.push_text(report, token, rcpt)
+                print(f"LINE → {rcpt[:6]}…: {'✅' if ok else '❌'}",
+                      file=sys.stderr)
 
 
 if __name__ == "__main__":

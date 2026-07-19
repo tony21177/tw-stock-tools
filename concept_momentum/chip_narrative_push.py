@@ -32,32 +32,9 @@ REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, REPO)
 
+import line_push  # noqa: E402  (repo-root shared module)
+
 WATCHLIST_PATH = os.path.join(HERE, "chip_narrative_watchlist.json")
-LINE_PUSH_API = "https://api.line.me/v2/bot/message/push"
-LINE_TOKEN_API = "https://api.line.me/v2/oauth/accessToken"
-LINE_TEXT_LIMIT = 4900   # 官方上限 5000，留 buffer
-
-
-def mint_line_token(channel_id: str, channel_secret: str) -> str:
-    """用 Channel ID + secret 換發 channel access token (效期 30 天)。
-
-    每次執行都換新 → 不用管理 long-lived token 的過期問題。失敗回 ""。
-    """
-    import urllib.parse
-    data = urllib.parse.urlencode({
-        "grant_type": "client_credentials",
-        "client_id": channel_id,
-        "client_secret": channel_secret,
-    }).encode()
-    req = urllib.request.Request(
-        LINE_TOKEN_API, data=data,
-        headers={"Content-Type": "application/x-www-form-urlencoded"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.load(resp).get("access_token", "")
-    except Exception as e:
-        _log(f"[ERROR] LINE token 換發失敗: {e}")
-        return ""
 
 
 def _log(msg: str) -> None:
@@ -81,55 +58,9 @@ def _strip_markdown(text: str) -> str:
     return t
 
 
-def _split_chunks(text: str, limit: int = LINE_TEXT_LIMIT) -> list[str]:
-    """依段落切塊，每塊 ≤ limit 字元。"""
-    chunks, cur = [], ""
-    for para in text.split("\n\n"):
-        cand = (cur + "\n\n" + para) if cur else para
-        if len(cand) <= limit:
-            cur = cand
-            continue
-        if cur:
-            chunks.append(cur)
-        while len(para) > limit:          # 單段超長硬切
-            chunks.append(para[:limit])
-            para = para[limit:]
-        cur = para
-    if cur:
-        chunks.append(cur)
-    return chunks
-
-
-def push_line(text: str, token: str, recipient: str) -> bool:
-    """推一段文字到一個 LINE 收件者 (U=個人 / C=群組)，自動切塊。"""
-    chunks = _split_chunks(text, LINE_TEXT_LIMIT)
-    ok = True
-    # Messaging API 一次 push 最多 5 messages
-    for i in range(0, len(chunks), 5):
-        payload = {
-            "to": recipient,
-            "messages": [{"type": "text", "text": c}
-                         for c in chunks[i:i + 5]],
-        }
-        req = urllib.request.Request(
-            LINE_PUSH_API,
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json",
-                     "Authorization": f"Bearer {token}"},
-            method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                resp.read()
-        except Exception as e:
-            body = ""
-            if hasattr(e, "read"):
-                try:
-                    body = e.read().decode()[:200]
-                except Exception:
-                    pass
-            _log(f"[ERROR] LINE push 失敗: {e} {body}")
-            ok = False
-    return ok
+# 切塊/推播/換發 token 皆由 repo-root 共用模組 line_push 提供
+_split_chunks = line_push.split_chunks
+push_line = line_push.push_text
 
 
 def run_one(code: str, mode: str, token: str, recipients: list[str],
@@ -192,12 +123,7 @@ def main():
     codes = ([c.strip() for c in args.codes.split(",") if c.strip()]
              if args.codes else cfg["codes"])
     mode = cfg.get("mode", "full")
-    token = os.environ.get("LINE_CHANNEL_TOKEN", "")
-    if not token:
-        cid = os.environ.get("LINE_CHANNEL_ID", "")
-        secret = os.environ.get("LINE_CHANNEL_SECRET", "")
-        if cid and secret:
-            token = mint_line_token(cid, secret)
+    token = line_push.resolve_token()
     # 收件者：config line_recipients 優先，否則退回 env LINE_USER_ID
     recipients = cfg.get("line_recipients") or []
     env_uid = os.environ.get("LINE_USER_ID", "")
