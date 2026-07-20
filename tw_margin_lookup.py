@@ -2,11 +2,17 @@
 """
 台股單檔融資維持率估算查詢
 
-維持率 = 現價 / (FIFO 加權成本 × 融資成數) × 100%
-  融資成數：上市 60%、上櫃 50%
-  警戒線：140%  追繳線：130%
+主指標 (2026-07-20 改版)：XQ/三竹口徑「遞迴融資成本線」(全歷史)
+  今日成本 = (昨日成本×(餘額−買進) + 收盤×買進) ÷ 餘額
+  維持率 = 現價 ÷ (成本線 × 融資成數) × 100%
+  成數同時給 五成(券商實務常見, 尤其上櫃/高價股) 與 六成(法規上限)
+  兩個口徑 — 實際成數依券商與個股而異。警戒 140% / 追繳 130%。
 
-資料：FinMind (3 個月融資買/賣/償還) + Yahoo Finance (股價)
+第二段：FIFO 批次分析 (近 3 個月視窗) — 看「誰套在哪個價位」，
+  這是資料商沒有的差異化視角。
+
+資料：FinMind (全歷史融資買/賣/償還 + 日收盤) + 交易所 MIS 即時價
+  (盤中即時、修 Yahoo fallback stale 問題)，Yahoo 為備援。
 """
 
 import argparse
@@ -22,7 +28,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "con
 from tw_margin_monitor import (
     fetch_finmind_history,
     fetch_yahoo_history,
+    fetch_mis_price,
     compute_fifo_cost,
+    compute_recursive_cost,
     TWSE_MARGIN_RATIO,
     TPEX_MARGIN_RATIO,
 )
@@ -160,75 +168,123 @@ def compute_cohort_distribution(history: list[dict], daily_prices: dict,
     }
 
 
+def _fetch_full_closes(code: str, start_iso: str, end_iso: str,
+                       token: str) -> dict:
+    """FinMind 全歷史日收盤 {YYYYMMDD: close}（遞迴成本線用）。"""
+    try:
+        import finmind_client
+        rows = finmind_client.fetch_stock_price(code, start_iso, end_iso,
+                                                token)
+    except Exception:
+        return {}
+    return {str(r["date"]).replace("-", ""): r["close"]
+            for r in rows or [] if r.get("close")}
+
+
 def lookup(code: str, target_date: str | None = None, finmind_token: str = "",
            method: str = "fifo") -> str:
     today = target_date or datetime.now().strftime("%Y%m%d")
     end_dt = datetime.strptime(today, "%Y%m%d")
-    start_dt = end_dt - timedelta(days=95)
-    start_date = start_dt.strftime("%Y-%m-%d")
     end_date = end_dt.strftime("%Y-%m-%d")
+    full_start = "2018-01-01"                       # 遞迴成本線需全歷史
+    win_start = (end_dt - timedelta(days=95)).strftime("%Y%m%d")
 
-    history = fetch_finmind_history(code, start_date, end_date, finmind_token)
+    history = fetch_finmind_history(code, full_start, end_date, finmind_token)
     if not history:
         return f"{code}: 無法取得融資歷史（可能非可融資標的或 API 限流）"
+    # FIFO 批次分析維持原本的 3 個月視窗
+    history_win = [h for h in history if h["date"] >= win_start]
 
-    price_data = fetch_yahoo_history(code)
-    if not price_data:
+    closes = _fetch_full_closes(code, full_start, end_date, finmind_token)
+    price_data = fetch_yahoo_history(code)   # 備援：名稱/市場/現價
+    mis = fetch_mis_price(code)              # 即時價（修 stale）
+
+    if not price_data and not (mis and closes):
         return f"{code}: 無法取得股價資料"
+    if not price_data:
+        price_data = {"prices": {}, "current_price": 0.0,
+                      "market": mis.get("market", "上市"),
+                      "name": mis.get("name", code), "change_pct": 0.0}
 
-    avg_cost, remaining = compute_fifo_cost(history, price_data["prices"])
+    # 現價解析順序：MIS 即時 → Yahoo → FinMind 最後收盤
+    price_src = "Yahoo"
+    current = price_data.get("current_price") or 0.0
+    if mis.get("price"):
+        current = mis["price"]
+        price_src = "交易所即時"
+        if mis.get("prev_close"):
+            price_data["change_pct"] = ((current - mis["prev_close"])
+                                        / mis["prev_close"] * 100)
+    elif not current and closes:
+        current = closes[max(closes)]
+        price_src = "FinMind 收盤"
+    daily_prices = {**closes, **price_data.get("prices", {})}
+
+    avg_cost, remaining = compute_fifo_cost(history_win, daily_prices)
+    rec_cost = compute_recursive_cost(history, daily_prices)
     current_balance = history[-1]["balance"] if history else 0
 
     if current_balance == 0:
         return f"{code} {price_data['name']}: 目前無融資餘額"
 
-    market = price_data["market"]
+    market = mis.get("market") or price_data["market"]
     ratio = TPEX_MARGIN_RATIO if market == "上櫃" else TWSE_MARGIN_RATIO
-    current = price_data["current_price"]
 
     if remaining > 0 and avg_cost > 0:
         maintenance = (current / (avg_cost * ratio)) * 100
-        trigger_call = avg_cost * ratio * 1.30
-        trigger_warn = avg_cost * ratio * 1.40
     else:
         maintenance = None  # all legacy, no tracked cohorts
-        trigger_call = 0
-        trigger_warn = 0
 
     # Cohort analysis (skip small days as noise)
     cohort_data = compute_cohort_distribution(
-        history, price_data["prices"], current, current_balance, ratio,
+        history_win, daily_prices, current, current_balance, ratio,
         sig_threshold_pct=0.05, method=method
     )
 
     sign = "+" if price_data["change_pct"] >= 0 else ""
 
+    def _status(m):
+        return ("🔴 危險（<140%）" if m < 140 else
+                "🟡 警戒（140-150%）" if m < 150 else
+                "🟢 尚可（150-170%）" if m < 170 else
+                "✅ 安全（>170%）")
+
     zh_name = _get_zh_name(code, price_data["name"])
     lines = [
         f"{code} {zh_name} [{market}]",
-        f"現價: ${current:,.2f}  {sign}{price_data['change_pct']:.2f}%",
+        f"現價: ${current:,.2f}  {sign}{price_data['change_pct']:.2f}%"
+        f"  ({price_src})",
         "",
     ]
 
-    if maintenance is not None:
-        status = "🔴 危險（<140%）" if maintenance < 140 else \
-                 "🟡 警戒（140-150%）" if maintenance < 150 else \
-                 "🟢 尚可（150-170%）" if maintenance < 170 else \
-                 "✅ 安全（>170%）"
-        pct_to_call = ((current - trigger_call) / current) * 100
+    # ── 主指標：XQ/三竹口徑遞迴成本線（全歷史，無舊部位黑洞）──
+    if rec_cost:
+        m50 = current / (rec_cost * 0.5) * 100
+        m60 = current / (rec_cost * 0.6) * 100
+        call50, call60 = rec_cost * 0.5 * 1.30, rec_cost * 0.6 * 1.30
         lines.extend([
-            f"【整體維持率（FIFO 加權）】",
-            f"加權成本: ${avg_cost:,.2f} | 融資餘額: {current_balance:,} 張 | 成數: {ratio*100:.0f}%",
-            f"估算維持率: {maintenance:.1f}%  {status}",
-            f"140% 警戒價: ${trigger_warn:,.2f} (再跌 {((current-trigger_warn)/current*100):.2f}%)",
-            f"130% 追繳價: ${trigger_call:,.2f} (再跌 {pct_to_call:.2f}%)",
+            "【整體維持率（XQ/三竹口徑：遞迴成本線，全歷史）】",
+            f"遞迴成本線: ${rec_cost:,.2f} | 融資餘額: {current_balance:,} 張",
+            f"維持率(五成/券商實務): {m50:.1f}%  {_status(m50)}",
+            f"維持率(六成/法規上限): {m60:.1f}%  {_status(m60)}",
+            f"130% 追繳價: 五成 ${call50:,.2f} / 六成 ${call60:,.2f}",
+            "⚠ 實際成數依券商與個股而異（上櫃/高價/處置股常降成數），"
+            "真實維持率落在兩口徑之間",
+            "",
+        ])
+
+    # ── 第二段：FIFO 3 個月視窗（僅涵蓋可追蹤批次，非整體）──
+    if maintenance is not None:
+        lines.extend([
+            f"【FIFO 視窗成本（近 3 個月可追蹤批次，成數 {ratio*100:.0f}%）】",
+            f"視窗批次成本: ${avg_cost:,.2f} → 該批維持率 {maintenance:.1f}%"
+            f"  {_status(maintenance)}",
             "",
         ])
     else:
         lines.extend([
-            f"【融資餘額】{current_balance:,} 張 | 成數: {ratio*100:.0f}%",
-            f"⚠️ 過去 3 個月融資餘額持續淨減少（賣>買），目前所有餘額都是 3 個月前就存在的「舊部位」",
-            f"   → 成本無從得知（超出觀察區間），無法估算維持率",
+            f"【FIFO 視窗（近 3 個月）】無可追蹤批次"
+            f"（餘額全為 3 個月前舊部位 → 看上方遞迴成本線）",
             "",
         ])
 

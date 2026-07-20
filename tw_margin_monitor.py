@@ -101,7 +101,9 @@ def fetch_finmind_history(code: str, start_date: str, end_date: str, token: str)
     Returns list of {date, buy, sell, repay, balance}.
     Cached per stock+end_date to avoid re-fetches."""
     ensure_cache_dir()
-    cache = os.path.join(CACHE_DIR, f"finmind_{code}_{end_date}.json")
+    # cache key 含 start_date — 否則 95 天視窗與全歷史抓取會互撞舊 cache
+    cache = os.path.join(CACHE_DIR,
+                         f"finmind_{code}_{start_date}_{end_date}.json")
     if os.path.exists(cache):
         with open(cache) as f:
             return json.load(f)
@@ -197,6 +199,75 @@ def compute_fifo_cost(history: list[dict], daily_prices: dict) -> tuple[float, i
         return 0.0, 0
     total_cost = sum(l[0] * l[1] for l in lots)
     return total_cost / total_vol, int(total_vol)
+
+
+def compute_recursive_cost(history: list[dict],
+                           daily_prices: dict) -> float | None:
+    """XQ/三竹口徑「遞迴融資成本線」（市場資料商同款算法）。
+
+    今日成本 = (昨日成本 × (餘額−買進) + 收盤 × 買進) ÷ 餘額
+    即：買進以當日收盤計價、賣出/償還以平均成本移除（不動成本）、
+    餘額歸零時重置。與 3 個月 FIFO 視窗不同，全歷史遞迴沒有
+    「舊部位成本未知」黑洞；種子不敏感（2026-07-20 實測 3491/2313
+    以 2018~2025 任一年起算結果完全相同）。
+
+    history 需「全歷史」(如 2018-01-01 起) 的 {date, buy, balance} 列，
+    daily_prices = {YYYYMMDD: close}。回 None 表示無法估（無資料）。
+    """
+    cost = None
+    for entry in history:
+        bal = entry["balance"]
+        buy = entry["buy"]
+        price = daily_prices.get(entry["date"])
+        if bal <= 0:
+            cost = None
+            continue
+        if price is None:
+            continue          # 缺價日：成本沿用
+        if cost is None:
+            cost = price      # 種子（實測收斂、不敏感）
+            continue
+        held = max(bal - buy, 0)
+        if held + buy > 0:
+            cost = (cost * held + price * buy) / (held + buy)
+    return cost
+
+
+def fetch_mis_price(code: str) -> dict:
+    """交易所 MIS 即時報價（盤中=即時、收盤後=當日收盤）。
+
+    解 Yahoo fallback 現價 stale 的問題。z=最新成交，無成交時退到
+    揭示買/賣中價，再退到昨收。回 {price, prev_close, market, name}
+    或 {}（tse/otc 都查不到）。
+    """
+    def _f(v):
+        try:
+            x = float(str(v).replace(",", ""))
+            return x if x > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    for ex, market in (("tse", "上市"), ("otc", "上櫃")):
+        url = ("https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
+               f"?ex_ch={ex}_{code}.tw&json=1")
+        data = _http_get_json(url, timeout=10, retries=2)
+        rows = (data or {}).get("msgArray") or []
+        if not rows:
+            continue
+        r = rows[0]
+        price = _f(r.get("z"))
+        if price is None:
+            bid = _f((r.get("b") or "").split("_")[0])
+            ask = _f((r.get("a") or "").split("_")[0])
+            price = (bid + ask) / 2 if (bid and ask) else (bid or ask)
+        prev = _f(r.get("y"))
+        if price is None:
+            price = prev
+        if price is None:
+            continue
+        return {"price": price, "prev_close": prev, "market": market,
+                "name": r.get("n", "")}
+    return {}
 
 
 def compute_cohort_buckets(history: list[dict], daily_prices: dict,
