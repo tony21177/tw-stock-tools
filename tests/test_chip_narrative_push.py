@@ -25,6 +25,28 @@ class TestDelegatesToLinePush(unittest.TestCase):
         self.assertIs(push.push_line, line_push.push_text)
 
 
+class TestCacheDataComplete(unittest.TestCase):
+    def test_intraday_same_day_incomplete(self):
+        # 當日 21:30 前產生 → 融資/借券不全
+        self.assertFalse(push._cache_data_complete(
+            {"generated_at": "2026-07-20 16:46:18"}, "20260720"))
+
+    def test_same_day_after_cutoff_complete(self):
+        self.assertTrue(push._cache_data_complete(
+            {"generated_at": "2026-07-20 22:05:00"}, "20260720"))
+        self.assertTrue(push._cache_data_complete(
+            {"generated_at": "2026-07-20 21:30:00"}, "20260720"))
+
+    def test_next_day_complete(self):
+        self.assertTrue(push._cache_data_complete(
+            {"generated_at": "2026-07-21 04:43:00"}, "20260720"))
+
+    def test_missing_timestamp_treated_complete(self):
+        self.assertTrue(push._cache_data_complete({}, "20260720"))
+        self.assertTrue(push._cache_data_complete(
+            {"generated_at": "garbage"}, "20260720"))
+
+
 class TestWatchlist(unittest.TestCase):
     def test_load(self):
         cfg = push.load_watchlist()

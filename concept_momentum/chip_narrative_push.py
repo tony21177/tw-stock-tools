@@ -63,6 +63,36 @@ _split_chunks = line_push.split_chunks
 push_line = line_push.push_text
 
 
+# 融資約 21:00、借券賣出餘額 21:30 才公布當日值。敘事若在當日 21:30 前
+# 產生，融資/借券當日資料不全（會寫「以前一日為準」）→ 推播端須重跑。
+DATA_COMPLETE_HHMM = "2130"
+
+
+def _cache_data_complete(cached: dict, date: str) -> bool:
+    """快取是否用「當日完整資料」產生。
+
+    敘事基準日 = date（YYYYMMDD）。當日融資/借券 21:30 後才齊，故：
+      - generated_at 日期 > date  → 隔日以後產生，資料早已齊 → True
+      - generated_at 日期 == date 且時間 ≥ 21:30 → True
+      - generated_at 日期 == date 且時間 < 21:30 → False（盤中/傍晚產生，不全）
+      - 無 generated_at → True（舊快取，不強迫重跑）
+    """
+    ga = cached.get("generated_at", "")
+    if not ga:
+        return True
+    try:
+        d_part, t_part = ga.split(" ")
+        gdate = d_part.replace("-", "")
+        ghhmm = t_part.replace(":", "")[:4]
+    except (ValueError, IndexError):
+        return True
+    if gdate > date:
+        return True
+    if gdate == date:
+        return ghhmm >= DATA_COMPLETE_HHMM
+    return True   # 理論上不會 gdate < date（快取檔名綁 date）
+
+
 def run_one(code: str, mode: str, token: str, recipients: list[str],
             dry_run: bool = False) -> bool:
     """單檔：確保當日 BSR → 產生(或重用)敘事 → 推給所有 LINE 收件者。"""
@@ -78,11 +108,16 @@ def run_one(code: str, mode: str, token: str, recipients: list[str],
     name = data.get("name", "")
 
     cached = chip_narrative.load_cached(code, date, mode)
-    if cached:
-        _log(f"{code} {date} 敘事已有快取，直接重用 (不重跑)")
+    if cached and _cache_data_complete(cached, date):
+        _log(f"{code} {date} 敘事已有快取（資料齊），直接重用 (不重跑)")
         result = cached
     else:
-        _log(f"{code} {date} 產生 {mode} 敘事中…")
+        if cached:
+            _log(f"{code} {date} 快取為 21:30 資料公布前產生 "
+                 f"({cached.get('generated_at')})、融資/借券當日資料不全 → 重跑")
+        else:
+            _log(f"{code} {date} 產生 {mode} 敘事中…")
+        # 同步重跑（直接呼叫 _generate 覆寫快取，不走 detached start）
         chip_narrative._generate(code, date, mode)
         result = chip_narrative.load_cached(code, date, mode)
         if not result:
