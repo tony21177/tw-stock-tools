@@ -272,10 +272,16 @@ def rolling_5d_cum(nets: list[float]) -> list[float]:
 
 
 def build_view_rows(day_files: list[dict], themes: dict) -> list[dict]:
-    """由舊到新的日檔 list → 最新一日的 view rows（依法人淨流降冪）。
+    """由舊到新的日檔 list → 最新一日的 view rows。
 
-    衍生欄位在此現算：share_vs_20d（今日占比 − 前 20 日均，樣本不足用現有
-    天數並回報 share_samples）、streak、net_5d、spark（5日滾動累計，最多 60 點）。
+    **主排序 = share_vs_20d（今日成交值占比 − 前 20 日均，pp）降冪**，
+    這是業界（XQ/MoneyDJ/CMoney）「類股資金流」的公認口徑，且來自
+    FinMind 真實成交金額（Trading_money）→ 精確、非近似。法人淨流金額
+    （inst_net_ntd = 淨股數×收盤價，近似）降為輔助欄。share_vs_20d 為
+    None（樣本不足或無占比）者排最後、以法人淨流為次鍵。
+
+    衍生欄位在此現算：share_vs_20d、streak、net_5d、spark（5日滾動累計，
+    最多 60 點）。
     """
     if not day_files:
         return []
@@ -318,7 +324,13 @@ def build_view_rows(day_files: list[dict], themes: dict) -> list[dict]:
         gross = abs(f) + abs(t) + abs(d)
         row["tag"] = classify_flow_tag(share_vs_20d, row["inst_net_ntd"], gross_ntd=gross)
         rows.append(row)
-    rows.sort(key=lambda r: -(r["inst_net_ntd"] or 0))
+    # 主排序：成交值占比 vs 20日均（精確、業界口徑）降冪；None 排最後，
+    # 次鍵用法人淨流（近似）以維持 None 群的可讀順序。
+    rows.sort(key=lambda r: (
+        r.get("share_vs_20d") is None,
+        -(r.get("share_vs_20d") or 0.0),
+        -(r.get("inst_net_ntd") or 0.0),
+    ))
     return rows
 
 

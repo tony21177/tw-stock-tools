@@ -96,28 +96,49 @@ class TestFlowCells(unittest.TestCase):
 
 
 class TestTgSummary(unittest.TestCase):
-    def test_top5_and_warn(self):
-        rows = ([_row(f"流入{i}", 10.0 - i) for i in range(6)]
-                + [_row("出貨王", -3.1, tag="⚠", share_vs=0.6)]
-                + [_row(f"流出{i}", -5.0 - i, tag="❄", streak=-6) for i in range(6)])
+    def test_top5_ranked_by_share_not_inst(self):
+        # 排序主鍵是 share_vs_20d（占比），不是 inst_net_ntd。占比由高到低
+        # 命名（匯入0 占比最高），streak=0 避免污染連續區。
+        rows = ([_row(f"匯入{i}", 10.0 - i, streak=0, share_vs=1.0 - i * 0.1)
+                 for i in range(6)]
+                + [_row(f"流出{i}", -5.0 - i, tag="❄", streak=0,
+                        share_vs=-0.5 - i * 0.1) for i in range(6)])
         msg = build_tg_summary(rows, "2026-07-14")
-        self.assertIn("💰 族群資金流 2026-07-14", msg)
-        self.assertIn("流入 Top5", msg)
-        self.assertIn("流出 Top5", msg)
-        self.assertNotIn("流入5", msg)   # 第 6 名不出現
+        inflow = msg.split("資金匯入 Top5")[1].split("資金流出 Top5")[0]
+        outflow = msg.split("資金流出 Top5")[1]
+        # 匯入榜：占比最高的匯入0 在首、第 6 名匯入5 被擠掉
+        self.assertIn("匯入0", inflow)
+        self.assertIn("占比+1.00pp", inflow)
+        self.assertIn("法人+10.0億", inflow)   # 法人淨流仍在（輔助）
+        self.assertNotIn("匯入5", inflow)
+        # 流出榜：占比最負的流出5 在首、第 6 名流出0 被擠掉
+        self.assertIn("流出5", outflow)
+        self.assertNotIn("流出0", outflow)
+
+    def test_warn_and_streak_sections(self):
+        rows = ([_row("出貨王", -3.1, tag="⚠", share_vs=0.6)]
+                + [_row("連跌王", -5.0, tag="❄", streak=-6, share_vs=-0.3)])
+        msg = build_tg_summary(rows, "2026-07-14")
         self.assertIn("⚠ 出貨疑慮", msg)
         self.assertIn("出貨王", msg)
-        self.assertIn("連6日賣超", msg)   # streak<=-5 的異常提示
+        self.assertIn("連6日賣超", msg)
+
+    def test_none_share_excluded_from_ranking(self):
+        # share_vs_20d=None（樣本不足）不進榜
+        rows = [_row("有占比", 2.0, share_vs=0.3),
+                _row("無占比", 99.0, share_vs=None)]
+        msg = build_tg_summary(rows, "2026-07-14")
+        self.assertIn("有占比", msg)
+        self.assertNotIn("無占比", msg)
 
     def test_empty_sides(self):
-        msg = build_tg_summary([_row("A", 2.0)], "2026-07-14")
+        msg = build_tg_summary([_row("A", 2.0, share_vs=0.3)], "2026-07-14")
         self.assertIn("（無）", msg)  # 流出側
 
     def test_none_fields_do_not_crash(self):
-        r = _row("缺值", 2.0)
+        r = _row("缺值", 2.0, share_vs=0.4)
         r["foreign_net_ntd"] = None
         r["trust_net_ntd"] = None
-        r["share_vs_20d"] = None
         msg = build_tg_summary([r], "2026-07-14")
         self.assertIn("缺值", msg)
         self.assertIn("外+0.0", msg)

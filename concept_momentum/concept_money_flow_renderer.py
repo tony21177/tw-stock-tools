@@ -136,13 +136,16 @@ def render_foreign_section(fv: dict | None) -> str:
 
 def render_tab(view_rows: list[dict], asof: str,
                foreign_view: dict | None = None) -> str:
-    """排行表（34 主題全列，依法人淨流降冪）+ 外資買賣超區 + 圖例 + 使用時機盒。"""
+    """排行表（34 主題全列，依成交值占比 vs 20日均降冪）+ 外資買賣超區
+    + 圖例 + 使用時機盒。"""
     if not view_rows:
         return ('<p class="empty-state" style="text-align:center;padding:20px;color:#888;">'
                 '尚無資金流資料 — 請先執行 '
                 '<code>python3 concept_money_flow.py --backfill 60</code></p>')
     parts = [
-        f'<p class="meta">資料至 {asof} | 法人淨流 = 淨股數 × 收盤價（近似值）</p>',
+        f'<p class="meta">資料至 {asof}｜<b>排序＝成交值占比 vs 20日均（pp，'
+        f'業界類股資金流口徑、來自真實成交金額、精確）</b>；'
+        f'法人淨流(億)＝淨股數×收盤價（近似輔助）</p>',
         '<div class="table-scroll" style="overflow-x:auto;">',
         '<table class="market-breadth">',
         '<thead><tr>'
@@ -219,30 +222,37 @@ def render_flow_cells(theme_key: str, flow_map: dict | None) -> str:
 
 
 def _tg_row(r: dict) -> str:
+    # 主數字 = 占比 vs 20日均（精確）；法人淨流(近似)括號輔助
     streak = r.get("streak", 0)
     s = f" 連{abs(streak)}日" if abs(streak) >= 2 else ""
     sv = r.get("share_vs_20d")
-    sv_txt = f" 占比{sv:+.2f}pp" if sv is not None else ""
-    return (f"{r.get('tag', '—')} {r['name_zh']} {(r.get('inst_net_ntd') or 0):+.1f}億"
-            f"(外{(r.get('foreign_net_ntd') or 0):+.1f} "
-            f"投{(r.get('trust_net_ntd') or 0):+.1f}){s}{sv_txt}")
+    star = "*" if r.get("share_samples", 0) < 20 else ""
+    sv_txt = f"占比{sv:+.2f}pp{star}" if sv is not None else "占比—"
+    return (f"{r.get('tag', '—')} {r['name_zh']} {sv_txt} "
+            f"(法人{(r.get('inst_net_ntd') or 0):+.1f}億"
+            f"／外{(r.get('foreign_net_ntd') or 0):+.1f} "
+            f"投{(r.get('trust_net_ntd') or 0):+.1f}){s}")
 
 
 def build_tg_summary(view_rows: list[dict], date_str: str) -> str:
-    """Telegram 文字摘要：流入/流出 Top5 + ⚠ 出貨疑慮 + 連續 ≥5 日異常。"""
+    """Telegram 文字摘要：資金匯入/流出 Top5（依成交值占比 vs 20日均，
+    業界類股資金流口徑、精確）+ ⚠ 出貨疑慮 + 連續 ≥5 日異常。"""
     lines = [f"💰 族群資金流 {date_str}",
-             "法人淨流=淨股數×收盤價(近似) | 標記門檻未經回測",
+             "排序=成交值占比vs20日均(精確,業界口徑) | 法人淨流=淨股數×收盤價(近似輔助) | 標記門檻未回測",
              "━━━━━━━━━━━━"]
-    pos = [r for r in view_rows if (r.get("inst_net_ntd") or 0) > 0][:5]
-    neg = sorted([r for r in view_rows if (r.get("inst_net_ntd") or 0) < 0],
-                 key=lambda r: r["inst_net_ntd"])[:5]
-    lines.append("流入 Top5:")
+    # 主指標：占比 vs 20日均（精確）。None 者不進榜（無足夠樣本）。
+    rated = [r for r in view_rows if r.get("share_vs_20d") is not None]
+    pos = sorted([r for r in rated if r["share_vs_20d"] > 0],
+                 key=lambda r: -r["share_vs_20d"])[:5]
+    neg = sorted([r for r in rated if r["share_vs_20d"] < 0],
+                 key=lambda r: r["share_vs_20d"])[:5]
+    lines.append("資金匯入 Top5（占比升）:")
     if pos:
         for r in pos:
             lines.append(f"  {_tg_row(r)}")
     else:
         lines.append("  （無）")
-    lines.append("\n流出 Top5:")
+    lines.append("\n資金流出 Top5（占比降）:")
     if neg:
         for r in neg:
             lines.append(f"  {_tg_row(r)}")

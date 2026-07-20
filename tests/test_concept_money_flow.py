@@ -269,14 +269,42 @@ class TestBuildViewRows(unittest.TestCase):
     def test_empty(self):
         self.assertEqual(build_view_rows([], THEMES), [])
 
-    def test_sorted_by_net_desc(self):
-        themes = {"T_A": {"name_zh": "A", "stocks": []}, "T_B": {"name_zh": "B", "stocks": []}}
+    def test_sorted_by_share_vs_20d_primary(self):
+        # 主排序 = 成交值占比 vs 20日均（精確）降冪。
+        # 給 2 天：T_A 占比升 +0.9pp 但法人淨流小；T_B 占比升 +0.2pp 但
+        # 法人淨流大 → T_A（占比高）應排前面（證明占比是主鍵、非法人淨流）
+        themes = {"T_A": {"name_zh": "A", "stocks": []},
+                  "T_B": {"name_zh": "B", "stocks": []}}
+        d0 = {"date": "20260630", "market_turnover_ntd": 1e10, "themes": {
+            "T_A": {"inst_net_ntd": 0.1, "foreign_net_ntd": 0.1,
+                    "trust_net_ntd": 0.0, "turnover_ntd": 1e8,
+                    "mkt_share_pct": 1.0, "missing": []},
+            "T_B": {"inst_net_ntd": 9.0, "foreign_net_ntd": 9.0,
+                    "trust_net_ntd": 0.0, "turnover_ntd": 1e8,
+                    "mkt_share_pct": 1.0, "missing": []}}}
+        d1 = {"date": "20260701", "market_turnover_ntd": 1e10, "themes": {
+            "T_A": {"inst_net_ntd": 0.1, "foreign_net_ntd": 0.1,
+                    "trust_net_ntd": 0.0, "turnover_ntd": 1e8,
+                    "mkt_share_pct": 1.9, "missing": []},   # +0.9pp
+            "T_B": {"inst_net_ntd": 9.0, "foreign_net_ntd": 9.0,
+                    "trust_net_ntd": 0.0, "turnover_ntd": 1e8,
+                    "mkt_share_pct": 1.2, "missing": []}}}  # +0.2pp
+        rows = build_view_rows([d0, d1], themes)
+        self.assertEqual([r["theme_key"] for r in rows], ["T_A", "T_B"])
+
+    def test_none_share_sorts_last_by_net(self):
+        # share_vs_20d 為 None（單日、無 prior）→ 排最後、以法人淨流為次鍵
+        themes = {"T_A": {"name_zh": "A", "stocks": []},
+                  "T_B": {"name_zh": "B", "stocks": []}}
         day = {"date": "20260701", "market_turnover_ntd": 1e10, "themes": {
-            "T_A": {"inst_net_ntd": 1.0, "foreign_net_ntd": 1.0, "trust_net_ntd": 0.0,
-                     "turnover_ntd": 1e8, "mkt_share_pct": 1.0, "missing": []},
-            "T_B": {"inst_net_ntd": 5.0, "foreign_net_ntd": 5.0, "trust_net_ntd": 0.0,
-                     "turnover_ntd": 1e8, "mkt_share_pct": 1.0, "missing": []}}}
+            "T_A": {"inst_net_ntd": 1.0, "foreign_net_ntd": 1.0,
+                    "trust_net_ntd": 0.0, "turnover_ntd": 1e8,
+                    "mkt_share_pct": 1.0, "missing": []},
+            "T_B": {"inst_net_ntd": 5.0, "foreign_net_ntd": 5.0,
+                    "trust_net_ntd": 0.0, "turnover_ntd": 1e8,
+                    "mkt_share_pct": 1.0, "missing": []}}}
         rows = build_view_rows([day], themes)
+        self.assertIsNone(rows[0]["share_vs_20d"])
         self.assertEqual([r["theme_key"] for r in rows], ["T_B", "T_A"])
 
 
