@@ -1323,7 +1323,7 @@ def _render_chip_price_page(code: str | None = None,
 </style>
 </head>
 <body>
-<nav><a href="/">← 大盤 dashboard</a> <a href="/chip-price">📋 籌碼價量</a> <a href="/contract-liabilities">💰 合約負債</a> <a href="/inventory">📦 存貨</a> <a href="/shareholders">👥 前十大股東</a></nav>
+<nav><a href="/">← 大盤 dashboard</a> <a href="/chip-price">📋 籌碼價量</a> <a href="/chip-compare?code=3491">📉 兩波對比</a> <a href="/contract-liabilities">💰 合約負債</a> <a href="/inventory">📦 存貨</a> <a href="/shareholders">👥 前十大股東</a></nav>
 <h1>📊 籌碼價量分析 (broker × price × time)</h1>
 
 <form method="get" action="/chip-price" style="flex-wrap:wrap;">
@@ -1538,6 +1538,195 @@ def _render_contract_liabilities_page(code: str = "", years: int = 3,
 {body}
 </body>
 </html>"""
+
+
+def _episode_svg(series: list[dict], episodes: list[dict]) -> str:
+    """雙軸 SVG：價格(左, log-ish 線性) + 借券賣出餘額 SBL(右)，兩波窗口陰影。"""
+    if not series:
+        return ""
+    W, H = 960, 300
+    padL, padR, padT, padB = 52, 56, 16, 28
+    pw, ph = W - padL - padR, H - padT - padB
+    n = len(series)
+    pxs = [p["px"] for p in series if p["px"]]
+    sbls = [p["sbl"] for p in series if p.get("sbl")]
+    if not pxs:
+        return ""
+    pmin, pmax = min(pxs), max(pxs)
+    smin, smax = (min(sbls), max(sbls)) if sbls else (0, 1)
+    prng = (pmax - pmin) or 1
+    srng = (smax - smin) or 1
+
+    def x(i):
+        return padL + pw * i / max(n - 1, 1)
+
+    def yp(v):
+        return padT + ph * (1 - (v - pmin) / prng)
+
+    def ys(v):
+        return padT + ph * (1 - (v - smin) / srng)
+
+    date_to_i = {p["d"]: i for i, p in enumerate(series)}
+    parts = [f'<svg viewBox="0 0 {W} {H}" style="width:100%;height:auto;'
+             'background:#fff;border:1px solid #eee;border-radius:6px;">']
+    # 兩波窗口陰影
+    shade = ["rgba(255,120,80,0.08)", "rgba(80,140,255,0.08)"]
+    for k, ep in enumerate(episodes):
+        i0 = next((date_to_i[d] for d in sorted(date_to_i)
+                   if d >= ep["peak_date"]), None)
+        i1 = next((date_to_i[d] for d in sorted(date_to_i, reverse=True)
+                   if d <= ep["ep_end"]), None)
+        if i0 is not None and i1 is not None and i1 > i0:
+            parts.append(f'<rect x="{x(i0):.0f}" y="{padT}" '
+                         f'width="{x(i1)-x(i0):.0f}" height="{ph}" '
+                         f'fill="{shade[k % 2]}"/>')
+    # 價格線
+    pts = " ".join(f"{x(i):.1f},{yp(p['px']):.1f}"
+                   for i, p in enumerate(series) if p["px"])
+    parts.append(f'<polyline points="{pts}" fill="none" '
+                 'stroke="#c0392b" stroke-width="1.6"/>')
+    # SBL 線
+    if sbls:
+        spts = " ".join(f"{x(i):.1f},{ys(p['sbl']):.1f}"
+                        for i, p in enumerate(series) if p.get("sbl"))
+        parts.append(f'<polyline points="{spts}" fill="none" '
+                     'stroke="#2471a3" stroke-width="1.4" '
+                     'stroke-dasharray="4 2"/>')
+    # 軸標
+    parts.append(f'<text x="{padL}" y="12" font-size="11" fill="#c0392b">'
+                 f'━ 收盤價 ${pmin:.0f}–${pmax:.0f}</text>')
+    parts.append(f'<text x="{W-padR-4}" y="12" font-size="11" fill="#2471a3" '
+                 f'text-anchor="end">┄ 借券賣出餘額(張) {smin:.0f}–{smax:.0f}</text>')
+    # x 軸月標
+    seen = set()
+    for i, p in enumerate(series):
+        ym = p["d"][:7]
+        if ym not in seen and p["d"][8:10] in ("01", "02", "03", "04", "05"):
+            seen.add(ym)
+            if len(seen) % 2 == 0:
+                parts.append(f'<text x="{x(i):.0f}" y="{H-8}" font-size="9" '
+                             f'fill="#888" text-anchor="middle">{ym[2:]}</text>')
+    parts.append('</svg>')
+    return "".join(parts)
+
+
+def _render_chip_compare_page(code: str = "3491", data: dict | None = None,
+                              error: str = "") -> str:
+    nav = ('<nav><a href="/">← 大盤 dashboard</a> '
+           '<a href="/chip-price">📋 籌碼價量</a> '
+           '<a href="/money-flow">💰 族群資金流</a></nav>')
+    css = """<style>
+  body{font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
+       max-width:1000px;margin:1em auto;padding:0 1em;background:#f7f7f9;color:#222;}
+  h1{font-size:1.35em;margin:.4em 0;} nav a{margin-right:12px;color:#0066cc;text-decoration:none;}
+  form{background:#fff;padding:10px;border-radius:6px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);}
+  input{font-size:15px;padding:6px 10px;border:1px solid #ccc;border-radius:4px;width:100px;}
+  button{font-size:15px;padding:6px 14px;background:#0066cc;color:#fff;border:none;border-radius:4px;cursor:pointer;}
+  section{background:#fff;padding:12px 16px;border-radius:6px;margin-bottom:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);}
+  table{width:100%;border-collapse:collapse;font-size:.86em;}
+  th,td{padding:6px 9px;border-bottom:1px solid #eee;text-align:right;}
+  th:first-child,td:first-child{text-align:left;}
+  th{background:#fafafa;color:#555;}
+  .pos{color:#c0392b;} .neg{color:#186a3b;}
+  .ep25{border-left:3px solid #e67e22;} .ep26{border-left:3px solid #2980b9;}
+  .small,small{font-size:.85em;color:#666;}
+  .err{background:#fee;border:1px solid #f99;padding:12px;border-radius:4px;color:#c00;}
+  .note{background:#fdf6e8;color:#a06000;padding:8px 12px;border-radius:4px;font-size:.85em;}
+</style>"""
+    head = (f'<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+            f'<title>{code} 兩波籌碼對比</title>{css}</head><body>{nav}'
+            f'<h1>📉 昇達科式「兩波下殺」籌碼對比 — {code}</h1>'
+            f'<form method="get"><label>代號 </label>'
+            f'<input name="code" value="{html_lib.escape(code)}"> '
+            f'<button>比對</button> '
+            f'<span class="small">預設比 2025 春(3-8月) vs 2026(5月至今)</span></form>')
+    tail = '</body></html>'
+    if error:
+        return head + f'<div class="err">⚠ {_esc(error)}</div>' + tail
+    if not data or not data.get("episodes"):
+        return head + '<section>無資料</section>' + tail
+
+    eps = data["episodes"]
+    svg = _episode_svg(data.get("series", []), eps)
+
+    def _f(v, suf="", sign=False):
+        if v is None:
+            return "—"
+        s = f"{v:+,.0f}" if sign else f"{v:,.0f}"
+        return f"{s}{suf}"
+
+    def _seg_cells(seg):
+        if not seg:
+            return "<td colspan=4 class='small'>（無此段）</td>"
+        pc = seg["px_chg_pct"]
+        pc_cls = "neg" if pc < 0 else "pos"
+        f = seg["f_cum"]
+        return (f"<td>${seg['px0']:,.0f}→${seg['px1']:,.0f} "
+                f"<span class='{pc_cls}'>({pc:+.0f}%)</span></td>"
+                f"<td class='{'neg' if f<0 else 'pos'}'>{_f(f,'張',True)}</td>"
+                f"<td>{_f(seg.get('sbl0'))}→{_f(seg.get('sbl1'),'張')} "
+                f"<small>峰{_f(seg.get('sbl_peak'))}</small></td>"
+                f"<td>{_f(seg.get('mgn0'))}→{_f(seg.get('mgn1'),'張')}</td>")
+
+    rows = []
+    labels = [("2025 春", "ep25"), ("2026", "ep26")]
+    for ep, (lbl, cls) in zip(eps, labels):
+        rows.append(
+            f'<tr class="{cls}"><td><b>{lbl} 下跌段</b><br>'
+            f'<small>{ep["peak_date"][2:]}高 ${ep["peak_px"]:,.0f} '
+            f'→ {ep["low_date"][2:]}低 ${ep["low_px"]:,.0f}</small></td>'
+            f'{_seg_cells(ep["fall"])}</tr>')
+        if ep.get("base"):
+            rows.append(
+                f'<tr class="{cls}"><td>{lbl} 築底/反彈段</td>'
+                f'{_seg_cells(ep["base"])}</tr>')
+
+    findings = (
+        '<section><h3 style="margin:.2em 0">🔍 判讀（自動計算＋人工歸納）</h3>'
+        '<ul class="small" style="line-height:1.7">'
+        '<li><b>下跌驅動力不同</b>：2025 下跌段外資幾乎沒賣、借券小增 = 無量陰跌；'
+        '2026 下跌段外資大賣＋借券同步加碼 = 外資主導殺盤（籌碼與價同向、像真去化）。</li>'
+        '<li><b>築底期借券行為相反</b>：2025 築底反彈段借券<b>暴增到高峰</b>（空方低檔總攻→'
+        '結果押錯、成軋空燃料、8 月起漲）；2026 落底至今借券未再放大（空方克制），'
+        '<b>缺 2025 那種軋空柴火</b>。</li>'
+        '<li><b>融資兩期都穩定</b>（2025 ~4,700 張、2026 ~3,300 張，沒有斷頭去槓桿潮）'
+        '— 融資戶抱住沒跑，與 5347 跌停日狂砍融資相反，是本檔特徵。</li>'
+        '<li><b>雷同</b>：兩次外資都站賣方、下跌全程無外資大買承接；跌幅級距相近。</li>'
+        '<li><b>規模</b>：2025 借券高峰 6,406 張 vs 2026 目前 ~3,600 張，'
+        '今年絕對空方部位還不到去年築底時六成。</li>'
+        '</ul></section>')
+
+    caveat = (
+        '<p class="note">⚠ <b>限制</b>：(1) <b>券商分點無歷史 API</b>，'
+        '2025 那波完全沒有分點細節，本頁只用官方借券＋法人＋融資；'
+        '(2) 2026 仍進行中，「低點」是暫時低點非確認底；'
+        '(3) 除息前借券會有召回/還券擾動（制度性、非空方撤退）；'
+        '(4) 外資淨額為官方三大法人（股→張），借券為 SBL 賣出餘額。</p>')
+
+    tbl = ('<section>' + (svg or '') +
+           '<table><thead><tr><th>時期／段</th><th>價格(段內)</th>'
+           '<th>外資累計淨</th><th>借券賣出餘額(SBL)</th><th>融資餘額</th>'
+           '</tr></thead><tbody>' + "".join(rows) + '</tbody></table>' +
+           f'<p class="small">資料至 {_esc(data.get("asof",""))}｜'
+           '借券/外資 單位股已換算張；融資 balance 原生為張。</p></section>')
+    return head + tbl + findings + caveat + tail
+
+
+@app.route("/chip-compare")
+def chip_compare():
+    import chip_episode_compare as cec
+    from datetime import datetime as _dt
+    code = (request.args.get("code") or "3491").strip()
+    episodes = [("2025-03-21", "2025-08-31"),
+                ("2026-05-29", _dt.now().strftime("%Y-%m-%d"))]
+    try:
+        data = cec.build_compare(code, episodes)
+    except Exception as e:
+        return _render_chip_compare_page(code=code, error=f"{type(e).__name__}: {e}")
+    if data.get("error"):
+        return _render_chip_compare_page(code=code, error=data["error"])
+    return _render_chip_compare_page(code=code, data=data)
 
 
 @app.route("/contract-liabilities")
