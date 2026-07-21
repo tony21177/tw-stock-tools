@@ -1614,7 +1614,7 @@ def _render_chip_compare_page(code: str = "3491", data: dict | None = None,
                               error: str = "") -> str:
     nav = ('<nav><a href="/">← 大盤 dashboard</a> '
            '<a href="/chip-price">📋 籌碼價量</a> '
-           '<a href="/money-flow">💰 族群資金流</a></nav>')
+           '<a href="/money-flow">💰 族群資金流</a> <a href="/warrant-signal">🎰 權證量能</a></nav>')
     css = """<style>
   body{font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
        max-width:1000px;margin:1em auto;padding:0 1em;background:#f7f7f9;color:#222;}
@@ -1711,6 +1711,38 @@ def _render_chip_compare_page(code: str = "3491", data: dict | None = None,
            f'<p class="small">資料至 {_esc(data.get("asof",""))}｜'
            '借券/外資 單位股已換算張；融資 balance 原生為張。</p></section>')
     return head + tbl + findings + caveat + tail
+
+
+@app.route("/warrant-signal")
+def warrant_signal_page():
+    import glob as _glob
+    import warrant_signal as ws
+    import warrant_signal_renderer as wsr
+    flow_dir = os.path.join(HERE, "cache", "warrant_flow")
+    files = sorted(_glob.glob(os.path.join(flow_dir, "*.json")))[-60:]
+    days = []
+    for f in files:
+        try:
+            with open(f, encoding="utf-8") as fh:
+                days.append(json.load(fh))
+        except Exception:
+            continue
+    if not days:
+        return wsr.render_page([], {}, "", backtest=None)
+    try:
+        rows = ws.build_signal_rows(days)
+    except Exception:
+        rows = []
+    bt = None
+    bt_path = os.path.join(HERE, "cache", "warrant_backtest.json")
+    if os.path.exists(bt_path):
+        try:
+            with open(bt_path, encoding="utf-8") as fh:
+                bt = json.load(fh)
+        except Exception:
+            bt = None
+    return wsr.render_page(rows, days[-1], days[-1].get("date", ""),
+                           backtest=bt)
 
 
 @app.route("/chip-compare")
