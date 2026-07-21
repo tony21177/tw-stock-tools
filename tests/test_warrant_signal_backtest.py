@@ -37,3 +37,18 @@ class TestEvaluate(unittest.TestCase):
         res = bt.evaluate(days, closes, horizon=3, surge_min=2.0)
         self.assertEqual(res["bull"]["n"], 1)
         self.assertEqual(res["bull"]["win_rate"], 1.0)  # +9% > 0
+
+
+class TestSweep(unittest.TestCase):
+    def test_sweep_grid(self):
+        days = [{"date": f"202606{i:02d}", "underlyings":
+                 {"2308": {"bull_turnover": 80, "bear_turnover": 20}}}
+                for i in range(1, 21)]
+        days.append({"date": "20260701", "underlyings":
+                     {"2308": {"bull_turnover": 380, "bear_turnover": 20}}})
+        closes = {"2308": {d["date"]: 100.0 + i for i, d in enumerate(days)}}
+        grid = bt.sweep(days, closes, horizons=[1, 3],
+                        surge_grid=[2.0, 3.0], delta_grid=[0.10])
+        # 2 horizons × 2 surge × 1 delta = 4 組
+        self.assertEqual(len(grid), 4)
+        self.assertTrue(all("bull" in g and "horizon" in g for g in grid))
