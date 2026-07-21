@@ -122,3 +122,58 @@ def aggregate_by_underlying(rows: list[dict]) -> dict:
         u["top_warrants"] = sorted(u.pop("_all"),
                                    key=lambda w: -w["turnover"])[:5]
     return agg
+
+
+def run_day(date_yyyymmdd: str, rows: list[dict] | None = None) -> dict:
+    """彙總日資料 + 原子寫日檔。"""
+    if rows is None:
+        rows = fetch_warrant_day(date_yyyymmdd)
+    day = {"date": date_yyyymmdd,
+           "underlyings": aggregate_by_underlying(rows)}
+    os.makedirs(FLOW_DIR, exist_ok=True)
+    path = os.path.join(FLOW_DIR, f"{date_yyyymmdd}.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(day, f, ensure_ascii=False)
+    os.replace(tmp, path)
+    return day
+
+
+def load_day(date_yyyymmdd: str) -> dict | None:
+    """載入日檔，不存在回傳 None。"""
+    path = os.path.join(FLOW_DIR, f"{date_yyyymmdd}.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--date")
+    ap.add_argument("--backfill", type=int)
+    ap.add_argument("--delay", type=float, default=3.0)
+    args = ap.parse_args()
+    if args.backfill:
+        sys.path.insert(0, HERE)
+        import market_breadth
+        dates = market_breadth._twii_trading_dates()[-args.backfill:]
+        for d in dates:
+            dd = d.replace("-", "")
+            if load_day(dd):
+                continue
+            print(f"[warrant] {dd} …", file=sys.stderr)
+            run_day(dd)
+            time.sleep(args.delay)
+    else:
+        d = args.date or __import__("datetime").datetime.now().strftime("%Y%m%d")
+        run_day(d)
+        print(f"[warrant] wrote {d}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    _main()

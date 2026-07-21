@@ -1,4 +1,9 @@
-import os, sys, unittest
+import json as _json
+import os
+import sys
+import tempfile
+import unittest
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
 sys.path.insert(0, os.path.join(HERE, "..", "concept_momentum"))
@@ -82,3 +87,27 @@ class TestAggregate(unittest.TestCase):
         u = wf.aggregate_by_underlying(self.ROWS)["2308"]
         self.assertEqual(u["top_warrants"][0]["code"], "030002")  # 最大額
         self.assertLessEqual(len(u["top_warrants"]), 5)
+
+
+class TestRunDay(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self._orig = wf.FLOW_DIR
+        wf.FLOW_DIR = self.tmp.name
+
+    def tearDown(self):
+        wf.FLOW_DIR = self._orig
+        self.tmp.cleanup()
+
+    def test_run_day_writes_file(self):
+        rows = [{"code": "030001", "name": "台達電凱基購01", "side": "bull",
+                 "underlying": "2308", "turnover": 1000.0, "volume": 10000}]
+        out = wf.run_day("20260720", rows=rows)
+        self.assertEqual(out["date"], "20260720")
+        self.assertIn("2308", out["underlyings"])
+        path = os.path.join(self.tmp.name, "20260720.json")
+        self.assertTrue(os.path.exists(path))
+        self.assertEqual(wf.load_day("20260720")["date"], "20260720")
+
+    def test_load_missing(self):
+        self.assertIsNone(wf.load_day("20250101"))
