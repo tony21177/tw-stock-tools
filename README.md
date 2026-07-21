@@ -1733,7 +1733,8 @@ python3 -m patchright install chromium
 
 - 每次 `analyze()` 自動寫 `chip_price_history/{code}_{date}.json` (slim ~50-200 KB)
 - Rolling 10 個交易日，自動 prune
-- broker_monitor 18:00 cron 已加入 chip_price_history backfill — 每天 top 200+ 檔自動累積
+- broker_monitor 18:00 cron 已加入 chip_price_history backfill — 每天**融資餘額 top 200** 檔自動累積
+- **`chip_cache_builder.py`（20:30 cron，2026-07-21 加）** — broker_monitor 的 top-200 融資選股會漏掉低融資的族群/強勢股，本器補一份**動態 union**：族群成分股（concepts.json themes 全成員 ~194）∪ 強勢股候選（近 5 日 second_wave_history）∪ 推播 watchlist ∪ 當日成交金額熱門 top-N（排除 ETF）。**跳過當日已快取的**（不重抓 broker_monitor 已抓的）→ 只補缺口（實測 ~140 檔）。排 20:30 避開 18:00 broker_monitor 長工（最長 105 分），並內建 `pgrep tw_broker_monitor` 等待守門（TPEx Playwright 共用 Xvfb :99 不能並行）。用法 `--list-only`（只印清單）/`--hot-n N`（熱門股數，0=不加）/`--max N`（union 上限防爆時間）。目的：讓族群資金流/強勢股/熱門股每天有分點資料持續累積
 
 ### 使用
 ```bash
