@@ -30,12 +30,19 @@ WARRANT_TYPES = {
 # 權證名稱 = [標的簡稱][券商][流水][購/售][序]，券商名擷取用
 _ISSUERS = ("凱基", "元大", "統一", "富邦", "永豐", "群益", "國泰", "兆豐",
             "中信", "元富", "第一金", "康和", "日盛", "台新", "華南", "宏遠",
-            "麥格理", "花旗", "高盛", "摩根")
+            "麥格理", "花旗", "高盛", "摩根", "國票")
 
 
-def parse_issuer(name: str) -> str:
+def parse_issuer(name: str, underlying_name: str = "") -> str:
+    """從權證名稱擷取券商。標的簡稱可能本身含券商字樣（如「元大金」含
+    「元大」、「國泰金」含「國泰」、「富邦金」含「富邦」），故須先剝除
+    標的簡稱前綴，只在剩餘部分比對券商，避免誤判為標的自身。
+    """
+    rest = name
+    if underlying_name and name.startswith(underlying_name):
+        rest = name[len(underlying_name):]
     for iss in _ISSUERS:
-        if iss in name:
+        if iss in rest:
             return iss
     return ""
 
@@ -112,7 +119,7 @@ def aggregate_by_underlying(rows: list[dict]) -> dict:
         u[f"{side}_turnover"] += r["turnover"]
         u[f"{side}_vol"] += r["volume"]
         u["n_warrants"] += 1
-        iss = parse_issuer(r["name"])
+        iss = parse_issuer(r["name"], r.get("underlying_name", ""))
         if iss:
             u["issuers"][iss] = u["issuers"].get(iss, 0.0) + r["turnover"]
         u["_all"].append({"code": r["code"], "name": r["name"],
@@ -125,11 +132,22 @@ def aggregate_by_underlying(rows: list[dict]) -> dict:
 
 
 def run_day(date_yyyymmdd: str, rows: list[dict] | None = None) -> dict:
-    """彙總日資料 + 原子寫日檔。"""
+    """彙總日資料 + 原子寫日檔。
+
+    若 rows 為即時抓取（呼叫端未傳入，走 fetch_warrant_day）且彙總結果
+    零標的，視為抓取失敗/遭限流（正常交易日一定有權證資料），不寫日檔，
+    避免污染日檔快取；直接傳入 rows 的路徑（測試用）維持照寫不誤。
+    """
+    live_fetch = rows is None
     if rows is None:
         rows = fetch_warrant_day(date_yyyymmdd)
     day = {"date": date_yyyymmdd,
            "underlyings": aggregate_by_underlying(rows)}
+    if live_fetch and not day["underlyings"]:
+        print(f"[WARN] {date_yyyymmdd} 即時抓取零標的資料，"
+              f"可能抓取失敗或遭限流（正常交易日必有權證資料），"
+              f"不寫入日檔", file=sys.stderr)
+        return day
     os.makedirs(FLOW_DIR, exist_ok=True)
     path = os.path.join(FLOW_DIR, f"{date_yyyymmdd}.json")
     tmp = path + ".tmp"

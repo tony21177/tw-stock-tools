@@ -52,3 +52,24 @@ class TestSweep(unittest.TestCase):
         # 2 horizons × 2 surge × 1 delta = 4 組
         self.assertEqual(len(grid), 4)
         self.assertTrue(all("bull" in g and "horizon" in g for g in grid))
+
+
+class TestStats(unittest.TestCase):
+    def test_stats_positive_t_stat(self):
+        vals = [5.0, 6.0, 4.0, 5.5, 6.5, 4.5, 5.0, 6.0]
+        s = bt._stats(vals, lambda v: v > 0)
+        self.assertIsNotNone(s["t_stat"])
+        self.assertGreater(s["t_stat"], 0)
+        self.assertEqual(len(s["ci95"]), 2)
+        self.assertLess(s["ci95"][0], s["mean"])
+        self.assertLess(s["mean"], s["ci95"][1])
+
+    def test_stats_single_value_no_tstat(self):
+        s = bt._stats([5.0], lambda v: v > 0)
+        self.assertIsNone(s["t_stat"])
+        self.assertIsNone(s["ci95"])
+
+    def test_stats_empty(self):
+        s = bt._stats([], lambda v: v > 0)
+        self.assertIsNone(s["t_stat"])
+        self.assertIsNone(s["ci95"])

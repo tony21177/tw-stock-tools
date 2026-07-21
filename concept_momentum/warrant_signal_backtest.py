@@ -3,6 +3,7 @@
 
 ⚠ 結果誠實呈現有無 edge；無 edge 則不上線（見設計文件）。
 """
+import math
 import os
 import sys
 import statistics
@@ -31,19 +32,32 @@ def forward_return(closes: dict, code: str, signal_date: str,
 
 
 def _stats(vals: list[float], win_cmp) -> dict:
+    """描述統計 + 顯著性：t 統計量與平均值 95% 信賴區間（n<2 時無法定義 std）。"""
     if not vals:
-        return {"n": 0, "win_rate": None, "median": None, "mean": None}
+        return {"n": 0, "win_rate": None, "median": None, "mean": None,
+                "t_stat": None, "ci95": None}
+    n = len(vals)
     wins = sum(1 for v in vals if win_cmp(v))
-    return {"n": len(vals), "win_rate": round(wins / len(vals), 3),
+    mean = statistics.mean(vals)
+    if n < 2:
+        t_stat, ci95 = None, None
+    else:
+        std = statistics.stdev(vals)
+        se = std / math.sqrt(n)
+        t_stat = round(mean / se, 2) if se else None
+        ci95 = [round(mean - 1.96 * se, 2), round(mean + 1.96 * se, 2)]
+    return {"n": n, "win_rate": round(wins / n, 3),
             "median": round(statistics.median(vals), 2),
-            "mean": round(statistics.mean(vals), 2)}
+            "mean": round(mean, 2),
+            "t_stat": t_stat, "ci95": ci95}
 
 
 def evaluate(day_files: list[dict], closes: dict, horizon: int = 5,
              surge_min: float = 2.0, delta_min: float = 0.10) -> dict:
     bull_ret, bear_ret, base_ret = [], [], []
     # 逐日：用該日(含)之前的 day_files 產生訊號，算前瞻報酬
-    for end in range(21, len(day_files) + 1):
+    # 起點需滿足 warrant_signal.MIN_HISTORY（build_signal_rows 的最低前期資料要求）
+    for end in range(ws.MIN_HISTORY + 1, len(day_files) + 1):
         window = day_files[:end]
         sig_date = window[-1]["date"]
         rows = ws.build_signal_rows(window, surge_min=surge_min,

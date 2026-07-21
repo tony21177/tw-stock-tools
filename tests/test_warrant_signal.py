@@ -41,3 +41,9 @@ class TestSignal(unittest.TestCase):
         days = [_day(f"202606{i:02d}", 80, 20) for i in range(1, 21)]
         days.append(_day("20260701", 90, 20))  # 沒爆量
         self.assertEqual(ws.build_signal_rows(days), [])
+
+    def test_min_history_floor(self):
+        # 只有 5 天前期資料（< MIN_HISTORY=10）→ 即使明顯爆量也不觸發訊號
+        days = [_day(f"202606{i:02d}", 80, 20) for i in range(1, 6)]
+        days.append(_day("20260701", 800, 20))  # 明顯爆量
+        self.assertEqual(ws.build_signal_rows(days), [])

@@ -27,6 +27,14 @@ class TestTypesAndIssuer(unittest.TestCase):
     def test_parse_issuer_unknown(self):
         self.assertEqual(wf.parse_issuer("XYZ"), "")
 
+    def test_parse_issuer_strips_underlying_prefix(self):
+        # 標的簡稱含券商字樣時，須先剝除標的前綴再比對，避免誤判
+        self.assertEqual(wf.parse_issuer("元大金富邦5C購01", "元大金"), "富邦")
+        self.assertEqual(wf.parse_issuer("國泰金台新5C購01", "國泰金"), "台新")
+
+    def test_parse_issuer_guopiao(self):
+        self.assertEqual(wf.parse_issuer("鴻海國票88購03", "鴻海"), "國票")
+
 
 class TestParseTable(unittest.TestCase):
     PAYLOAD = {"stat": "OK", "tables": [
@@ -111,3 +119,16 @@ class TestRunDay(unittest.TestCase):
 
     def test_load_missing(self):
         self.assertIsNone(wf.load_day("20250101"))
+
+    def test_run_day_live_empty_fetch_not_written(self):
+        # 即時抓取（rows=None 路徑）若彙總結果零標的，視為抓取失敗/限流，不寫檔
+        orig_fetch = wf.fetch_warrant_day
+        wf.fetch_warrant_day = lambda *a, **kw: []
+        try:
+            out = wf.run_day("20990101")
+        finally:
+            wf.fetch_warrant_day = orig_fetch
+        self.assertEqual(out["date"], "20990101")
+        self.assertEqual(out["underlyings"], {})
+        path = os.path.join(self.tmp.name, "20990101.json")
+        self.assertFalse(os.path.exists(path))

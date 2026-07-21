@@ -5,6 +5,7 @@
 """
 SURGE_MIN = 2.0
 SHARE_DELTA_MIN = 0.10
+MIN_HISTORY = 10   # 前期資料不足 N 天則不判斷（資料太薄，均值/爆量比不可靠）
 
 
 def _total(u: dict) -> float:
@@ -33,7 +34,7 @@ def build_signal_rows(day_files: list[dict], surge_min: float = SURGE_MIN,
                 prior_share.append((u.get("bull_turnover", 0.0) or 0.0) / t)
         prior_tot = prior_tot[-20:]
         prior_share = prior_share[-20:]
-        if not prior_tot:
+        if len(prior_tot) < MIN_HISTORY:
             continue
         surge = tot / (sum(prior_tot) / len(prior_tot))
         if surge < surge_min:
