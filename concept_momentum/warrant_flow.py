@@ -112,6 +112,7 @@ def aggregate_by_underlying(rows: list[dict]) -> dict:
         if not re.fullmatch(r"\d{4}", code):
             continue    # 只留 4 位數普通股標的（排除指數 IX...）
         u = agg.setdefault(code, {
+            "name": r.get("underlying_name", ""),   # 標的現股中文名
             "bull_turnover": 0.0, "bear_turnover": 0.0,
             "bull_vol": 0, "bear_vol": 0, "n_warrants": 0,
             "issuers": {}, "_all": []})

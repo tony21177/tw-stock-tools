@@ -19,6 +19,14 @@ def _esc(s) -> str:
     return _html.escape(str(s))
 
 
+def _stock_name(code: str) -> str:
+    try:
+        from stock_names import get_name
+        return get_name(code, "")
+    except Exception:
+        return ""
+
+
 def _fmt_yi(v: float) -> str:
     return f"{v / YI:.2f}"
 
@@ -82,8 +90,9 @@ def render_page(signal_rows: list[dict], day: dict, asof: str,
         '「認購佔比」= 認購(含牛證)成交金額 ÷ 全部權證；Δ = 今日 − 近20日均。'
         '金額單位億元、近似。</p>'
         '<table><thead><tr>'
-        '<th>代號</th><th>方向</th><th>爆量倍數</th><th>權證總額(億)</th>'
-        '<th>認購佔比</th><th>Δ占比</th><th>權證檔數</th><th>主要發行券商</th>'
+        '<th>代號</th><th>名稱</th><th>方向</th><th>爆量倍數</th>'
+        '<th>權證總額(億)</th><th>認購佔比</th><th>Δ占比</th>'
+        '<th>權證檔數</th><th>主要發行券商</th>'
         '</tr></thead><tbody>')
     for r in signal_rows:
         u = unders.get(r["code"], {})
@@ -98,8 +107,10 @@ def render_page(signal_rows: list[dict], day: dict, asof: str,
             f"{_fmt_yi(w['turnover'])}億</div>" for w in tops[:5])
         share_cls = "pos" if (r["bull_share_delta"] or 0) > 0 else (
             "neg" if (r["bull_share_delta"] or 0) < 0 else "")
+        name = u.get("name") or _stock_name(r["code"])
         parts.append(
             f'<tr><td>{_esc(r["code"])}</td>'
+            f'<td style="text-align:left">{_esc(name)}</td>'
             f'<td title="{_esc(d_tip)}">{d_label}</td>'
             f'<td>{r["surge_ratio"]:.1f}x</td>'
             f'<td>{_fmt_yi(r["warrant_turnover"])}</td>'

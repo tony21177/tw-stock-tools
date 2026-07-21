@@ -46,6 +46,18 @@ def load_recipients() -> list[str]:
         return []
 
 
+def _stock_name(code: str, u: dict) -> str:
+    """標的中文名：日檔的 name 優先，退回 stock_names。"""
+    n = (u or {}).get("name")
+    if n:
+        return n
+    try:
+        from stock_names import get_name
+        return get_name(code, "")
+    except Exception:
+        return ""
+
+
 def build_message(rows: list[dict], day: dict, top: int = 8) -> str:
     date = day.get("date", "")
     date_fmt = f"{date[:4]}/{date[4:6]}/{date[6:]}" if len(date) == 8 else date
@@ -62,8 +74,9 @@ def build_message(rows: list[dict], day: dict, top: int = 8) -> str:
         issuers = sorted((u.get("issuers") or {}).items(),
                          key=lambda x: -x[1])[:2]
         iss = "、".join(n for n, _ in issuers) or "—"
+        name = _stock_name(r["code"], u)
         lines.append(
-            f"  {r['code']} {_DIR.get(r['direction'], '—')} "
+            f"  {r['code']} {name} {_DIR.get(r['direction'], '—')} "
             f"爆量{r['surge_ratio']:.1f}x 權證{r['warrant_turnover']/YI:.2f}億 "
             f"認購佔比{r['bull_share']:.0%}(Δ{r['bull_share_delta']:+.0%}) "
             f"發行:{iss}")
