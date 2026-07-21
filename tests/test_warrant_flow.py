@@ -50,3 +50,35 @@ class TestParseTable(unittest.TestCase):
 
     def test_parse_no_title_table(self):
         self.assertEqual(wf._parse_warrant_table({"tables": [{}]}), [])
+
+
+class TestAggregate(unittest.TestCase):
+    ROWS = [
+        {"code": "030001", "name": "台達電凱基購01", "side": "bull",
+         "underlying": "2308", "turnover": 1000.0, "volume": 10000},
+        {"code": "030002", "name": "台達電元大購02", "side": "bull",
+         "underlying": "2308", "turnover": 3000.0, "volume": 20000},
+        {"code": "070001", "name": "台達電凱基售01", "side": "bear",
+         "underlying": "2308", "turnover": 500.0, "volume": 5000},
+        {"code": "030999", "name": "台指凱基購", "side": "bull",
+         "underlying": "IX0001", "turnover": 9999.0, "volume": 100},
+    ]
+
+    def test_aggregate_call_put(self):
+        agg = wf.aggregate_by_underlying(self.ROWS)
+        self.assertIn("2308", agg)
+        self.assertNotIn("IX0001", agg)   # 指數標的排除
+        u = agg["2308"]
+        self.assertEqual(u["bull_turnover"], 4000.0)
+        self.assertEqual(u["bear_turnover"], 500.0)
+        self.assertEqual(u["n_warrants"], 3)
+
+    def test_issuer_distribution(self):
+        u = wf.aggregate_by_underlying(self.ROWS)["2308"]
+        self.assertEqual(u["issuers"]["凱基"], 1500.0)  # 1000 + 500
+        self.assertEqual(u["issuers"]["元大"], 3000.0)
+
+    def test_top_warrants_sorted(self):
+        u = wf.aggregate_by_underlying(self.ROWS)["2308"]
+        self.assertEqual(u["top_warrants"][0]["code"], "030002")  # 最大額
+        self.assertLessEqual(len(u["top_warrants"]), 5)

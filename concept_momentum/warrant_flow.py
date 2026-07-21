@@ -96,3 +96,29 @@ def fetch_warrant_day(date_yyyymmdd: str, delay: float = 3.0,
             r["side"] = side
             out.append(r)
     return out
+
+
+def aggregate_by_underlying(rows: list[dict]) -> dict:
+    agg: dict[str, dict] = {}
+    for r in rows:
+        code = r["underlying"]
+        if not re.fullmatch(r"\d{4}", code):
+            continue    # 只留 4 位數普通股標的（排除指數 IX...）
+        u = agg.setdefault(code, {
+            "bull_turnover": 0.0, "bear_turnover": 0.0,
+            "bull_vol": 0, "bear_vol": 0, "n_warrants": 0,
+            "issuers": {}, "_all": []})
+        side = r["side"]
+        u[f"{side}_turnover"] += r["turnover"]
+        u[f"{side}_vol"] += r["volume"]
+        u["n_warrants"] += 1
+        iss = parse_issuer(r["name"])
+        if iss:
+            u["issuers"][iss] = u["issuers"].get(iss, 0.0) + r["turnover"]
+        u["_all"].append({"code": r["code"], "name": r["name"],
+                          "issuer": iss, "side": side,
+                          "turnover": r["turnover"]})
+    for u in agg.values():
+        u["top_warrants"] = sorted(u.pop("_all"),
+                                   key=lambda w: -w["turnover"])[:5]
+    return agg
