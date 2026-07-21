@@ -8,6 +8,7 @@ import sys
 import statistics
 import json
 import glob
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -107,7 +108,10 @@ def _main():
     args = ap.parse_args()
 
     files = sorted(glob.glob(os.path.join(wf.FLOW_DIR, "*.json")))[-args.backfill_days:]
-    day_files = [json.load(open(f, encoding="utf-8")) for f in files]
+    day_files = []
+    for f in files:
+        with open(f, encoding="utf-8") as fh:
+            day_files.append(json.load(fh))
     if not day_files:
         print("[backtest] 無 warrant_flow 日檔，先 backfill", file=sys.stderr)
         return
@@ -127,6 +131,18 @@ def _main():
                          for r in rows if r.get("close")}
         except Exception:
             continue
+        time.sleep(0.15)
+    # Guard against silent total-fetch-failure
+    if not any(closes.values()):
+        got = sum(1 for v in closes.values() if v)
+        total = len(codes)
+        print(f"[backtest] ⚠ 現股收盤全數獲取失敗 ({got}/{total} 檔有資料)，"
+              f"可能 FINMIND_TOKEN 無效或 rate-limit；下列結果無意義",
+              file=sys.stderr)
+    else:
+        got = sum(1 for v in closes.values() if v)
+        total = len(codes)
+        print(f"[backtest] 現股收盤: {got}/{total} 檔有資料", file=sys.stderr)
     grid = sweep(day_files, closes, horizons=[1, 3, 5, 10],
                  surge_grid=[2.0, 3.0, 5.0], delta_grid=[0.10, 0.15])
     if args.json_out:
