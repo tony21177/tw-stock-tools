@@ -153,6 +153,7 @@ def load_day(date_yyyymmdd: str) -> dict | None:
 
 def _main():
     import argparse
+    from datetime import datetime
     ap = argparse.ArgumentParser()
     ap.add_argument("--date")
     ap.add_argument("--backfill", type=int)
@@ -161,16 +162,16 @@ def _main():
     if args.backfill:
         sys.path.insert(0, HERE)
         import market_breadth
-        dates = market_breadth._twii_trading_dates()[-args.backfill:]
+        today = datetime.now().strftime("%Y%m%d")
+        dates = market_breadth._twii_trading_dates(today, args.backfill)
         for d in dates:
-            dd = d.replace("-", "")
-            if load_day(dd):
+            if load_day(d):
                 continue
-            print(f"[warrant] {dd} …", file=sys.stderr)
-            run_day(dd)
+            print(f"[warrant] {d} …", file=sys.stderr)
+            run_day(d)
             time.sleep(args.delay)
     else:
-        d = args.date or __import__("datetime").datetime.now().strftime("%Y%m%d")
+        d = args.date or datetime.now().strftime("%Y%m%d")
         run_day(d)
         print(f"[warrant] wrote {d}", file=sys.stderr)
 
