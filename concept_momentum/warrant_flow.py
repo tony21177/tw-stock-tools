@@ -70,6 +70,7 @@ def _parse_warrant_table(payload: dict) -> list[dict]:
                 "code": str(d[1]), "name": str(d[2]),
                 "volume": int(volume), "trades": int(_num(d[4]) or 0),
                 "turnover": turnover,
+                "close": _num(d[9]),   # 權證自身收盤價
                 "underlying": str(d[17]), "underlying_name": str(d[18]),
                 "underlying_close": _num(d[19]),
             })
@@ -215,7 +216,8 @@ def aggregate_by_underlying(rows: list[dict]) -> dict:
             u["issuers"][iss] = u["issuers"].get(iss, 0.0) + r["turnover"]
         u["_all"].append({"code": r["code"], "name": r["name"],
                           "issuer": iss, "side": side,
-                          "turnover": r["turnover"]})
+                          "turnover": r["turnover"],
+                          "close": r.get("close")})   # 權證自身收盤價
     for u in agg.values():
         u["top_warrants"] = sorted(u.pop("_all"),
                                    key=lambda w: -w["turnover"])[:5]

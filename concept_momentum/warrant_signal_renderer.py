@@ -129,10 +129,12 @@ def render_page(signal_rows: list[dict], day: dict, asof: str,
         for w in tops[:5]:
             t = terms.get(w["code"], {})
             extra = ""
+            bits = []
+            if w.get("close") is not None:
+                bits.append(f"權證價${w['close']:g}")
             if t:
                 dte = _days_to_expiry(t.get("expiry", ""), asof)
                 io = _in_out(t.get("strike"), close, w["side"] == "bull")
-                bits = []
                 if t.get("strike"):
                     bits.append(f"履約${t['strike']:g}")
                 if dte is not None:
@@ -141,8 +143,8 @@ def render_page(signal_rows: list[dict], day: dict, asof: str,
                     bits.append(io)
                 if t.get("conver"):
                     bits.append(f"行使{t['conver']:g}")
-                if bits:
-                    extra = " ｜ " + " ".join(bits)
+            if bits:
+                extra = " ｜ " + " ".join(bits)
             detail_parts.append(
                 f"<div class='small'>{_esc(w['name'])} "
                 f"({_esc(w['issuer'] or '?')}/"

@@ -67,6 +67,15 @@ def _days_to_expiry(expiry: str, asof: str) -> int | None:
         return None
 
 
+def _in_out(strike, close, is_call: bool) -> str:
+    if not strike or not close:
+        return ""
+    diff = (close - strike) / strike * 100
+    if not is_call:
+        diff = -diff
+    return f"價內{diff:.0f}%" if diff >= 0 else f"價外{-diff:.0f}%"
+
+
 def build_message(rows: list[dict], day: dict, top: int = 8,
                   terms: dict | None = None) -> str:
     terms = terms or {}
@@ -86,19 +95,27 @@ def build_message(rows: list[dict], day: dict, top: int = 8,
                          key=lambda x: -x[1])[:2]
         iss = "、".join(n for n, _ in issuers) or "—"
         name = _stock_name(r["code"], u)
-        # 主要權證的履約價 + 距到期天數
+        # 主要權證明細：目前價/履約價/距到期/價內外/行使比例
         wt = ""
         tops = u.get("top_warrants", [])
         if tops:
-            t = terms.get(tops[0]["code"], {})
+            w0 = tops[0]
+            t = terms.get(w0["code"], {})
             bits = []
+            if w0.get("close") is not None:
+                bits.append(f"權證價${w0['close']:g}")
             if t.get("strike"):
                 bits.append(f"履約${t['strike']:g}")
             dte = _days_to_expiry(t.get("expiry", ""), date)
             if dte is not None:
                 bits.append(f"距到期{dte}天")
+            io = _in_out(t.get("strike"), u.get("close"), w0["side"] == "bull")
+            if io:
+                bits.append(io)
+            if t.get("conver"):
+                bits.append(f"行使{t['conver']:g}")
             if bits:
-                wt = "\n     主要權證(" + tops[0]["code"] + "): " + " ".join(bits)
+                wt = f"\n     主要權證({w0['code']}): " + " ".join(bits)
         lines.append(
             f"  {r['code']} {name} {_DIR.get(r['direction'], '—')} "
             f"爆量{r['surge_ratio']:.1f}x 權證{r['warrant_turnover']/YI:.2f}億 "

@@ -16,7 +16,10 @@ def _row(code, direction="neutral", surge=3.0, share=1.0, delta=0.0):
 
 
 DAY = {"date": "20260721", "underlyings": {
-    "2646": {"issuers": {"永豐": 3.9e5, "群益": 1.3e5}, "top_warrants": [],
+    "2646": {"issuers": {"永豐": 3.9e5, "群益": 1.3e5}, "close": 22.0,
+             "top_warrants": [{"code": "073997", "name": "星宇永豐65購01",
+                               "issuer": "永豐", "side": "bull",
+                               "turnover": 3e5, "close": 1.73}],
              "n_warrants": 12},
     "8045": {"issuers": {"國票": 2e5}, "top_warrants": [], "n_warrants": 3}}}
 
@@ -34,6 +37,16 @@ class TestBuildMessage(unittest.TestCase):
         self.assertIn("永豐", msg)
         self.assertIn("🔥偏多", msg)               # 8045 bull
         self.assertIn("/warrant-signal", msg)
+
+    def test_main_warrant_terms_in_line(self):
+        terms = {"073997": {"strike": 31.57, "expiry": "20270505",
+                            "conver": 0.5}}
+        msg = wp.build_message([_row("2646", surge=8.5)], DAY, top=8,
+                               terms=terms)
+        self.assertIn("權證價$1.73", msg)
+        self.assertIn("履約$31.57", msg)
+        self.assertIn("距到期288天", msg)
+        self.assertIn("行使0.5", msg)
 
     def test_top_limit(self):
         rows = [_row(f"{1000+i}", surge=9.0 - i) for i in range(12)]
