@@ -359,15 +359,49 @@ def fetch_monitor(days: int = 30) -> dict:
         return {"error": "無重疊資料"}
 
     latest = series[-1]
-    # 三訊號同步 (最新交易日): 台股跌 + 逆價差 + 台幣貶
+
+    # ── 除息點數精算：修正除權息旺季的結構性逆價差 ──────────────
+    # 台指期結算對加權指數(價格指數，除息蒸發點數)。期貨合理價 ≈ 現貨 −
+    # 結算前未發放股利。旺季(6-9月)出現數百點結構性逆價差、非看空。
+    # 調整後基差 = 原始基差 + 剩餘除息點數 D，用它判方向訊號。
+    div = None
+    try:
+        import index_dividend_points as idp
+        from datetime import date as _date
+        _d8 = "".join(ch for ch in str(latest["date"]) if ch.isdigit())
+        asof = _date(int(_d8[:4]), int(_d8[4:6]), int(_d8[6:8]))
+        front_cd = None
+        for r in tx:
+            if (r["date"] == latest["date"]
+                    and r.get("trading_session") == "position"
+                    and len(str(r.get("contract_date", ""))) == 6):
+                front_cd = str(r["contract_date"])
+                break
+        settle = idp.front_settlement(asof, front_cd)
+        div = idp.remaining_dividend_points(
+            latest["date"], settle.strftime("%Y-%m-%d"), token,
+            index_value=latest["spot"])
+    except Exception as e:
+        print(f"[WARN] 除息點數精算失敗: {e}", file=sys.stderr)
+
+    div_pts = (div or {}).get("points", 0.0) or 0.0
+    # 調整後基差：加回待除息點數（把結構性逆價差還原）
+    adj_basis = latest["basis"] + div_pts
+    adj_basis_pct = adj_basis / latest["spot"] * 100 if latest["spot"] else 0.0
+    latest["div_points"] = div_pts
+    latest["div_coverage_pct"] = (div or {}).get("coverage_pct")
+    latest["adj_basis"] = round(adj_basis, 1)
+    latest["adj_basis_pct"] = round(adj_basis_pct, 3)
+
+    # 三訊號同步 (最新交易日): 台股跌 + 逆價差(除息調整後) + 台幣貶
     three = {
         "twii_down": (latest["twii_chg"] is not None and latest["twii_chg"] < 0),
-        "backwardation": latest["basis"] < 0,
+        "backwardation": adj_basis < 0,
         "twd_weak": (latest["fx_chg"] is not None and latest["fx_chg"] > 0),
     }
     three["all"] = all(three[k] for k in ("twii_down", "backwardation", "twd_weak"))
-    # 基差是否超過套利成本
-    basis_extreme = abs(latest["basis_pct"]) > ARB_COST_PCT
+    # 基差是否超過套利成本 (用除息調整後基差)
+    basis_extreme = abs(adj_basis_pct) > ARB_COST_PCT
     tx_net = latest.get("fx_net")
     xif_net = latest.get("xif_net")
 
@@ -379,8 +413,9 @@ def fetch_monitor(days: int = 30) -> dict:
     prev = series[-2] if len(series) >= 2 else None
     oi_rising = (prev and tx_net is not None and prev.get("fx_net") is not None
                  and tx_net < prev["fx_net"])   # 淨空更負 = 空單擴大
-    arb_consistent = (latest["basis"] > 0 and (tx_net or 0) < -30000)
-    directional_warn = (latest["basis"] < -ARB_COST_PCT / 100 * latest["spot"]
+    arb_consistent = (adj_basis > 0 and (tx_net or 0) < -30000)
+    # 逆價差判方向用除息調整後基差 — 旺季結構性逆價差不算真方向
+    directional_warn = (adj_basis < -ARB_COST_PCT / 100 * latest["spot"]
                         and (tx_net or 0) < -30000 and oi_rising)
 
     twn = get_twn_oi()   # 富台近月 OI (TradingView 自動抓 SGX:TWN1!)
@@ -392,6 +427,7 @@ def fetch_monitor(days: int = 30) -> dict:
 
     return {
         "series": series, "latest": latest, "arb_cost": ARB_COST_PCT,
+        "div": div,                              # 除息點數精算(含覆蓋率/明細)
         "three_signal": three, "basis_extreme": basis_extreme,
         "tx_net": tx_net, "xif_net": xif_net,
         "oi_rising_short": oi_rising,
@@ -496,31 +532,39 @@ def build_alert() -> tuple[str | None, dict]:
         return None, m
     L = m["latest"]
     three = m["three_signal"]
+    ab = L.get("adj_basis", L["basis"])
+    dp = L.get("div_points", 0.0) or 0.0
     secs = []
     if m["directional_warn"]:
         secs.append(
-            f"🔴 罕見：逆價差 + 外資空單續增\n"
-            f"  基差 {L['basis']:+.0f} 點 (逆價差) 但外資 TX 空單仍擴大到 "
+            f"🔴 罕見：逆價差(除息調整後) + 外資空單續增\n"
+            f"  調整後基差 {ab:+.0f} 點 (逆價差) 但外資 TX 空單仍擴大到 "
             f"{m['tx_net']:+,} 口 → 期貨折價還一直空，少見、可能真有方向 (非純套利)。")
     if three["all"]:
         secs.append(
             f"🔴 三訊號同步 = 外資大賣超 (但賣超≠做空)\n"
-            f"  台股跌 {L['twii_chg']:+.2f}% + 逆價差 {L['basis']:+.0f} 點 + "
+            f"  台股跌 {L['twii_chg']:+.2f}% + 逆價差(調整後) {ab:+.0f} 點 + "
             f"台幣貶 {L['fx_chg']:+.2f}% 三者同時出現。")
-    if m["basis_extreme"] and L["basis"] < 0:
+    if m["basis_extreme"] and ab < 0:
         secs.append(
-            f"🟠 逆價差超過套利成本\n"
-            f"  基差 {L['basis']:+.0f} 點 ({L['basis_pct']:+.2f}%) 已超過 "
+            f"🟠 逆價差(除息調整後)超過套利成本\n"
+            f"  調整後基差 {ab:+.0f} 點 ({L.get('adj_basis_pct',0):+.2f}%) 已超過 "
             f"±{ARB_COST_PCT}% 套利成本線 → 套利客有利可圖，破底時殺盤會兇。")
     if not secs:
         return None, m
+    cov = L.get("div_coverage_pct")
+    div_line = (f"除息點數 D={dp:+.0f} 點"
+                + (f"(前50大權值股覆蓋{cov}%)" if cov is not None else "")
+                + f"｜原始基差 {L['basis']:+.0f} → 調整後 {ab:+.0f} 點")
     msg = (
         f"📐 期現貨基差/留倉警示 ({L['date']})\n\n"
         + "\n\n".join(secs) +
-        f"\n\n基差 {L['basis']:+.0f} 點 ({L['basis_pct']:+.2f}%, 套利成本 ±{ARB_COST_PCT}%)\n"
+        f"\n\n{div_line}\n"
+        f"調整後基差 {ab:+.0f} 點 ({L.get('adj_basis_pct',0):+.2f}%, 套利成本 ±{ARB_COST_PCT}%)\n"
         f"外資 TX 留倉淨 {m['tx_net']:+,} 口"
         f"{'（正價差+大空單=純套利印證，無方向）' if m['arb_consistent'] else ''}\n"
-        f"⚠ 外資留倉淨額 98% 是投行套利對沖腳，本身沒有多空意義；以上是「有意義」訊號。"
+        f"⚠ 除權息旺季逆價差多為結構性(待除息)、非看空 → 已用調整後基差判斷。"
+        f"外資留倉淨額 98% 是投行套利對沖腳，本身沒有多空意義。"
     )
     return msg, m
 
