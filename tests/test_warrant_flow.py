@@ -132,3 +132,33 @@ class TestRunDay(unittest.TestCase):
         self.assertEqual(out["underlyings"], {})
         path = os.path.join(self.tmp.name, "20990101.json")
         self.assertFalse(os.path.exists(path))
+
+
+class TestTermsCache(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self._orig = wf.TERMS_CACHE
+        wf.TERMS_CACHE = os.path.join(self.tmp.name, "terms.json")
+
+    def tearDown(self):
+        wf.TERMS_CACHE = self._orig
+        self.tmp.cleanup()
+
+    def test_ensure_terms_incremental(self):
+        from unittest import mock
+        # 首次抓 2 檔
+        with mock.patch.object(wf, "fetch_warrant_terms",
+                               return_value={"A": {"strike": 10.0},
+                                             "B": {"strike": 20.0}}) as fx:
+            cache = wf.ensure_terms(["A", "B"])
+        fx.assert_called_once_with(["A", "B"])
+        self.assertEqual(cache["A"]["strike"], 10.0)
+        # 再要 A(已快取) + C(新) → 只抓 C
+        with mock.patch.object(wf, "fetch_warrant_terms",
+                               return_value={"C": {"strike": 30.0}}) as fx2:
+            cache = wf.ensure_terms(["A", "C"])
+        fx2.assert_called_once_with(["C"])
+        self.assertEqual(set(cache), {"A", "B", "C"})
+
+    def test_load_terms_missing(self):
+        self.assertEqual(wf.load_terms(), {})

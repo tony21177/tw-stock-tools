@@ -58,7 +58,18 @@ def _stock_name(code: str, u: dict) -> str:
         return ""
 
 
-def build_message(rows: list[dict], day: dict, top: int = 8) -> str:
+def _days_to_expiry(expiry: str, asof: str) -> int | None:
+    from datetime import datetime
+    try:
+        return (datetime.strptime(expiry, "%Y%m%d")
+                - datetime.strptime(asof, "%Y%m%d")).days
+    except (ValueError, TypeError):
+        return None
+
+
+def build_message(rows: list[dict], day: dict, top: int = 8,
+                  terms: dict | None = None) -> str:
+    terms = terms or {}
     date = day.get("date", "")
     date_fmt = f"{date[:4]}/{date[4:6]}/{date[6:]}" if len(date) == 8 else date
     lines = [f"🎰 權證量能觀察 {date_fmt}",
@@ -75,11 +86,24 @@ def build_message(rows: list[dict], day: dict, top: int = 8) -> str:
                          key=lambda x: -x[1])[:2]
         iss = "、".join(n for n, _ in issuers) or "—"
         name = _stock_name(r["code"], u)
+        # 主要權證的履約價 + 距到期天數
+        wt = ""
+        tops = u.get("top_warrants", [])
+        if tops:
+            t = terms.get(tops[0]["code"], {})
+            bits = []
+            if t.get("strike"):
+                bits.append(f"履約${t['strike']:g}")
+            dte = _days_to_expiry(t.get("expiry", ""), date)
+            if dte is not None:
+                bits.append(f"距到期{dte}天")
+            if bits:
+                wt = "\n     主要權證(" + tops[0]["code"] + "): " + " ".join(bits)
         lines.append(
             f"  {r['code']} {name} {_DIR.get(r['direction'], '—')} "
             f"爆量{r['surge_ratio']:.1f}x 權證{r['warrant_turnover']/YI:.2f}億 "
             f"認購佔比{r['bull_share']:.0%}(Δ{r['bull_share_delta']:+.0%}) "
-            f"發行:{iss}")
+            f"發行:{iss}{wt}")
     lines.append("\n詳見網頁 /warrant-signal")
     return "\n".join(lines)
 
@@ -103,7 +127,12 @@ def main():
         _log("無 warrant_flow 日檔，跳過")
         return
     rows = ws.build_signal_rows(days)
-    text = build_message(rows, days[-1], top=args.top)
+    try:
+        import warrant_flow as wf
+        terms = wf.load_terms()
+    except Exception:
+        terms = {}
+    text = build_message(rows, days[-1], top=args.top, terms=terms)
 
     if args.dry_run:
         _log(f"[dry-run] {len(text)} 字元:\n{text}")

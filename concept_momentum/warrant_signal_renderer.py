@@ -50,8 +50,30 @@ def render_backtest_caveat(bt: dict | None) -> str:
         '</section>')
 
 
+def _days_to_expiry(expiry: str, asof: str) -> int | None:
+    from datetime import datetime
+    try:
+        e = datetime.strptime(expiry, "%Y%m%d")
+        a = datetime.strptime(asof, "%Y%m%d")
+        return (e - a).days
+    except (ValueError, TypeError):
+        return None
+
+
+def _in_out(strike: float | None, close: float | None, is_call: bool) -> str:
+    """價內外標示。close/strike 缺則 —。"""
+    if not strike or not close:
+        return ""
+    diff = (close - strike) / strike * 100
+    if not is_call:
+        diff = -diff
+    if diff >= 0:
+        return f"價內{diff:.0f}%"
+    return f"價外{-diff:.0f}%"
+
+
 def render_page(signal_rows: list[dict], day: dict, asof: str,
-                backtest: dict | None = None) -> str:
+                backtest: dict | None = None, terms: dict | None = None) -> str:
     """完整 HTML：nav + 無 edge 揭露 + 當日權證爆量現股表。"""
     nav = ('<nav><a href="/">← 大盤 dashboard</a> '
            '<a href="/chip-price">📋 籌碼價量</a> '
@@ -101,10 +123,32 @@ def render_page(signal_rows: list[dict], day: dict, asof: str,
         top_iss = sorted(issuers.items(), key=lambda x: -x[1])[:3]
         iss_txt = "、".join(f"{_esc(n)}" for n, _ in top_iss) or "—"
         tops = u.get("top_warrants", [])
-        detail = "".join(
-            f"<div class='small'>{_esc(w['name'])} "
-            f"({_esc(w['issuer'] or '?')}/{'認購' if w['side']=='bull' else '認售'}) "
-            f"{_fmt_yi(w['turnover'])}億</div>" for w in tops[:5])
+        close = u.get("close")
+        terms = terms or {}
+        detail_parts = []
+        for w in tops[:5]:
+            t = terms.get(w["code"], {})
+            extra = ""
+            if t:
+                dte = _days_to_expiry(t.get("expiry", ""), asof)
+                io = _in_out(t.get("strike"), close, w["side"] == "bull")
+                bits = []
+                if t.get("strike"):
+                    bits.append(f"履約${t['strike']:g}")
+                if dte is not None:
+                    bits.append(f"距到期{dte}天")
+                if io:
+                    bits.append(io)
+                if t.get("conver"):
+                    bits.append(f"行使{t['conver']:g}")
+                if bits:
+                    extra = " ｜ " + " ".join(bits)
+            detail_parts.append(
+                f"<div class='small'>{_esc(w['name'])} "
+                f"({_esc(w['issuer'] or '?')}/"
+                f"{'認購' if w['side']=='bull' else '認售'}) "
+                f"{_fmt_yi(w['turnover'])}億{extra}</div>")
+        detail = "".join(detail_parts)
         share_cls = "pos" if (r["bull_share_delta"] or 0) > 0 else (
             "neg" if (r["bull_share_delta"] or 0) < 0 else "")
         name = u.get("name") or _stock_name(r["code"])

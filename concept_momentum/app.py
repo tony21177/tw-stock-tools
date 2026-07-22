@@ -1741,8 +1741,13 @@ def warrant_signal_page():
                 bt = json.load(fh)
         except Exception:
             bt = None
+    try:
+        import warrant_flow as wf
+        terms = wf.load_terms()
+    except Exception:
+        terms = {}
     return wsr.render_page(rows, days[-1], days[-1].get("date", ""),
-                           backtest=bt)
+                           backtest=bt, terms=terms)
 
 
 @app.route("/chip-compare")

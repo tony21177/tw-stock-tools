@@ -66,5 +66,29 @@ class TestRenderPage(unittest.TestCase):
         self.assertIn("今日無權證爆量現股", html)
 
 
+class TestTermsDisplay(unittest.TestCase):
+    def test_days_to_expiry(self):
+        self.assertEqual(wsr._days_to_expiry("20270505", "20260721"), 288)
+        self.assertIsNone(wsr._days_to_expiry("bad", "20260721"))
+
+    def test_in_out_call_put(self):
+        self.assertEqual(wsr._in_out(30.0, 33.0, True), "價內10%")
+        self.assertEqual(wsr._in_out(30.0, 33.0, False), "價外10%")
+        self.assertEqual(wsr._in_out(None, 33.0, True), "")
+
+    def test_terms_shown_in_details(self):
+        day = {"date": "20260721", "underlyings": {"2646": {
+            "name": "星宇航空", "close": 33.0, "issuers": {"永豐": 1e5},
+            "n_warrants": 3, "top_warrants": [{"code": "073997",
+                "name": "星宇永豐65購01", "issuer": "永豐", "side": "bull",
+                "turnover": 3e5}]}}}
+        terms = {"073997": {"strike": 31.57, "expiry": "20270505",
+                            "conver": 0.5}}
+        html = wsr.render_page([_row("2646", surge=8.5)], day, "20260721",
+                               backtest=BT, terms=terms)
+        self.assertIn("履約$31.57", html)
+        self.assertIn("距到期288天", html)
+        self.assertIn("行使0.5", html)
+
 if __name__ == "__main__":
     unittest.main()

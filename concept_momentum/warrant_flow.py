@@ -71,6 +71,7 @@ def _parse_warrant_table(payload: dict) -> list[dict]:
                 "volume": int(volume), "trades": int(_num(d[4]) or 0),
                 "turnover": turnover,
                 "underlying": str(d[17]), "underlying_name": str(d[18]),
+                "underlying_close": _num(d[19]),
             })
     return rows
 
@@ -105,6 +106,94 @@ def fetch_warrant_day(date_yyyymmdd: str, delay: float = 3.0,
     return out
 
 
+# 元大權證網 GetWarData API — 回任何券商權證的靜態條款（履約價/到期日/
+# 行使比例）。條款發行後不變 → 增量 cache 一次抓永久存。
+TERMS_API = "https://www.warrantwin.com.tw/eyuanta/ws/GetWarData.ashx"
+TERMS_CACHE = os.path.join(HERE, "cache", "warrant_terms.json")
+_TERMS_COLS = ["FLD_WAR_ID", "FLD_N_STRIKE_PRC", "FLD_DUR_END",
+               "FLD_LAST_TXN", "FLD_N_UND_CONVER", "FLD_ISSUE_AGT_ID",
+               "FLD_OPTION_TYPE"]
+
+
+def fetch_warrant_terms(codes: list[str], batch: int = 30,
+                        delay: float = 1.0) -> dict[str, dict]:
+    """抓一批權證代號的靜態條款 → {code: {strike, expiry, last_txn,
+    conver, issuer_id, option_type}}。gzip 回應、分批查。失敗的碼略過。"""
+    import gzip
+    import time as _t
+    import urllib.parse
+    out: dict[str, dict] = {}
+    codes = list(dict.fromkeys(codes))
+    for i in range(0, len(codes), batch):
+        if i:
+            _t.sleep(delay)
+        chunk = codes[i:i + batch]
+        q = {"format": "JSON", "factor": {
+            "columns": _TERMS_COLS,
+            "condition": [{"field": "FLD_WAR_ID", "values": chunk}]},
+            "pagination": {"row": len(chunk), "page": "1"}}
+        data = urllib.parse.urlencode({"data": json.dumps(q)}).encode()
+        try:
+            req = urllib.request.Request(
+                TERMS_API, data=data,
+                headers={"User-Agent": UA,
+                         "Content-Type": "application/x-www-form-urlencoded; "
+                                         "charset=UTF-8",
+                         "Origin": "https://www.warrantwin.com.tw",
+                         "Referer": "https://www.warrantwin.com.tw/eyuanta/"
+                                    "Warrant/Info.aspx",
+                         "Accept-Encoding": "gzip"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                raw = resp.read()
+            try:
+                raw = gzip.decompress(raw)
+            except Exception:
+                pass
+            payload = json.loads(raw.decode("utf-8"))
+        except Exception as e:
+            print(f"[WARN] 權證條款抓取失敗 {chunk[:3]}…: {e}", file=sys.stderr)
+            continue
+        for r in payload.get("result", []):
+            def _f(v):
+                try:
+                    return float(str(v).replace(",", ""))
+                except (TypeError, ValueError):
+                    return None
+            out[str(r.get("FLD_WAR_ID"))] = {
+                "strike": _f(r.get("FLD_N_STRIKE_PRC")),
+                "expiry": str(r.get("FLD_DUR_END") or ""),
+                "last_txn": str(r.get("FLD_LAST_TXN") or ""),
+                "conver": _f(r.get("FLD_N_UND_CONVER")),
+                "issuer_id": str(r.get("FLD_ISSUE_AGT_ID") or ""),
+                "option_type": str(r.get("FLD_OPTION_TYPE") or ""),
+            }
+    return out
+
+
+def load_terms() -> dict:
+    try:
+        with open(TERMS_CACHE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def ensure_terms(codes: list[str]) -> dict:
+    """增量填充條款 cache：只抓還沒看過的權證代號、合併存回、回全表。"""
+    cache = load_terms()
+    missing = [c for c in dict.fromkeys(codes) if c and c not in cache]
+    if missing:
+        new = fetch_warrant_terms(missing)
+        if new:
+            cache.update(new)
+            os.makedirs(os.path.dirname(TERMS_CACHE), exist_ok=True)
+            tmp = TERMS_CACHE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(cache, f, ensure_ascii=False)
+            os.replace(tmp, TERMS_CACHE)
+    return cache
+
+
 def aggregate_by_underlying(rows: list[dict]) -> dict:
     agg: dict[str, dict] = {}
     for r in rows:
@@ -113,6 +202,7 @@ def aggregate_by_underlying(rows: list[dict]) -> dict:
             continue    # 只留 4 位數普通股標的（排除指數 IX...）
         u = agg.setdefault(code, {
             "name": r.get("underlying_name", ""),   # 標的現股中文名
+            "close": r.get("underlying_close"),     # 標的收盤價（算價內外用）
             "bull_turnover": 0.0, "bear_turnover": 0.0,
             "bull_vol": 0, "bear_vol": 0, "n_warrants": 0,
             "issuers": {}, "_all": []})
@@ -149,6 +239,16 @@ def run_day(date_yyyymmdd: str, rows: list[dict] | None = None) -> dict:
               f"可能抓取失敗或遭限流（正常交易日必有權證資料），"
               f"不寫入日檔", file=sys.stderr)
         return day
+    # 增量填充權證條款 cache（履約價/到期日/行使比例）— 只針對各標的的
+    # 主要權證（top_warrants），量小、且條款靜態一次抓永久存。
+    if live_fetch:
+        top_codes = [w["code"] for u in day["underlyings"].values()
+                     for w in u.get("top_warrants", [])]
+        if top_codes:
+            try:
+                ensure_terms(top_codes)
+            except Exception as e:
+                print(f"[WARN] 條款 cache 填充失敗: {e}", file=sys.stderr)
     os.makedirs(FLOW_DIR, exist_ok=True)
     path = os.path.join(FLOW_DIR, f"{date_yyyymmdd}.json")
     tmp = path + ".tmp"
