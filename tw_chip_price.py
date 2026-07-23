@@ -1378,6 +1378,16 @@ BEHAVIOR_MIN_SHARES = 100_000
 BEHAVIOR_VOL_RATIO = 0.002
 
 
+def _daytrade_conf(code: str, name: str):
+    """查隔日沖註冊表 → 'confirmed'/'candidate'/None。註冊表缺則 None。"""
+    try:
+        import daytrade_brokers as _db
+        info = (_db.daytrade_info(code) or _db.daytrade_info(name))
+        return info.get("confidence") if info else None
+    except Exception:
+        return None
+
+
 def classify_broker_type(name: str) -> str:
     """Classify a BSR broker name as 'foreign' / 'retail_proxy' / 'domestic'.
 
@@ -1567,10 +1577,13 @@ def build_behavior_series(stock_code: str, trading_date: str,
                 "buy_avg": stat["buy_avg"], "sell_avg": stat["sell_avg"],
                 "pos": _pos(d, stat),
             })
+        dt_conf = _daytrade_conf(bid, t["broker_name"])
         brokers.append({
             "broker_id": bid,
             "broker_name": t["broker_name"],
             "type": classify_broker_type(t["broker_name"]),
+            "daytrade": dt_conf is not None,      # ⚡ 隔日沖標記(獨立於身分)
+            "daytrade_conf": dt_conf,             # confirmed / candidate / None
             "today_net": t["net"],
             "cum_net": cum,
             "series": series,
@@ -1610,7 +1623,10 @@ def _fmt_k(shares: int) -> str:
 
 
 def _fmt_series_line(b: dict) -> list[str]:
-    head = (f"  {b['broker_id']} {b['broker_name']} "
+    dt = ("" if not b.get("daytrade") else
+          " ⚡隔日沖" if b.get("daytrade_conf") == "confirmed"
+          else " ⚡隔日沖?")
+    head = (f"  {b['broker_id']} {b['broker_name']}{dt} "
             f"今日 {b['today_net'] / 1000:+,.0f}張 / "
             f"{sum(1 for s in b['series'] if s['net'] is not None)}日累計 "
             f"{b['cum_net'] / 1000:+,.0f}張")
@@ -1656,6 +1672,11 @@ def _format_behavior(view: dict) -> list[str]:
     lines.append("⚠ @% = 當日買(賣)均價在該日高低區間位階 (0%=最低價,"
                  " 100%=最高價)；— = 該日無 cache；"
                  "外資分點含客戶委託、非全為外資自營；散戶指標為經驗 proxy")
+    if any(b.get("daytrade") for grp in g.values()
+           for b in (grp if isinstance(grp, list) else [])):
+        lines.append("⚡隔日沖 = 已知隔日沖/短線大戶分點(名單:公認種子+多來源"
+                     "網路交叉比對+我方資料偵測)；「?」= 待確認候選。這類分點"
+                     "的買盤≠內資機構認同，多為短線、常隔日倒")
     return lines
 
 
