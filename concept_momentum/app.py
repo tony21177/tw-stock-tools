@@ -1614,7 +1614,7 @@ def _render_chip_compare_page(code: str = "3491", data: dict | None = None,
                               error: str = "") -> str:
     nav = ('<nav><a href="/">← 大盤 dashboard</a> '
            '<a href="/chip-price">📋 籌碼價量</a> '
-           '<a href="/money-flow">💰 族群資金流</a> <a href="/warrant-signal">🎰 權證量能</a></nav>')
+           '<a href="/money-flow">💰 族群資金流</a> <a href="/warrant-signal">🎰 權證量能</a> <a href="/stock-futures">🔥 個股期火熱</a></nav>')
     css = """<style>
   body{font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
        max-width:1000px;margin:1em auto;padding:0 1em;background:#f7f7f9;color:#222;}
@@ -1711,6 +1711,17 @@ def _render_chip_compare_page(code: str = "3491", data: dict | None = None,
            f'<p class="small">資料至 {_esc(data.get("asof",""))}｜'
            '借券/外資 單位股已換算張；融資 balance 原生為張。</p></section>')
     return head + tbl + findings + caveat + tail
+
+
+@app.route("/stock-futures")
+def stock_futures_page():
+    import tw_stock_futures as sf
+    date = (request.args.get("date") or "").strip() or None
+    try:
+        data = sf.fetch_ranking(date, top_n=30)
+    except Exception as e:
+        data = {"error": f"{type(e).__name__}: {e}"}
+    return sf.render_html(data)
 
 
 @app.route("/warrant-signal")
