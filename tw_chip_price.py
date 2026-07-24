@@ -1372,6 +1372,11 @@ _FOREIGN_PATTERNS = (
 # 大型網路下單通路). Exact match after space-stripping.
 _RETAIL_PROXY_NAMES = {"永豐金", "國泰敦南"}
 
+# 外資通路覆寫：名稱掛本土券商但實質承接外資法人下單簿。這些要在本土
+# 前綴之前先攔截判 foreign。永豐金匯立(9A81)= 永豐金 2025-10 併台灣匯立
+# (里昂 CLSA，外資法人經紀)後在原址設的分公司，流量以外資法人為主。
+_FOREIGN_CHANNEL_OVERRIDE = ("匯立",)
+
 # Inclusion floor for the series view: brokers below max(100張, 0.2% of
 # day volume) net on the day don't make the list (shares).
 BEHAVIOR_MIN_SHARES = 100_000
@@ -1391,13 +1396,17 @@ def _daytrade_conf(code: str, name: str):
 def classify_broker_type(name: str) -> str:
     """Classify a BSR broker name as 'foreign' / 'retail_proxy' / 'domestic'.
 
-    Retail-proxy check runs first (永豐金 also matches the 永豐 domestic
-    prefix), then domestic prefixes (so 群益高盛 isn't misread as 高盛),
-    then foreign patterns. Everything else is domestic.
+    Order: retail-proxy exact match (永豐金 also matches the 永豐 domestic
+    prefix) → foreign-channel override (永豐金匯立 = 里昂 CLSA 外資通路，掛
+    永豐但實為外資) → domestic prefixes (so 群益高盛 isn't misread as 高盛)
+    → foreign patterns. Everything else is domestic.
     """
     n = name.replace(" ", "").replace("　", "")
     if n in _RETAIL_PROXY_NAMES:
         return "retail_proxy"
+    # 外資通路覆寫先於本土前綴（永豐金匯立 掛永豐但實為里昂外資通路）
+    if any(p in n for p in _FOREIGN_CHANNEL_OVERRIDE):
+        return "foreign"
     if n.startswith(_DOMESTIC_PREFIXES):
         return "domestic"
     if any(p in n for p in _FOREIGN_PATTERNS):

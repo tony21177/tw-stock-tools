@@ -27,7 +27,14 @@ class TestClassifyBrokerType(unittest.TestCase):
     def test_domestic_prefix_beats_foreign_fragment(self):
         # 群益高盛 is a 群益 branch, not Goldman Sachs
         self.assertEqual(classify_broker_type("群益高盛"), "domestic")
-        self.assertEqual(classify_broker_type("永豐匯立"), "domestic")
+
+    def test_foreign_channel_override(self):
+        # 永豐金匯立(9A81) = 里昂 CLSA 外資法人通路，掛永豐但實為外資 →
+        # foreign-channel override 先於本土前綴
+        self.assertEqual(classify_broker_type("永豐金匯立"), "foreign")
+        self.assertEqual(classify_broker_type("永豐匯立"), "foreign")
+        # 但其他永豐分點仍是本土
+        self.assertEqual(classify_broker_type("永豐松山"), "domestic")
 
     def test_retail_proxy(self):
         self.assertEqual(classify_broker_type("永豐金"), "retail_proxy")
