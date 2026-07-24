@@ -232,24 +232,32 @@ def format_report(data: dict) -> str:
         return f"個股期火熱排行: {data['error']}"
     d = data["date"]
     lines = [f"🔥 個股期火熱排行 ({d[:4]}/{d[5:7]}/{d[8:]})",
-             "依成交量排名 Top {} | ⚠ 觀察工具非買賣訊號".format(len(data["rows"])),
+             f"依個股期成交量排名 Top {len(data['rows'])}｜⚠ 觀察工具、非買賣訊號",
+             "（成交量=今日期貨成交口數；未平倉=留倉口數；括號為較前一交易日增減）",
              "━━━━━━━━━━━━"]
     for r in data["rows"]:
         arrow = "▲" if (r["pct"] or 0) > 0 else "▼"
-        flags = "".join([
-            "🔟" if r["f_pct_top"] else "",
-            "🚀" if r["f_rank_jump"] else "",
-            "〰" if r["f_range_top"] else "",
-        ])
-        vc = (f" 量{'+' if r['vol_chg'] >= 0 else ''}{r['vol_chg']:,}"
+        flags = " ".join(filter(None, [
+            "🔟漲跌前十" if r["f_pct_top"] else "",
+            f"🚀量躍升{r['rank_jump']}名" if r["f_rank_jump"] else "",
+            "〰振幅前廿" if r["f_range_top"] else "",
+        ]))
+        vc = (f"（{'+' if r['vol_chg'] >= 0 else ''}{r['vol_chg']:,}）"
               if r["vol_chg"] is not None else "")
-        oc = (f" 倉{'+' if r['oi_chg'] >= 0 else ''}{r['oi_chg']:,}"
+        oc = (f"（{'+' if r['oi_chg'] >= 0 else ''}{r['oi_chg']:,}）"
               if r["oi_chg"] is not None else "")
+        # 第一行：排名/標的/期貨代碼/收盤/漲跌幅
         lines.append(
-            f"{r['rank']:>2} {r['stock']} {r['name']} {r['fid']} "
-            f"{r['close']:g} {arrow}{r['pct']:+.2f}% "
-            f"量{r['vol']:,}{vc} 倉{r['oi']:,}{oc} {flags}".rstrip())
-    lines.append("🔟漲跌幅前十 🚀量排名躍升(≥30名) 〰振幅前二十")
+            f"{r['rank']:>2}. {r['stock']} {r['name']}（{r['fid']}）"
+            f" 收{r['close']:g} {arrow}{r['pct']:+.2f}%")
+        # 第二行：成交量 + 未平倉 + 標記
+        lines.append(
+            f"     成交量 {r['vol']:,} 口{vc}｜未平倉 {r['oi']:,} 口{oc}"
+            + (f"  {flags}" if flags else ""))
+    lines.append("━━━━━━━━━━━━")
+    lines.append("標記說明：🔟=當日漲跌幅絕對值前十大　"
+                 "🚀=成交量排名較前一交易日大幅上升(≥30名)　"
+                 "〰=當日振幅(高−低)/收盤 前二十大")
     return "\n".join(lines)
 
 
