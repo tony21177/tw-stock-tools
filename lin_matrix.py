@@ -27,10 +27,12 @@ VOL_SETTLE_RATIO = 0.8    # 盤整期均量 < 長期均量 × 0.8 = 低量沉澱
 BREAK_VOL_MIN = 2.0       # 突破量 ≥ 箱型均量 2 倍
 BREAK_VOL_MAX = 10.0      # 突破量 ≤ 10 倍(過大 = 異常事件)
 NEAR_CEILING = 0.8        # 箱內位階 ≥ 0.8 = 貼天花板
-# 形狀閘(確保是「橫向震盪箱」而非山形/趨勢通道;皆以收盤價計)
-SHAPE_MAX_MOUNTAIN = 0.30   # (中段均收 − 兩端均收)/帶寬 ≤ 此;過高=內部頭/山形
-SHAPE_MAX_DRIFT = 0.60      # |淨漂移|/帶寬 ≤ 此;過高=趨勢通道非橫盤
+# 形狀閘(確保是「橫向震盪箱」而非山形/V谷/趨勢/崩跌/暴衝;皆以收盤價計)
+SHAPE_MAX_HUMP = 0.20       # |中段均收 − 兩端均收|/帶寬 ≤ 此;對稱擋內部山頭(倒V)與V谷
+SHAPE_MAX_DRIFT = 0.45      # |淨漂移|/帶寬 ≤ 此;過高=趨勢通道非橫盤
 SHAPE_MIN_EDGE_TOUCH = 2    # 上/下緣 25% 帶各需至少觸及次數(排除單根極值撐開帶寬)
+SHAPE_MAX_DAILY_MOVE = 0.06 # 箱內單日收盤變動 ≤ 6%;過大=暴衝/流動性差/崩跌,非牛皮低量
+SHAPE_MAX_END_DROP = 0.50   # 箱末段最大跌幅/帶寬 ≤ 此;擋「盤末崩跌懸崖」的假箱
 
 
 def _shape_ok(win: list[dict]) -> bool:
@@ -49,12 +51,21 @@ def _shape_ok(win: list[dict]) -> bool:
     e = max(2, n // 6)
     edge_mean = statistics.mean(cl[:e] + cl[-e:])
     mid_mean = statistics.mean(cl[n // 3:2 * (n // 3)])
-    # ② 無內部山頭(中段明顯高於兩端 = 漲上去做頭再跌回,非橫盤)
-    if (mid_mean - edge_mean) / band > SHAPE_MAX_MOUNTAIN:
+    # ② 無內部山頭/V谷(中段明顯偏離兩端 = 倒V做頭再跌回 或 V型觸底回升,非橫盤)
+    if abs(mid_mean - edge_mean) / band > SHAPE_MAX_HUMP:
         return False
     # ③ 非趨勢通道(淨漂移不得超過帶寬的一定比例)
     drift = (statistics.mean(cl[-e:]) - statistics.mean(cl[:e])) / band
     if abs(drift) > SHAPE_MAX_DRIFT:
+        return False
+    # ④ 牛皮低量:箱內任一單日收盤變動過大 = 暴衝/流動性差/崩跌,非橫盤
+    max_move = max(abs(cl[i] - cl[i - 1]) / cl[i - 1]
+                   for i in range(1, n))
+    if max_move > SHAPE_MAX_DAILY_MOVE:
+        return False
+    # ⑤ 盤末不得崩跌(末段 e 天最大跌幅不得吃掉半個帶寬 = 假箱懸崖)
+    end_drop = (max(cl[-e:]) - cl[-1]) / band
+    if end_drop > SHAPE_MAX_END_DROP:
         return False
     return True
 
@@ -330,11 +341,12 @@ _STRATEGY_NOTE = (
     "股票長期低量橫向盤整形成「箱型」(矩陣),某天爆量突破天花板 = 進場點。"
     "四條件 — ①盤整 3-6 個月(本工具 ≥60 交易日) ②震盪幅度 ≤15%(嚴格,"
     "⭐標準矩陣;超過不算) ③盤整期低量沉澱、突破當天量=箱型均量 2-10 倍 "
-    "④形狀必須是真正的『橫向震盪箱』:上下緣皆被反覆測試、無內部山頭、"
-    "非趨勢通道(濾掉『漲上去做頭再跌回』的假箱)。"
+    "④形狀必須是真正的『橫向震盪箱』:上下緣皆被反覆測試、無內部山頭/V谷"
+    "、非趨勢通道、單日不暴衝(≤6%)、盤末不崩跌 —— 濾掉山頭、深V、崩跌懸崖、"
+    "單邊趨勢、暴衝/流動性差等假箱(這些過去會混進來)。"
     "天花板=箱型區間高、地板=區間低;堆疊層數=連續矩陣往上疊(鈊象式大飆股相)。"
     "⚠ 已回測(2025-01~2026-07,收盤口徑):突破買進持有 5/10/20 日**顯著跑輸大盤**"
-    "(超額 −0.9%/−1.4%/−3.5%,t<−2),IS/OOS 皆負。**當觀察/選股篩子用,"
+    "(超額 −0.7%/−1.6%/−3.7%,t<−2),IS/OOS 皆負。**當觀察/選股篩子用,"
     "切勿當進場買訊號。**")
 
 
@@ -445,7 +457,7 @@ def render_html(data: dict) -> str:
             '數值越小代表盤整越牛皮、波動越低(林則行低量沉澱的直接量化)｜'
             '箱內位階=(收盤−地板)/(天花板−地板)｜量倍=今日量/箱型均量｜'
             '🏗=堆疊層數。⚠ 已回測:突破買進持有 5/10/20 日顯著跑輸大盤'
-            '(超額 −0.9%/−1.4%/−3.5%,IS/OOS 皆負),僅供觀察/選股非買訊</p></section>'
+            '(超額 −0.7%/−1.6%/−3.7%,IS/OOS 皆負),僅供觀察/選股非買訊</p></section>'
             '</body></html>')
 
 

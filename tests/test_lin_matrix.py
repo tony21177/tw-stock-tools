@@ -1,4 +1,5 @@
 """Tests for lin_matrix — 林則行矩陣偵測."""
+import math
 import os
 import sys
 import unittest
@@ -20,13 +21,16 @@ def _bars(specs, start_day=1):
 
 
 def _box(days, hi, lo, vol, close=None):
-    """低量橫向震盪箱 days 天。收盤在 [lo,hi] 間來回(碰底→中→碰頂→中),
-    以通過形狀閘(平坦、上下緣皆測試、無山頭);high/low 固定 hi/lo。"""
+    """低量橫向震盪箱 days 天。收盤沿平緩正弦在 [lo,hi] 間來回(小日步、
+    收在高點),以通過形狀閘(平坦、上下緣皆測試、無山頭、單日變動小、
+    盤末不崩);high/low 固定 hi/lo。"""
     mid = (hi + lo) / 2
-    seq = [lo, mid, hi, mid]
+    amp = (hi - lo) / 2
+    w = 2 * math.pi / 11
+    phase = 11 / 4 - (days - 1)      # 使最後一根收在正弦峰(近天花板)
     out = []
     for i in range(days):
-        c = close if close is not None else seq[i % len(seq)]
+        c = close if close is not None else round(mid + amp * math.sin(w * (i + phase)), 2)
         out.append({"date": f"box{i}", "open": c, "high": hi, "low": lo,
                     "close": c, "volume": vol})
     return out
@@ -80,6 +84,20 @@ class TestDetectMatrix(unittest.TestCase):
             # 三角形 profile:兩端 100、中央 112(帶寬 100~112)
             c = 100 + 12 * (1 - abs(i - n / 2) / (n / 2))
             box.append({"date": f"m{i}", "open": c, "high": round(c, 2),
+                        "low": round(c, 2), "close": round(c, 2), "volume": 30})
+        self.assertIsNone(lm.detect_matrix(pre + box))
+
+    def test_valley_shape_excluded(self):
+        # V 谷:收盤先跌到中段觸底(100)再回升(5403 中菲型態)。
+        # 幅度/量合格,但中段明顯低於兩端 → 對稱形狀閘擋掉。
+        pre = [{"date": f"p{i}", "open": 80, "high": 80, "low": 80,
+                "close": 80, "volume": 100} for i in range(70)]
+        n = 70
+        box = []
+        for i in range(n):
+            # V profile:兩端 112、中央 100
+            c = 100 + 12 * (abs(i - n / 2) / (n / 2))
+            box.append({"date": f"v{i}", "open": c, "high": round(c, 2),
                         "low": round(c, 2), "close": round(c, 2), "volume": 30})
         self.assertIsNone(lm.detect_matrix(pre + box))
 
