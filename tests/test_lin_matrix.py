@@ -40,17 +40,27 @@ class TestDetectMatrix(unittest.TestCase):
         self.assertEqual(m["tier"], "⭐")           # ≤15%
         self.assertGreaterEqual(m["days"], 60)
 
-    def test_tier_loose(self):
+    def test_amplitude_over_15_excluded(self):
+        # 嚴格 15%:幅度 25% 的寬箱不再算矩陣
         pre = [{"date": f"p{i}", "open": 80, "high": 80, "low": 80,
                 "close": 80, "volume": 100} for i in range(70)]
-        box = _box(70, 125, 100, 30)   # amp 25% → ☆
+        box = _box(70, 125, 100, 30)   # amp 25% > 15% → 排除
+        self.assertIsNone(lm.detect_matrix(pre + box))
+
+    def test_amplitude_at_15_included(self):
+        # 邊界:幅度剛好 15% 仍算矩陣(⭐)
+        pre = [{"date": f"p{i}", "open": 80, "high": 80, "low": 80,
+                "close": 80, "volume": 100} for i in range(70)]
+        box = _box(70, 115, 100, 30)   # amp 15% → 通過
         m = lm.detect_matrix(pre + box)
-        self.assertEqual(m["tier"], "☆")
+        self.assertIsNotNone(m)
+        self.assertEqual(m["amp_pct"], 15.0)
+        self.assertEqual(m["tier"], "⭐")
 
     def test_high_amplitude_excluded(self):
         pre = [{"date": f"p{i}", "open": 80, "high": 80, "low": 80,
                 "close": 80, "volume": 100} for i in range(70)]
-        box = _box(70, 140, 100, 30)   # amp 40% > 30% → 排除
+        box = _box(70, 140, 100, 30)   # amp 40% > 15% → 排除
         self.assertIsNone(lm.detect_matrix(pre + box))
 
     def test_high_volume_not_settled_excluded(self):
