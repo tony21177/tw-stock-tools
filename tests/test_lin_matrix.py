@@ -63,6 +63,17 @@ class TestDetectMatrix(unittest.TestCase):
         box = _box(70, 140, 100, 30)   # amp 40% > 15% → 排除
         self.assertIsNone(lm.detect_matrix(pre + box))
 
+    def test_avg_atr_reported(self):
+        # 箱型每根 高110/低100/收105。首根昨收=箱前 80 →
+        # TR=max(10,|110-80|=30,|100-80|=20)=30;其餘 TR=max(10,5,5)=10。
+        # atr=(30+69×10)/70=10.29;mid=105 → atr_pct=9.8%
+        pre = [{"date": f"p{i}", "open": 80, "high": 80, "low": 80,
+                "close": 80, "volume": 100} for i in range(70)]
+        box = _box(70, 110, 100, 30)
+        m = lm.detect_matrix(pre + box)
+        self.assertEqual(m["atr"], 10.29)
+        self.assertEqual(m["atr_pct"], 9.8)
+
     def test_high_volume_not_settled_excluded(self):
         # 箱型量 90 ≈ 前段 100 → 非低量沉澱(90 ≥ 100×0.8=80) → 排除
         pre = [{"date": f"p{i}", "open": 80, "high": 80, "low": 80,

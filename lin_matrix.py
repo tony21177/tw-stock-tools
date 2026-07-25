@@ -66,11 +66,25 @@ def detect_matrix(series: list[dict], as_of_idx: int = -1,
                     else box_avg_vol)
         if base_vol > 0 and box_avg_vol >= base_vol * vol_ratio:
             continue
+        # 盤整期間平均 ATR:箱內每天真實區間的均值(True Range =
+        # max(高−低, |高−昨收|, |低−昨收|))。第一根用箱型前一天收盤當昨收。
+        prev_close = series[i - 1]["close"] if i > 0 else win[0]["low"]
+        trs = []
+        for b in win:
+            tr = max(b["high"] - b["low"],
+                     abs(b["high"] - prev_close),
+                     abs(b["low"] - prev_close))
+            trs.append(tr)
+            prev_close = b["close"]
+        atr = sum(trs) / len(trs)
+        mid = (hi + lo) / 2
         best = {
             "start": win[0]["date"], "end": win[-1]["date"],
             "days": span, "floor": round(lo, 2), "ceiling": round(hi, 2),
             "amp_pct": round(amp * 100, 1),
             "box_avg_vol": box_avg_vol,
+            "atr": round(atr, 2),
+            "atr_pct": round(atr / mid * 100, 2) if mid > 0 else 0.0,
             "tier": "⭐" if amp <= AMP_TIER1 else "☆",
         }
         break
@@ -126,7 +140,8 @@ def build_signals(series_map: dict, names: dict | None = None) -> dict:
 
     回 {date, breakout:[...], watch:[...], boxed:[...]}。
     breakout = 今日突破;watch = 箱內貼天花板;boxed = 所有在箱內。
-    每筆:code/name/floor/ceiling/days/amp_pct/tier/box_pos/vol_mult/stack。
+    每筆:code/name/floor/ceiling/days/amp_pct/atr/atr_pct/tier/box_pos/
+    vol_mult/stack。
     """
     names = names or {}
     breakout, watch, boxed = [], [], []
@@ -144,7 +159,8 @@ def build_signals(series_map: dict, names: dict | None = None) -> dict:
         row = {
             "code": code, "name": names.get(code, ""),
             "floor": m["floor"], "ceiling": m["ceiling"],
-            "days": m["days"], "amp_pct": m["amp_pct"], "tier": m["tier"],
+            "days": m["days"], "amp_pct": m["amp_pct"],
+            "atr": m["atr"], "atr_pct": m["atr_pct"], "tier": m["tier"],
             "box_pos": c["box_pos"], "vol_mult": c["vol_mult"],
             "stack": stack, "close": c["close"],
         }
@@ -272,6 +288,7 @@ def _fmt_row_line(r: dict) -> str:
     return (f"  {r['code']} {r['name']} {r['tier']} "
             f"矩陣 {r['floor']:g}~{r['ceiling']:g}(幅{r['amp_pct']:g}%,"
             f"{r['days']}日) 收{r['close']:g} "
+            f"ATR{r.get('atr','-'):g}({r.get('atr_pct',0):g}%) "
             f"位階{r['box_pos']*100:.0f}% 量{r['vol_mult']:g}倍"
             + (f" 堆疊{r['stack']}層" if r['stack'] > 1 else ""))
 
@@ -295,7 +312,8 @@ def format_report(data: dict, top: int = 12) -> str:
             lines.append(_fmt_row_line(r))
     else:
         lines.append("  (無)")
-    lines.append("\n說明:⭐幅度≤15%(嚴格)｜位階=箱內位置(貼天花板→突破在即)｜"
+    lines.append("\n說明:⭐幅度≤15%(嚴格)｜ATR=盤整期平均真實區間(括號為佔股價%,"
+                 "越小越牛皮)｜位階=箱內位置(貼天花板→突破在即)｜"
                  "量倍=今日量/箱型均量｜堆疊=連續矩陣層數(越多越強)")
     return "\n".join(lines)
 
@@ -334,13 +352,15 @@ def render_html(data: dict) -> str:
             return f'<p class="small">{empty}</p>'
         h = ('<div style="overflow-x:auto"><table><thead><tr>'
              '<th>代號</th><th>名稱</th><th>級</th><th>矩陣(地板~天花板)</th>'
-             '<th>幅度</th><th>盤整</th><th>收盤</th><th>箱內位階</th>'
-             '<th>量倍</th><th>堆疊</th></tr></thead><tbody>')
+             '<th>幅度</th><th>盤整均ATR</th><th>盤整</th><th>收盤</th>'
+             '<th>箱內位階</th><th>量倍</th><th>堆疊</th></tr></thead><tbody>')
         for r in rows:
             h += (f'<tr><td>{_h.escape(r["code"])}</td>'
                   f'<td>{_h.escape(r["name"])}</td><td>{r["tier"]}</td>'
                   f'<td>{r["floor"]:g} ~ {r["ceiling"]:g}</td>'
-                  f'<td>{r["amp_pct"]:g}%</td><td>{r["days"]}日</td>'
+                  f'<td>{r["amp_pct"]:g}%</td>'
+                  f'<td>{r.get("atr","-"):g} ({r.get("atr_pct",0):g}%)</td>'
+                  f'<td>{r["days"]}日</td>'
                   f'<td>{r["close"]:g}</td>'
                   f'<td>{r["box_pos"]*100:.0f}%</td>'
                   f'<td class="{"pos" if r["vol_mult"]>=2 else ""}">'
@@ -360,6 +380,9 @@ def render_html(data: dict) -> str:
             '— 依堆疊層數/位階</h3>'
             + _tbl(data["boxed"][:60], "無") +
             f'<p class="small">資料至 {fmt}｜⭐幅度≤15%(嚴格)｜'
+            '盤整均ATR=盤整期間每日「真實區間」的平均(True Range='
+            'max(當日高−低, |高−昨收|, |低−昨收|)),括號為佔股價%,'
+            '數值越小代表盤整越牛皮、波動越低(林則行低量沉澱的直接量化)｜'
             '箱內位階=(收盤−地板)/(天花板−地板)｜量倍=今日量/箱型均量｜'
             '🏗=堆疊層數。⚠ 先驗未回測、觀察工具非買賣訊號</p></section>'
             '</body></html>')
