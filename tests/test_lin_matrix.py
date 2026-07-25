@@ -146,11 +146,14 @@ class TestBuildSignals(unittest.TestCase):
         C = pre + box + [{"date": "d", "open": 105, "high": 105, "low": 105,
                           "close": 105, "volume": 30}]
         sig = lm.build_signals({"1111": A, "2222": B, "3333": C},
-                               {"1111": "甲", "2222": "乙", "3333": "丙"})
+                               {"1111": "甲", "2222": "乙", "3333": "丙"},
+                               fut_codes={"1111"})   # 只有 1111 有個股期
         self.assertEqual([r["code"] for r in sig["breakout"]], ["1111"])
         self.assertEqual([r["code"] for r in sig["watch"]], ["2222"])
         self.assertEqual({r["code"] for r in sig["boxed"]}, {"2222", "3333"})
         self.assertEqual(sig["breakout"][0]["name"], "甲")
+        self.assertTrue(sig["breakout"][0]["has_fut"])       # 1111 標注
+        self.assertFalse(sig["watch"][0]["has_fut"])         # 2222 未標
 
 
 if __name__ == "__main__":

@@ -135,15 +135,30 @@ def count_stacked(series: list[dict], top_matrix: dict) -> int:
     return layers
 
 
-def build_signals(series_map: dict, names: dict | None = None) -> dict:
+def stock_futures_codes() -> set:
+    """有掛個股期的股票代號集合(取自 TAIFEX 對照,tw_stock_futures)。
+    抓失敗回空集合(不標注,不影響選股)。"""
+    try:
+        sys.path.insert(0, HERE)
+        import tw_stock_futures as sf
+        mp = sf.fetch_taifex_mapping()
+        return {v["stock"] for v in mp.values() if v.get("is_fut")}
+    except Exception:
+        return set()
+
+
+def build_signals(series_map: dict, names: dict | None = None,
+                  fut_codes: set | None = None) -> dict:
     """對每股 detect+classify+stack → 分三桶。
 
     回 {date, breakout:[...], watch:[...], boxed:[...]}。
     breakout = 今日突破;watch = 箱內貼天花板;boxed = 所有在箱內。
-    每筆:code/name/floor/ceiling/days/amp_pct/atr/atr_pct/tier/box_pos/
+    每筆:code/name/floor/ceiling/days/amp_pct/atr/atr_pct/has_fut/tier/box_pos/
     vol_mult/stack。
     """
     names = names or {}
+    if fut_codes is None:
+        fut_codes = stock_futures_codes()
     breakout, watch, boxed = [], [], []
     latest_date = ""
     for code, series in series_map.items():
@@ -160,7 +175,8 @@ def build_signals(series_map: dict, names: dict | None = None) -> dict:
             "code": code, "name": names.get(code, ""),
             "floor": m["floor"], "ceiling": m["ceiling"],
             "days": m["days"], "amp_pct": m["amp_pct"],
-            "atr": m["atr"], "atr_pct": m["atr_pct"], "tier": m["tier"],
+            "atr": m["atr"], "atr_pct": m["atr_pct"],
+            "has_fut": code in fut_codes, "tier": m["tier"],
             "box_pos": c["box_pos"], "vol_mult": c["vol_mult"],
             "stack": stack, "close": c["close"],
         }
@@ -285,7 +301,8 @@ _STRATEGY_NOTE = (
 
 
 def _fmt_row_line(r: dict) -> str:
-    return (f"  {r['code']} {r['name']} {r['tier']} "
+    fut = "📈期" if r.get("has_fut") else ""
+    return (f"  {r['code']} {r['name']}{fut} {r['tier']} "
             f"矩陣 {r['floor']:g}~{r['ceiling']:g}(幅{r['amp_pct']:g}%,"
             f"{r['days']}日) 收{r['close']:g} "
             f"ATR{r.get('atr','-'):g}({r.get('atr_pct',0):g}%) "
@@ -312,8 +329,9 @@ def format_report(data: dict, top: int = 12) -> str:
             lines.append(_fmt_row_line(r))
     else:
         lines.append("  (無)")
-    lines.append("\n說明:⭐幅度≤15%(嚴格)｜ATR=盤整期平均真實區間(括號為佔股價%,"
-                 "越小越牛皮)｜位階=箱內位置(貼天花板→突破在即)｜"
+    lines.append("\n說明:⭐幅度≤15%(嚴格)｜📈期=該股有掛個股期貨(可做多空/當沖)｜"
+                 "ATR=盤整期平均真實區間(括號為佔股價%,越小越牛皮)｜"
+                 "位階=箱內位置(貼天花板→突破在即)｜"
                  "量倍=今日量/箱型均量｜堆疊=連續矩陣層數(越多越強)")
     return "\n".join(lines)
 
@@ -351,12 +369,15 @@ def render_html(data: dict) -> str:
         if not rows:
             return f'<p class="small">{empty}</p>'
         h = ('<div style="overflow-x:auto"><table><thead><tr>'
-             '<th>代號</th><th>名稱</th><th>級</th><th>矩陣(地板~天花板)</th>'
+             '<th>代號</th><th>名稱</th><th>期</th><th>級</th>'
+             '<th>矩陣(地板~天花板)</th>'
              '<th>幅度</th><th>盤整均ATR</th><th>盤整</th><th>收盤</th>'
              '<th>箱內位階</th><th>量倍</th><th>堆疊</th></tr></thead><tbody>')
         for r in rows:
             h += (f'<tr><td>{_h.escape(r["code"])}</td>'
-                  f'<td>{_h.escape(r["name"])}</td><td>{r["tier"]}</td>'
+                  f'<td>{_h.escape(r["name"])}</td>'
+                  f'<td>{"📈" if r.get("has_fut") else "—"}</td>'
+                  f'<td>{r["tier"]}</td>'
                   f'<td>{r["floor"]:g} ~ {r["ceiling"]:g}</td>'
                   f'<td>{r["amp_pct"]:g}%</td>'
                   f'<td>{r.get("atr","-"):g} ({r.get("atr_pct",0):g}%)</td>'
@@ -380,6 +401,7 @@ def render_html(data: dict) -> str:
             '— 依堆疊層數/位階</h3>'
             + _tbl(data["boxed"][:60], "無") +
             f'<p class="small">資料至 {fmt}｜⭐幅度≤15%(嚴格)｜'
+            '📈(期欄)=該股有掛個股期貨,可做多做空/當沖,籌碼與現股連動｜'
             '盤整均ATR=盤整期間每日「真實區間」的平均(True Range='
             'max(當日高−低, |高−昨收|, |低−昨收|)),括號為佔股價%,'
             '數值越小代表盤整越牛皮、波動越低(林則行低量沉澱的直接量化)｜'
