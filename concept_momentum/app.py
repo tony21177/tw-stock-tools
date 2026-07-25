@@ -1713,6 +1713,28 @@ def _render_chip_compare_page(code: str = "3491", data: dict | None = None,
     return head + tbl + findings + caveat + tail
 
 
+@app.route("/lin-matrix")
+def lin_matrix_page():
+    import glob as _glob
+    import lin_matrix as lm
+    # 優先讀當日 cron 產生的 JSON 歷史(快)；無則即時算(慢)
+    hist_dir = os.path.join(HERE, "cache", "lin_matrix_history")
+    files = sorted(_glob.glob(os.path.join(hist_dir, "*.json")))
+    data = None
+    if files:
+        try:
+            with open(files[-1], encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = None
+    if data is None:
+        try:
+            data = lm.fetch_signals(request.args.get("date") or None)
+        except Exception as e:
+            data = {"error": f"{type(e).__name__}: {e}"}
+    return lm.render_html(data)
+
+
 @app.route("/stock-futures")
 def stock_futures_page():
     import tw_stock_futures as sf

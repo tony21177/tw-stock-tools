@@ -649,6 +649,7 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
       <a class="tab" href="/adr-premium" style="text-decoration:none;color:inherit;">🇺🇸 ADR 折溢價</a>
       <a class="tab" href="/futures-basis" style="text-decoration:none;color:inherit;">📐 期貨基差</a>
       <a class="tab" href="/stock-futures" style="text-decoration:none;color:inherit;">🔥 個股期火熱</a>
+      <a class="tab" href="/lin-matrix" style="text-decoration:none;color:inherit;">📐 林則行矩陣</a>
       <a class="tab" href="/warrant-signal" style="text-decoration:none;color:inherit;">🎰 權證量能</a>
       <a class="tab" href="/chip-compare?code=3491" style="text-decoration:none;color:inherit;">📉 兩波對比</a>
     </div>

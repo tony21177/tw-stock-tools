@@ -268,7 +268,7 @@ def render_html(data: dict) -> str:
            '<a href="/chip-price">📋 籌碼價量</a> '
            '<a href="/money-flow">💰 族群資金流</a> '
            '<a href="/warrant-signal">🎰 權證量能</a> '
-           '<a href="/stock-futures">🔥 個股期火熱</a></nav>')
+           '<a href="/stock-futures">🔥 個股期火熱</a> <a href="/lin-matrix">📐 林則行矩陣</a></nav>')
     css = """<style>
   body{font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
        max-width:1080px;margin:1em auto;padding:0 1em;background:#f7f7f9;color:#222;}
