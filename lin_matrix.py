@@ -379,6 +379,15 @@ def format_report(data: dict, top: int = 12) -> str:
             lines.append(_fmt_row_line(r))
     else:
         lines.append("  (無)")
+    # 其他盤整中矩陣(全盤整扣掉已列於突破/貼天花板者)→ 推播含所有濾出標的
+    shown = {r["code"] for r in data["breakout"]} | {r["code"] for r in data["watch"]}
+    others = [r for r in data.get("boxed", []) if r["code"] not in shown]
+    lines.append(f"\n📋 其他盤整中矩陣({len(others)}):")
+    if others:
+        for r in others:
+            lines.append(_fmt_row_line(r))
+    else:
+        lines.append("  (無)")
     lines.append("\n說明:⭐幅度≤15%(嚴格)｜📈期=該股有掛個股期貨(可做多空/當沖)｜"
                  "ATR=盤整期平均真實區間(括號為佔股價%,越小越牛皮)｜"
                  "位階=箱內位置(貼天花板→突破在即)｜"
