@@ -20,10 +20,16 @@ def _bars(specs, start_day=1):
 
 
 def _box(days, hi, lo, vol, close=None):
-    """低量箱型 days 天，high 在 hi 附近、low 在 lo 附近。"""
-    c = close if close is not None else (hi + lo) / 2
-    return [{"date": f"box{i}", "open": c, "high": hi, "low": lo,
-             "close": c, "volume": vol} for i in range(days)]
+    """低量橫向震盪箱 days 天。收盤在 [lo,hi] 間來回(碰底→中→碰頂→中),
+    以通過形狀閘(平坦、上下緣皆測試、無山頭);high/low 固定 hi/lo。"""
+    mid = (hi + lo) / 2
+    seq = [lo, mid, hi, mid]
+    out = []
+    for i in range(days):
+        c = close if close is not None else seq[i % len(seq)]
+        out.append({"date": f"box{i}", "open": c, "high": hi, "low": lo,
+                    "close": c, "volume": vol})
+    return out
 
 
 class TestDetectMatrix(unittest.TestCase):
@@ -62,6 +68,26 @@ class TestDetectMatrix(unittest.TestCase):
                 "close": 80, "volume": 100} for i in range(70)]
         box = _box(70, 140, 100, 30)   # amp 40% > 15% → 排除
         self.assertIsNone(lm.detect_matrix(pre + box))
+
+    def test_mountain_shape_excluded(self):
+        # 山形:收盤先漲到中段做頭(112)再跌回(3045 台灣大型態)。
+        # 幅度/量都合格,但中段明顯高於兩端 → 形狀閘擋掉。
+        pre = [{"date": f"p{i}", "open": 80, "high": 80, "low": 80,
+                "close": 80, "volume": 100} for i in range(70)]
+        n = 70
+        box = []
+        for i in range(n):
+            # 三角形 profile:兩端 100、中央 112(帶寬 100~112)
+            c = 100 + 12 * (1 - abs(i - n / 2) / (n / 2))
+            box.append({"date": f"m{i}", "open": c, "high": round(c, 2),
+                        "low": round(c, 2), "close": round(c, 2), "volume": 30})
+        self.assertIsNone(lm.detect_matrix(pre + box))
+
+    def test_flat_oscillating_box_included(self):
+        # 對照組:同帶寬但平坦來回震盪 → 通過形狀閘
+        pre = [{"date": f"p{i}", "open": 80, "high": 80, "low": 80,
+                "close": 80, "volume": 100} for i in range(70)]
+        self.assertIsNotNone(lm.detect_matrix(pre + _box(70, 112, 100, 30)))
 
     def test_avg_atr_reported(self):
         # 箱型每根 高110/低100/收105。首根昨收=箱前 80 →
@@ -165,10 +191,13 @@ class TestStacked(unittest.TestCase):
         # 低箱 [80~88] 70天 → 突破 → 高箱 [100~110] 70天(今日在高箱)
         low_pre = [{"date": f"lp{i}", "open": 60, "high": 60, "low": 60,
                     "close": 60, "volume": 100} for i in range(70)]
-        low_box = [{"date": f"lb{i}", "open": 84, "high": 88, "low": 80,
-                    "close": 84, "volume": 25} for i in range(70)]
-        high_box = [{"date": f"hb{i}", "open": 105, "high": 110, "low": 100,
-                     "close": 105, "volume": 30} for i in range(70)]
+        lseq = [80, 84, 88, 84]      # 低箱收盤震盪
+        low_box = [{"date": f"lb{i}", "open": lseq[i % 4], "high": 88, "low": 80,
+                    "close": lseq[i % 4], "volume": 25} for i in range(70)]
+        hseq = [100, 105, 110, 105]  # 高箱收盤震盪
+        high_box = [{"date": f"hb{i}", "open": hseq[i % 4], "high": 110,
+                     "low": 100, "close": hseq[i % 4], "volume": 30}
+                    for i in range(70)]
         s2 = low_pre + low_box + high_box
         top = lm.detect_matrix(s2)            # 最新 = 高箱
         self.assertIsNotNone(top)
