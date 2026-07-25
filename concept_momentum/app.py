@@ -1735,6 +1735,18 @@ def lin_matrix_page():
     return lm.render_html(data)
 
 
+@app.route("/market-tomorrow")
+def market_tomorrow_page():
+    import tw_market_overnight as mo
+    try:
+        raw = mo._fetch_raw()
+        pred = mo.predict_next(raw)
+        bt = mo.backtest(raw)
+    except Exception as e:
+        pred, bt = {"error": f"{type(e).__name__}: {e}"}, None
+    return mo.render_html(pred, bt)
+
+
 @app.route("/stock-futures")
 def stock_futures_page():
     import tw_stock_futures as sf
