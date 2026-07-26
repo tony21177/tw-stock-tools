@@ -1740,8 +1740,9 @@ def market_tomorrow_page():
     import tw_market_overnight as mo
     try:
         raw = mo._fetch_raw()
-        pred = mo.predict_next(raw)
-        bt = mo.backtest(raw)
+        night = mo.fetch_night_returns() or None
+        pred = mo.predict_next(raw, night)
+        bt = mo.backtest(raw, night)
     except Exception as e:
         pred, bt = {"error": f"{type(e).__name__}: {e}"}, None
     return mo.render_html(pred, bt)
