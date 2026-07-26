@@ -288,16 +288,37 @@ def render_html(pred: dict, bt: dict | None = None) -> str:
     return head + body + '</body></html>'
 
 
+def _push(report: str, recipients: list[str]) -> None:
+    sys.path.insert(0, HERE)
+    import line_push
+    tok = line_push.resolve_token()
+    for r in recipients:
+        ok = line_push.push_text(report, tok, r)
+        print(f"[line] → {r[:8]}…: {'✅' if ok else '❌'}", file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--backtest", action="store_true")
     ap.add_argument("--window", type=int, default=WINDOW)
+    ap.add_argument("--line-to", help="LINE 推播收件人(逗號分隔 group/user id)")
     ap.add_argument("--json-out")
     args = ap.parse_args()
-    raw = _fetch_raw()
+    # 推播時強制抓最新隔夜(cron 07:30 需最新美股收盤)
+    raw = _fetch_raw(max_age_h=0 if args.line_to else 6.0)
     if not all(raw.get(s) for s in US_SYMBOLS + [TWII]):
         print("資料抓取失敗", file=sys.stderr)
         sys.exit(1)
+    if args.line_to:
+        pred = predict_next(raw, args.window)
+        report = format_report(pred)
+        print(report)
+        _push(report, [x for x in args.line_to.split(",") if x.strip()])
+        out = pred
+        if args.json_out:
+            with open(args.json_out, "w", encoding="utf-8") as f:
+                json.dump(out, f, ensure_ascii=False, indent=2)
+        return
     if args.backtest:
         r = backtest(raw, args.window)
         print(f"\n明天大盤預期 回測(walk-forward, window={r['window']}, "
