@@ -77,6 +77,7 @@ def _agg_by_futures(rows: list[dict], date_iso: str) -> dict:
     pct, high, low}}。跨契約月加總量/未平倉；價/漲跌幅取近月日盤。"""
     vol = defaultdict(float)
     oi = defaultdict(float)
+    oi_by_cd: dict[str, dict] = defaultdict(dict)   # fid → {6碼契約月: OI}
     near: dict[str, dict] = {}       # 近月日盤代表列
     for r in rows:
         if r.get("date") != date_iso:
@@ -89,6 +90,10 @@ def _agg_by_futures(rows: list[dict], date_iso: str) -> dict:
         cd = str(r.get("contract_date", ""))
         # 近月 = contract_date 最小的月契約(6碼)；日盤優先
         if len(cd) == 6:
+            # 單月契約的未平倉(日盤才有 OI;夜盤/價差為 0)→ 記錄以拆近月/遠月
+            oiv = r.get("open_interest", 0) or 0
+            if oiv:
+                oi_by_cd[fid][cd] = oiv
             cur = near.get(fid)
             better = (cur is None or cd < cur["_cd"]
                       or (cd == cur["_cd"]
@@ -100,10 +105,32 @@ def _agg_by_futures(rows: list[dict], date_iso: str) -> dict:
     out = {}
     for fid in vol:
         n = near.get(fid, {})
+        cds = oi_by_cd.get(fid, {})
+        near_cd = min(cds) if cds else None          # 最小契約月 = 近月
+        near_oi = cds.get(near_cd, 0) if near_cd else 0
+        far_oi = sum(v for c, v in cds.items() if c != near_cd)
         out[fid] = {"vol": vol[fid], "oi": oi[fid],
+                    "near_oi": near_oi, "far_oi": far_oi,
                     "close": n.get("close"), "pct": n.get("pct"),
                     "high": n.get("high"), "low": n.get("low")}
     return out
+
+
+# 量價未平倉四象限:依「當日漲跌 × 總未平倉增減」判部位性質
+_QUAD = {
+    (True, True): ("🟥新多進場", "價漲+增倉:多方新單進場,漲勢有部位支撐"),
+    (True, False): ("🟧空單回補", "價漲+減倉:空單回補/軋空推升,續航力較弱"),
+    (False, True): ("🟩新空進場", "價跌+增倉:空方新單進場,空方力道強"),
+    (False, False): ("🟦多單了結", "價跌+減倉:多單停損/獲利了結,跌勢或近尾聲"),
+}
+
+
+def _quadrant(pct, oi_chg) -> dict | None:
+    """量價未平倉四象限。回 {label, desc} 或 None(缺資料)。"""
+    if pct is None or oi_chg is None or pct == 0 or oi_chg == 0:
+        return None
+    label, desc = _QUAD[(pct > 0, oi_chg > 0)]
+    return {"label": label, "desc": desc}
 
 
 def build_ranking(today_rows: list[dict], prev_rows: list[dict],
@@ -122,12 +149,17 @@ def build_ranking(today_rows: list[dict], prev_rows: list[dict],
         p = prev.get(fid, {})
         rng = ((d["high"] - d["low"]) / d["close"] * 100
                if d.get("high") and d.get("low") and d.get("close") else None)
+        oi_chg = int(d["oi"] - (p.get("oi", 0) or 0)) if prev else None
+        near_chg = int(d["near_oi"] - (p.get("near_oi", 0) or 0)) if prev else None
+        far_chg = int(d["far_oi"] - (p.get("far_oi", 0) or 0)) if prev else None
         rows.append({
             "fid": fid, "stock": m["stock"], "name": m["name"],
             "close": d["close"], "pct": d["pct"],
             "vol": int(d["vol"]), "oi": int(d["oi"]),
+            "near_oi": int(d["near_oi"]), "far_oi": int(d["far_oi"]),
             "vol_chg": int(d["vol"] - (p.get("vol", 0) or 0)) if prev else None,
-            "oi_chg": int(d["oi"] - (p.get("oi", 0) or 0)) if prev else None,
+            "oi_chg": oi_chg, "near_oi_chg": near_chg, "far_oi_chg": far_chg,
+            "quadrant": _quadrant(d["pct"], oi_chg),
             "range_pct": round(rng, 2) if rng is not None else None,
         })
 
@@ -310,6 +342,14 @@ def render_html(data: dict) -> str:
         # 標記排序權重(越熱越大)
         fscore = ((4 if r["f_hot"] else 0) + (2 if r["f_pct_top"] else 0)
                   + (1 if r["f_rank_jump"] else 0) + (1 if r["f_range_top"] else 0))
+        q = r.get("quadrant")
+        if q:
+            qscore = {"🟥新多進場": 2, "🟧空單回補": 1,
+                      "🟦多單了結": -1, "🟩新空進場": -2}[q["label"]]
+            qcell = (f'<td data-v="{qscore}" title="{_h.escape(q["desc"])}">'
+                     f'{q["label"]}</td>')
+        else:
+            qcell = '<td data-v="NaN">—</td>'
         rows_html.append(
             f'<tr><td data-v="{r["rank"]}">{r["rank"]}</td>'
             f'<td>{_h.escape(r["stock"])} {_h.escape(r["name"])}</td>'
@@ -317,7 +357,9 @@ def render_html(data: dict) -> str:
             f'<td data-v="{r["close"]}">{r["close"]:g}</td>'
             f'<td data-v="{r["pct"]}" class="{pcls}">{arrow}{r["pct"]:+.2f}%</td>'
             f'<td data-v="{r["vol"]}">{r["vol"]:,}</td>{_chg(r["vol_chg"])}'
-            f'<td data-v="{r["oi"]}">{r["oi"]:,}</td>{_chg(r["oi_chg"])}'
+            f'<td data-v="{r["oi"]}">{r["oi"]:,}</td>'
+            f'{_chg(r.get("near_oi_chg"))}{_chg(r.get("far_oi_chg"))}'
+            f'{qcell}'
             f'<td data-v="{fscore}" class="flag">{flags}</td></tr>')
     return (head +
             '<section><p class="small">全市場個股期依<b>成交量</b>排名。'
@@ -329,12 +371,41 @@ def render_html(data: dict) -> str:
             + "".join(f'<th onclick="sortT({i})">{lbl}<span class="ar"></span></th>'
                       for i, lbl in enumerate(
                           ["#", "標的", "期代", "收盤", "漲跌幅", "成交量",
-                           "量增減", "未平倉", "倉增減", "標記"])) +
+                           "量增減", "未平倉", "近月倉增減", "遠月倉增減",
+                           "象限", "標記"])) +
             '</tr></thead><tbody>'
             + "".join(rows_html) +
             f'</tbody></table></div><p class="small">資料至 {fmt}（前一交易日 '
             f'{_h.escape(data.get("prev",""))} 比較）</p></section>'
-            + _SORT_JS + '</body></html>')
+            + _QUAD_LEGEND + _COL_GLOSSARY + _SORT_JS + '</body></html>')
+
+
+_QUAD_LEGEND = """<section>
+<h3 style="font-size:1.05em;margin:.3em 0">📐 量價未平倉四象限(象限欄)</h3>
+<p class="small">依「當日<b>漲跌</b> × 總<b>未平倉增減</b>」判斷部位性質。未平倉增減只代表
+部位增/減、<b>不直接分多空</b>,需搭配漲跌一起看:</p>
+<table style="max-width:640px"><thead><tr><th></th><th>倉增(新單進場)</th><th>倉減(平倉退場)</th></tr></thead>
+<tbody>
+<tr><td style="text-align:left">價漲</td><td>🟥<b>新多進場</b><br><span class="small">多方新單,漲勢有部位支撐(較健康)</span></td>
+<td>🟧<b>空單回補</b><br><span class="small">軋空/空單回補推升,續航力較弱</span></td></tr>
+<tr><td style="text-align:left">價跌</td><td>🟩<b>新空進場</b><br><span class="small">空方新單,空方力道強</span></td>
+<td>🟦<b>多單了結</b><br><span class="small">多單停損/獲利了結,跌勢或近尾聲</span></td></tr>
+</tbody></table></section>"""
+
+_COL_GLOSSARY = """<section>
+<h3 style="font-size:1.05em;margin:.3em 0">📖 各欄計算方式</h3>
+<ul class="small" style="line-height:1.7;margin:.2em 0 0 1em;padding:0">
+<li><b>#</b> — 依成交量由大到小的排名。</li>
+<li><b>標的 / 期代</b> — 個股期對應的股票代號+名稱 / 期貨商品代碼(2字前綴,TAIFEX 對照表)。</li>
+<li><b>收盤 / 漲跌幅</b> — <b>近月</b>契約(最小到期月)的收盤與較前一結算漲跌幅(FinMind spread_per)。</li>
+<li><b>成交量</b> — 該個股期<b>所有到期月契約加總</b>的當日成交口數。</li>
+<li><b>量增減</b> — 今日成交量 − 前一交易日成交量。</li>
+<li><b>未平倉</b> — 所有月份契約<b>加總</b>的當日未平倉口數(收盤仍留倉、未沖銷的部位;夜盤/價差單為 0 不重複計)。</li>
+<li><b>近月倉增減</b> — <b>近月</b>契約未平倉 今日 − 前一交易日。近月最活躍,是當日建/減倉主戰場;⚠ 結算換月時近月部位會移往次月,近月會急縮。</li>
+<li><b>遠月倉增減</b> — <b>近月以外</b>所有月份未平倉加總 今日 − 前一交易日。換月時遠月會相對增加。</li>
+<li><b>象限</b> — 見上方四象限(用漲跌 × 總未平倉增減)。</li>
+<li><b>標記</b> — 🔟漲跌幅絕對值前十、🚀量排名較前日躍升≥30名、〰日振幅(高−低)/收前二十、熱=成交量前二十。</li>
+</ul></section>"""
 
 
 _SORT_JS = """<script>
