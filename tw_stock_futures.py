@@ -277,7 +277,8 @@ def render_html(data: dict) -> str:
   table{width:100%;border-collapse:collapse;font-size:.85em;}
   th,td{padding:5px 8px;border-bottom:1px solid #eee;text-align:right;}
   th:nth-child(2),td:nth-child(2),th:nth-child(3),td:nth-child(3){text-align:left;}
-  th{background:#fafafa;color:#555;}
+  th{background:#fafafa;color:#555;cursor:pointer;user-select:none;white-space:nowrap;}
+  th:hover{background:#eef2f7;} th .ar{color:#0066cc;font-size:.9em;}
   .up{color:#c0392b;} .dn{color:#186a3b;}
   .pos{color:#c0392b;} .neg{color:#186a3b;}
   .small,small{font-size:.85em;color:#666;}
@@ -297,36 +298,69 @@ def render_html(data: dict) -> str:
         arrow = "▲" if (r["pct"] or 0) > 0 else "▼"
         def _chg(v):
             if v is None:
-                return "—"
+                return '<td data-v="NaN">—</td>'
             cls = "pos" if v >= 0 else "neg"
-            return f'<span class="{cls}">{v:+,}</span>'
+            return f'<td data-v="{v}"><span class="{cls}">{v:+,}</span></td>'
         flags = " ".join(filter(None, [
             "🔟" if r["f_pct_top"] else "",
             f"🚀{r['rank_jump']}" if r["f_rank_jump"] else "",
             "〰" if r["f_range_top"] else "",
             "熱" if r["f_hot"] else "",
         ]))
+        # 標記排序權重(越熱越大)
+        fscore = ((4 if r["f_hot"] else 0) + (2 if r["f_pct_top"] else 0)
+                  + (1 if r["f_rank_jump"] else 0) + (1 if r["f_range_top"] else 0))
         rows_html.append(
-            f'<tr><td>{r["rank"]}</td>'
+            f'<tr><td data-v="{r["rank"]}">{r["rank"]}</td>'
             f'<td>{_h.escape(r["stock"])} {_h.escape(r["name"])}</td>'
             f'<td>{_h.escape(r["fid"])}</td>'
-            f'<td>{r["close"]:g}</td>'
-            f'<td class="{pcls}">{arrow}{r["pct"]:+.2f}%</td>'
-            f'<td>{r["vol"]:,}</td><td>{_chg(r["vol_chg"])}</td>'
-            f'<td>{r["oi"]:,}</td><td>{_chg(r["oi_chg"])}</td>'
-            f'<td class="flag">{flags}</td></tr>')
+            f'<td data-v="{r["close"]}">{r["close"]:g}</td>'
+            f'<td data-v="{r["pct"]}" class="{pcls}">{arrow}{r["pct"]:+.2f}%</td>'
+            f'<td data-v="{r["vol"]}">{r["vol"]:,}</td>{_chg(r["vol_chg"])}'
+            f'<td data-v="{r["oi"]}">{r["oi"]:,}</td>{_chg(r["oi_chg"])}'
+            f'<td data-v="{fscore}" class="flag">{flags}</td></tr>')
     return (head +
             '<section><p class="small">全市場個股期依<b>成交量</b>排名。'
+            '<b>點欄位標題可排序</b>(再點一次反向)。'
             '標記：🔟漲跌幅(絕對值)前十、🚀量排名躍升(較前日≥30名)、'
             '〰日振幅(高-低/收)前二十、熱=成交量前二十。'
             '⚠ 純排行/觀察工具、非買賣訊號。</p>'
-            '<div style="overflow-x:auto"><table><thead><tr>'
-            '<th>#</th><th>標的</th><th>期代</th><th>收盤</th><th>漲跌幅</th>'
-            '<th>成交量</th><th>量增減</th><th>未平倉</th><th>倉增減</th>'
-            '<th>標記</th></tr></thead><tbody>'
+            '<div style="overflow-x:auto"><table id="ftable"><thead><tr>'
+            + "".join(f'<th onclick="sortT({i})">{lbl}<span class="ar"></span></th>'
+                      for i, lbl in enumerate(
+                          ["#", "標的", "期代", "收盤", "漲跌幅", "成交量",
+                           "量增減", "未平倉", "倉增減", "標記"])) +
+            '</tr></thead><tbody>'
             + "".join(rows_html) +
             f'</tbody></table></div><p class="small">資料至 {fmt}（前一交易日 '
-            f'{_h.escape(data.get("prev",""))} 比較）</p></section></body></html>')
+            f'{_h.escape(data.get("prev",""))} 比較）</p></section>'
+            + _SORT_JS + '</body></html>')
+
+
+_SORT_JS = """<script>
+function sortT(col){
+  var t=document.getElementById('ftable'), tb=t.tBodies[0];
+  var rows=Array.prototype.slice.call(tb.rows);
+  var dir=(t.dataset.col==col && t.dataset.dir=='asc')?'desc':'asc';
+  rows.sort(function(a,b){
+    var x=a.cells[col], y=b.cells[col];
+    var xv=x.getAttribute('data-v'), yv=y.getAttribute('data-v'), r;
+    if(xv!==null && yv!==null){
+      var xn=parseFloat(xv), yn=parseFloat(yv);
+      if(isNaN(xn)&&isNaN(yn)) return 0;
+      if(isNaN(xn)) return 1;            // 缺值永遠沉底
+      if(isNaN(yn)) return -1;
+      r=xn-yn;
+    } else { r=x.textContent.trim().localeCompare(y.textContent.trim(),'zh-Hant'); }
+    return dir=='asc'?r:-r;
+  });
+  rows.forEach(function(row){tb.appendChild(row);});
+  t.dataset.col=col; t.dataset.dir=dir;
+  var ths=t.tHead.rows[0].cells;
+  for(var i=0;i<ths.length;i++){var a=ths[i].querySelector('.ar'); if(a)a.textContent='';}
+  var ar=ths[col].querySelector('.ar'); if(ar)ar.textContent=(dir=='asc'?' ▲':' ▼');
+}
+</script>"""
 
 
 def main():
