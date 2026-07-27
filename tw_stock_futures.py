@@ -78,6 +78,7 @@ def _agg_by_futures(rows: list[dict], date_iso: str) -> dict:
     vol = defaultdict(float)
     oi = defaultdict(float)
     oi_by_cd: dict[str, dict] = defaultdict(dict)   # fid → {6碼契約月: OI}
+    close_by_cd: dict[str, dict] = defaultdict(dict)  # fid → {6碼契約月: 日盤收}
     near: dict[str, dict] = {}       # 近月日盤代表列
     for r in rows:
         if r.get("date") != date_iso:
@@ -94,6 +95,8 @@ def _agg_by_futures(rows: list[dict], date_iso: str) -> dict:
             oiv = r.get("open_interest", 0) or 0
             if oiv:
                 oi_by_cd[fid][cd] = oiv
+            if r.get("trading_session") == "position" and r.get("close"):
+                close_by_cd[fid][cd] = r["close"]      # 各月日盤收(算月價差)
             cur = near.get(fid)
             better = (cur is None or cd < cur["_cd"]
                       or (cd == cur["_cd"]
@@ -109,11 +112,32 @@ def _agg_by_futures(rows: list[dict], date_iso: str) -> dict:
         near_cd = min(cds) if cds else None          # 最小契約月 = 近月
         near_oi = cds.get(near_cd, 0) if near_cd else 0
         far_oi = sum(v for c, v in cds.items() if c != near_cd)
+        # 近遠月價差 = 次近月日盤收 − 近月日盤收(期限結構)
+        ccl = close_by_cd.get(fid, {})
+        months = sorted(ccl)
+        month_spread = (round(ccl[months[1]] - ccl[months[0]], 2)
+                        if len(months) >= 2 else None)
         out[fid] = {"vol": vol[fid], "oi": oi[fid],
                     "near_oi": near_oi, "far_oi": far_oi,
+                    "near_cd": n.get("_cd"), "month_spread": month_spread,
                     "close": n.get("close"), "pct": n.get("pct"),
                     "high": n.get("high"), "low": n.get("low")}
     return out
+
+
+def _days_to_settle(near_cd: str | None, today_iso: str) -> int | None:
+    """距近月結算日(該月第三個週三)的日曆天數。"""
+    if not near_cd or len(near_cd) != 6:
+        return None
+    try:
+        y, m = int(near_cd[:4]), int(near_cd[4:6])
+        first = datetime(y, m, 1)
+        # 第一個週三 + 14 天 = 第三個週三(週三 weekday()==2)
+        third_wed = first + timedelta(days=(2 - first.weekday()) % 7 + 14)
+        today = datetime.strptime(today_iso, "%Y-%m-%d")
+        return (third_wed - today).days
+    except Exception:
+        return None
 
 
 # 量價未平倉四象限:依「當日漲跌 × 總未平倉增減」判部位性質
@@ -135,10 +159,14 @@ def _quadrant(pct, oi_chg) -> dict | None:
 
 def build_ranking(today_rows: list[dict], prev_rows: list[dict],
                   mapping: dict, today_iso: str, prev_iso: str,
-                  top_n: int = HOT_TOP_N) -> list[dict]:
-    """→ 個股期排行(依成交量降冪)，含增減與熱門標記。"""
+                  top_n: int = HOT_TOP_N, cash_close: dict | None = None,
+                  inst: dict | None = None) -> list[dict]:
+    """→ 個股期排行(依成交量降冪)，含增減與熱門標記。
+    cash_close = {股票代號: 現貨收盤}(算基差);inst = {fid: 法人淨口數}。"""
     today = _agg_by_futures(today_rows, today_iso)
     prev = _agg_by_futures(prev_rows, prev_iso) if prev_rows else {}
+    cash_close = cash_close or {}
+    inst = inst or {}
 
     # 只留能對到標的股票的個股期(排除指數期/未對照)
     rows = []
@@ -152,6 +180,14 @@ def build_ranking(today_rows: list[dict], prev_rows: list[dict],
         oi_chg = int(d["oi"] - (p.get("oi", 0) or 0)) if prev else None
         near_chg = int(d["near_oi"] - (p.get("near_oi", 0) or 0)) if prev else None
         far_chg = int(d["far_oi"] - (p.get("far_oi", 0) or 0)) if prev else None
+        # 基差 = 近月期貨收 − 現貨收(點與%);週轉 = 量/未平倉
+        cc = cash_close.get(m["stock"])
+        basis = (round(d["close"] - cc, 2)
+                 if d.get("close") and cc else None)
+        basis_pct = (round((d["close"] - cc) / cc * 100, 2)
+                     if d.get("close") and cc else None)
+        turnover = (round(d["vol"] / d["oi"], 2)
+                    if d.get("oi") else None)
         rows.append({
             "fid": fid, "stock": m["stock"], "name": m["name"],
             "close": d["close"], "pct": d["pct"],
@@ -160,6 +196,10 @@ def build_ranking(today_rows: list[dict], prev_rows: list[dict],
             "vol_chg": int(d["vol"] - (p.get("vol", 0) or 0)) if prev else None,
             "oi_chg": oi_chg, "near_oi_chg": near_chg, "far_oi_chg": far_chg,
             "quadrant": _quadrant(d["pct"], oi_chg),
+            "basis": basis, "basis_pct": basis_pct, "turnover": turnover,
+            "month_spread": d.get("month_spread"),
+            "days_settle": _days_to_settle(d.get("near_cd"), today_iso),
+            "inst_net": inst.get(fid),
             "range_pct": round(rng, 2) if rng is not None else None,
         })
 
@@ -253,9 +293,44 @@ def fetch_ranking(date_iso: str | None = None, top_n: int = HOT_TOP_N
     prev_rows = [r for r in prev_rows if r.get("date") == prev_iso]
     if not today_rows:
         return {"error": f"{today_iso} 無個股期資料"}
+    # 現貨收盤(算基差)+ 法人個股期淨部位(僅部分商品有)
+    cash_close = _fetch_cash_close(fc, today_iso, token)
+    inst = _fetch_inst_net(fc, today_iso, token)
     ranking = build_ranking(today_rows, prev_rows, mapping,
-                            today_iso, prev_iso, top_n=top_n)
-    return {"date": today_iso, "prev": prev_iso, "rows": ranking}
+                            today_iso, prev_iso, top_n=top_n,
+                            cash_close=cash_close, inst=inst)
+    return {"date": today_iso, "prev": prev_iso, "rows": ranking,
+            "inst_n": len(inst)}
+
+
+def _fetch_cash_close(fc, date_iso: str, token: str) -> dict:
+    """全市場現貨收盤 {股票代號: close}(FinMind TaiwanStockPrice 單日全市場)。"""
+    try:
+        rows = fc._call("TaiwanStockPrice",
+                        {"start_date": date_iso, "end_date": date_iso}, token)
+        return {r["stock_id"]: r["close"] for r in rows
+                if r.get("date") == date_iso and r.get("close")}
+    except Exception:
+        return {}
+
+
+def _fetch_inst_net(fc, date_iso: str, token: str) -> dict:
+    """三大法人個股期淨留倉 {fid: 淨口數(多−空)}。FinMind 僅涵蓋部分商品。"""
+    try:
+        rows = fc._call("TaiwanFuturesInstitutionalInvestors",
+                        {"start_date": date_iso, "end_date": date_iso}, token)
+    except Exception:
+        return {}
+    net = defaultdict(int)
+    for r in rows:
+        if r.get("date") != date_iso:
+            continue
+        fid = r.get("futures_id")
+        if not fid:
+            continue
+        net[fid] += ((r.get("long_open_interest_balance_volume", 0) or 0)
+                     - (r.get("short_open_interest_balance_volume", 0) or 0))
+    return dict(net)
 
 
 def format_report(data: dict) -> str:
@@ -350,29 +425,54 @@ def render_html(data: dict) -> str:
                      f'{q["label"]}</td>')
         else:
             qcell = '<td data-v="NaN">—</td>'
+        # 基差(近月期貨−現貨):升水(+)紅、貼水(−)綠
+        b, bp = r.get("basis"), r.get("basis_pct")
+        if b is not None:
+            bcell = (f'<td data-v="{bp}" class="{"pos" if b >= 0 else "neg"}" '
+                     f'title="升水(+)看多／貼水(−)看跌;除息旺季貼水為結構性">'
+                     f'{b:+g}({bp:+.2f}%)</td>')
+        else:
+            bcell = '<td data-v="NaN">—</td>'
+        tv = r.get("turnover")
+        tcell = (f'<td data-v="{tv}" title="量/未平倉;高=當沖churn、低=佈局留倉">'
+                 f'{tv:g}x</td>') if tv is not None else '<td data-v="NaN">—</td>'
+        ms = r.get("month_spread")
+        mscell = (f'<td data-v="{ms}">{ms:+g}</td>'
+                  if ms is not None else '<td data-v="NaN">—</td>')
+        inet = r.get("inst_net")
+        if inet is not None:
+            icell = (f'<td data-v="{inet}"><span class="{"pos" if inet >= 0 else "neg"}">'
+                     f'{inet:+,}</span></td>')
+        else:
+            icell = '<td data-v="NaN">—</td>'
+        ds = r.get("days_settle")
+        dscell = (f'<td data-v="{ds}">{ds}天</td>'
+                  if ds is not None else '<td data-v="NaN">—</td>')
         rows_html.append(
             f'<tr><td data-v="{r["rank"]}">{r["rank"]}</td>'
             f'<td>{_h.escape(r["stock"])} {_h.escape(r["name"])}</td>'
             f'<td>{_h.escape(r["fid"])}</td>'
             f'<td data-v="{r["close"]}">{r["close"]:g}</td>'
             f'<td data-v="{r["pct"]}" class="{pcls}">{arrow}{r["pct"]:+.2f}%</td>'
+            f'{bcell}'
             f'<td data-v="{r["vol"]}">{r["vol"]:,}</td>{_chg(r["vol_chg"])}'
-            f'<td data-v="{r["oi"]}">{r["oi"]:,}</td>'
+            f'<td data-v="{r["oi"]}">{r["oi"]:,}</td>{tcell}'
             f'{_chg(r.get("near_oi_chg"))}{_chg(r.get("far_oi_chg"))}'
-            f'{qcell}'
+            f'{mscell}{icell}{qcell}{dscell}'
             f'<td data-v="{fscore}" class="flag">{flags}</td></tr>')
+    inst_n = data.get("inst_n", 0)
     return (head +
             '<section><p class="small">全市場個股期依<b>成交量</b>排名。'
-            '<b>點欄位標題可排序</b>(再點一次反向)。'
-            '標記：🔟漲跌幅(絕對值)前十、🚀量排名躍升(較前日≥30名)、'
-            '〰日振幅(高-低/收)前二十、熱=成交量前二十。'
-            '⚠ 純排行/觀察工具、非買賣訊號。</p>'
+            '<b>點欄位標題可排序</b>(再點一次反向;各欄意義見下方說明)。'
+            f'⚠ 法人淨僅 {inst_n} 檔商品有資料(FinMind 未全覆蓋),其餘顯示「—」。'
+            '純排行/觀察工具、非買賣訊號。</p>'
             '<div style="overflow-x:auto"><table id="ftable"><thead><tr>'
             + "".join(f'<th onclick="sortT({i})">{lbl}<span class="ar"></span></th>'
                       for i, lbl in enumerate(
-                          ["#", "標的", "期代", "收盤", "漲跌幅", "成交量",
-                           "量增減", "未平倉", "近月倉增減", "遠月倉增減",
-                           "象限", "標記"])) +
+                          ["#", "標的", "期代", "收盤", "漲跌幅", "基差",
+                           "成交量", "量增減", "未平倉", "週轉", "近月倉增減",
+                           "遠月倉增減", "近遠價差", "法人淨", "象限",
+                           "距結算", "標記"])) +
             '</tr></thead><tbody>'
             + "".join(rows_html) +
             f'</tbody></table></div><p class="small">資料至 {fmt}（前一交易日 '
@@ -398,12 +498,17 @@ _COL_GLOSSARY = """<section>
 <li><b>#</b> — 依成交量由大到小的排名。</li>
 <li><b>標的 / 期代</b> — 個股期對應的股票代號+名稱 / 期貨商品代碼(2字前綴,TAIFEX 對照表)。</li>
 <li><b>收盤 / 漲跌幅</b> — <b>近月</b>契約(最小到期月)的收盤與較前一結算漲跌幅(FinMind spread_per)。</li>
+<li><b>基差</b> — <b>近月期貨收盤 − 現貨收盤</b>(點數,括號為佔現貨%)。<b>升水(+)偏多、貼水(−)偏空</b>;⚠ 除權息旺季貼水多為結構性(待除息)、非看空。現貨收盤取自 FinMind TaiwanStockPrice。</li>
 <li><b>成交量</b> — 該個股期<b>所有到期月契約加總</b>的當日成交口數。</li>
 <li><b>量增減</b> — 今日成交量 − 前一交易日成交量。</li>
 <li><b>未平倉</b> — 所有月份契約<b>加總</b>的當日未平倉口數(收盤仍留倉、未沖銷的部位;夜盤/價差單為 0 不重複計)。</li>
+<li><b>週轉</b> — <b>成交量 ÷ 未平倉</b>。<b>高=當沖投機churn(隔日沖)、低=佈局留倉</b>;分辨「投機爆量」與「主力建倉」。</li>
 <li><b>近月倉增減</b> — <b>近月</b>契約未平倉 今日 − 前一交易日。近月最活躍,是當日建/減倉主戰場;⚠ 結算換月時近月部位會移往次月,近月會急縮。</li>
 <li><b>遠月倉增減</b> — <b>近月以外</b>所有月份未平倉加總 今日 − 前一交易日。換月時遠月會相對增加。</li>
+<li><b>近遠價差</b> — <b>次近月日盤收 − 近月日盤收</b>(點數)。期限結構:反映除息預期與換月佈局;配近/遠月倉增減看。</li>
+<li><b>法人淨</b> — <b>三大法人(外資+投信+自營)在該個股期的淨留倉口數(多方留倉 − 空方留倉)</b>,+ = 淨多、− = 淨空。這是「未平倉不分多空」最直接的解答。⚠ 資料源 FinMind TaiwanFuturesInstitutionalInvestors <b>僅涵蓋部分商品</b>(台積 CDF 等未含),無資料顯示「—」。</li>
 <li><b>象限</b> — 見上方四象限(用漲跌 × 總未平倉增減)。</li>
+<li><b>距結算</b> — 距近月結算日(該月第三個週三)的日曆天數;臨近(個位數)代表換月/波動放大。</li>
 <li><b>標記</b> — 🔟漲跌幅絕對值前十、🚀量排名較前日躍升≥30名、〰日振幅(高−低)/收前二十、熱=成交量前二十。</li>
 </ul></section>"""
 
