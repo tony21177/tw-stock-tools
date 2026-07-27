@@ -15,6 +15,7 @@ import json
 import os
 import re
 import sys
+import urllib.parse
 import urllib.request
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -199,7 +200,7 @@ def build_ranking(today_rows: list[dict], prev_rows: list[dict],
             "basis": basis, "basis_pct": basis_pct, "turnover": turnover,
             "month_spread": d.get("month_spread"),
             "days_settle": _days_to_settle(d.get("near_cd"), today_iso),
-            "inst_net": inst.get(fid),
+            "inst_net": inst.get(m["stock"]),
             "range_pct": round(rng, 2) if rng is not None else None,
         })
 
@@ -293,9 +294,9 @@ def fetch_ranking(date_iso: str | None = None, top_n: int = HOT_TOP_N
     prev_rows = [r for r in prev_rows if r.get("date") == prev_iso]
     if not today_rows:
         return {"error": f"{today_iso} 無個股期資料"}
-    # 現貨收盤(算基差)+ 法人個股期淨部位(僅部分商品有)
+    # 現貨收盤(算基差)+ 全市場特定法人個股期淨留倉(TAIFEX 大額交易人)
     cash_close = _fetch_cash_close(fc, today_iso, token)
-    inst = _fetch_inst_net(fc, today_iso, token)
+    inst = _fetch_large_trader_net(today_iso, mapping)
     ranking = build_ranking(today_rows, prev_rows, mapping,
                             today_iso, prev_iso, top_n=top_n,
                             cash_close=cash_close, inst=inst)
@@ -314,23 +315,68 @@ def _fetch_cash_close(fc, date_iso: str, token: str) -> dict:
         return {}
 
 
-def _fetch_inst_net(fc, date_iso: str, token: str) -> dict:
-    """三大法人個股期淨留倉 {fid: 淨口數(多−空)}。FinMind 僅涵蓋部分商品。"""
+LT_URL = "https://www.taifex.com.tw/cht/3/largeTraderFutQry"
+LT_CACHE = os.path.join(HERE, "concept_momentum", "cache", "lt_inst.json")
+
+
+def _fetch_large_trader_net(date_iso: str, mapping: dict) -> dict:
+    """全市場個股期「特定法人(前十大交易人中的法人)所有契約淨留倉」
+    {股票代號: 淨口數(多−空)}。來源 TAIFEX 大額交易人未沖銷部位表(一次查全市場)。
+    ⚠ 這是前十大特定法人 proxy(外資+投信+自營大戶),非官方未公開的完整三大法人。
+    日快取(1.9MB 抓取);抓失敗回空 dict。"""
+    if os.path.exists(LT_CACHE):
+        try:
+            with open(LT_CACHE, encoding="utf-8") as f:
+                c = json.load(f)
+            if c.get("date") == date_iso and c.get("net"):
+                return c["net"]
+        except Exception:
+            pass
+    import html as _html
+    import re
+    d = date_iso.replace("-", "/")
+    body = urllib.parse.urlencode({"queryStartDate": d, "queryEndDate": d,
+                                   "commodityId": ""}).encode()
+    req = urllib.request.Request(LT_URL, data=body, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 Chrome/124.0 Safari/537.36"})
     try:
-        rows = fc._call("TaiwanFuturesInstitutionalInvestors",
-                        {"start_date": date_iso, "end_date": date_iso}, token)
+        with urllib.request.urlopen(req, timeout=45) as r:
+            doc = r.read().decode("utf-8", "ignore")
     except Exception:
         return {}
-    net = defaultdict(int)
-    for r in rows:
-        if r.get("date") != date_iso:
-            continue
-        fid = r.get("futures_id")
-        if not fid:
-            continue
-        net[fid] += ((r.get("long_open_interest_balance_volume", 0) or 0)
-                     - (r.get("short_open_interest_balance_volume", 0) or 0))
-    return dict(net)
+    name2stock = {info["name"]: info["stock"]
+                  for info in mapping.values() if info.get("is_fut")}
+
+    def _paren(s):
+        m = re.search(r"\(([\d,]+)\)", s)
+        return int(m.group(1).replace(",", "")) if m else 0
+
+    net = {}
+    for t in re.findall(r"<table.*?</table>", doc, re.S):
+        cur = None
+        for tr in re.findall(r"<tr.*?</tr>", t, re.S):
+            c = [re.sub(r"\s+", " ",
+                        _html.unescape(re.sub(r"<[^>]+>", "", x))).strip()
+                 for x in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, re.S)]
+            c = [x for x in c if x != ""]
+            if len(c) >= 11 and c[0].endswith("期貨"):
+                cur = c[0][:-2]                       # 商品名去「期貨」
+            elif cur and len(c) >= 10 and c[0] == "所有契約":
+                st = name2stock.get(cur)              # 名稱 → 股票代號
+                if st:
+                    net[st] = _paren(c[3]) - _paren(c[7])  # 買十法人 − 賣十法人
+                cur = None
+    if net:
+        try:
+            os.makedirs(os.path.dirname(LT_CACHE), exist_ok=True)
+            tmp = LT_CACHE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"date": date_iso, "net": net}, f)
+            os.replace(tmp, LT_CACHE)
+        except Exception:
+            pass
+    return net
 
 
 def format_report(data: dict) -> str:
@@ -464,8 +510,8 @@ def render_html(data: dict) -> str:
     return (head +
             '<section><p class="small">全市場個股期依<b>成交量</b>排名。'
             '<b>點欄位標題可排序</b>(再點一次反向;各欄意義見下方說明)。'
-            f'⚠ 法人淨僅 {inst_n} 檔商品有資料(FinMind 未全覆蓋),其餘顯示「—」。'
-            '純排行/觀察工具、非買賣訊號。</p>'
+            f'法人淨=全市場 {inst_n} 檔個股期的<b>特定法人(前十大法人)淨留倉</b>'
+            '(TAIFEX 大額交易人表)。純排行/觀察工具、非買賣訊號。</p>'
             '<div style="overflow-x:auto"><table id="ftable"><thead><tr>'
             + "".join(f'<th onclick="sortT({i})">{lbl}<span class="ar"></span></th>'
                       for i, lbl in enumerate(
@@ -506,7 +552,7 @@ _COL_GLOSSARY = """<section>
 <li><b>近月倉增減</b> — <b>近月</b>契約未平倉 今日 − 前一交易日。近月最活躍,是當日建/減倉主戰場;⚠ 結算換月時近月部位會移往次月,近月會急縮。</li>
 <li><b>遠月倉增減</b> — <b>近月以外</b>所有月份未平倉加總 今日 − 前一交易日。換月時遠月會相對增加。</li>
 <li><b>近遠價差</b> — <b>次近月日盤收 − 近月日盤收</b>(點數)。期限結構:反映除息預期與換月佈局;配近/遠月倉增減看。</li>
-<li><b>法人淨</b> — <b>三大法人(外資+投信+自營)在該個股期的淨留倉口數(多方留倉 − 空方留倉)</b>,+ = 淨多、− = 淨空。這是「未平倉不分多空」最直接的解答。⚠ 資料源 FinMind TaiwanFuturesInstitutionalInvestors <b>僅涵蓋部分商品</b>(台積 CDF 等未含),無資料顯示「—」。</li>
+<li><b>法人淨</b> — <b>特定法人(前十大交易人中的法人=外資+投信+自營大戶)在該個股期「所有契約」的淨留倉口數(買方前十大法人 − 賣方前十大法人)</b>,+ = 淨多、− = 淨空。這是「未平倉不分多空」最直接的解答。資料源 <b>TAIFEX 大額交易人未沖銷部位表</b>(一次查全市場、~262 檔逐檔,日快取)。⚠ 這是「前十大特定法人」proxy,非官方未逐檔公開的完整三大法人;涵蓋不到的顯示「—」。</li>
 <li><b>象限</b> — 見上方四象限(用漲跌 × 總未平倉增減)。</li>
 <li><b>距結算</b> — 距近月結算日(該月第三個週三)的日曆天數;臨近(個位數)代表換月/波動放大。</li>
 <li><b>標記</b> — 🔟漲跌幅絕對值前十、🚀量排名較前日躍升≥30名、〰日振幅(高−低)/收前二十、熱=成交量前二十。</li>
