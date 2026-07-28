@@ -97,6 +97,40 @@ def _in_universe(code: str) -> bool:
     return len(code) == 4 and code.isdigit() and not code.startswith("00")
 
 
+NAME_CACHE = os.path.join(CACHE, "finmind_names.json")
+
+
+def _finmind_names(token: str, max_age_h: float = 168.0) -> dict:
+    """全股中文名 {code: name}(FinMind TaiwanStockInfo,含興櫃/全額交割,
+    補 TWSE ISIN 漏的)。週快取。"""
+    if os.path.exists(NAME_CACHE):
+        if (datetime.now().timestamp() - os.path.getmtime(NAME_CACHE)) / 3600 < max_age_h:
+            try:
+                with open(NAME_CACHE, encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+    try:
+        rows = _fm("TaiwanStockInfo", {}, token)
+    except Exception:
+        return {}
+    m = {}
+    for r in rows:
+        sid, nm = r.get("stock_id"), r.get("stock_name")
+        if sid and nm and sid not in m:
+            m[sid] = nm
+    if m:
+        try:
+            os.makedirs(CACHE, exist_ok=True)
+            tmp = NAME_CACHE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(m, f, ensure_ascii=False)
+            os.replace(tmp, NAME_CACHE)
+        except Exception:
+            pass
+    return m
+
+
 def compute_extremes(end_iso: str | None = None, top: int = 20,
                      token: str | None = None) -> dict:
     token = token or _token()
@@ -133,15 +167,21 @@ def compute_extremes(end_iso: str | None = None, top: int = 20,
     except Exception:
         def get_name(c, d=""):
             return d
+    fmnames = _finmind_names(token)      # 補 TWSE ISIN 漏的興櫃等
+
+    def _name(code):
+        nm = get_name(code, "")
+        if not nm or nm == code:
+            nm = fmnames.get(code, "")
+        return "" if nm == code else nm
     recs = []
     for code, c in cur.items():
         if ndays[code] < MIN_DAYS or hi[code] <= 0 or lo[code] <= 0:
             continue
         dd = (c - hi[code]) / hi[code] * 100          # 距高(≤0)
         ru = (c - lo[code]) / lo[code] * 100          # 距低(≥0)
-        nm = get_name(code, "")
         recs.append({
-            "code": code, "name": "" if nm == code else nm,
+            "code": code, "name": _name(code),
             "close": round(c, 2),
             "yr_high": round(hi[code], 2), "high_date": hidate[code],
             "yr_low": round(lo[code], 2), "low_date": lodate[code],
