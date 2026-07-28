@@ -1735,6 +1735,26 @@ def lin_matrix_page():
     return lm.render_html(data)
 
 
+@app.route("/extremes")
+def extremes_page():
+    import tw_extremes as ex
+    cache = os.path.join(HERE, "cache", "extremes_latest.json")
+    data = None
+    if os.path.exists(cache):
+        try:
+            with open(cache, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = None
+    if data is None:
+        try:
+            data = ex.compute_extremes(request.args.get("date") or None,
+                                       int(request.args.get("top", 20)))
+        except Exception as e:
+            data = {"error": f"{type(e).__name__}: {e}"}
+    return ex.render_html(data)
+
+
 @app.route("/market-tomorrow")
 def market_tomorrow_page():
     import tw_market_overnight as mo
