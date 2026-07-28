@@ -29,6 +29,7 @@ DAY_DIR = os.path.join(CACHE, "year_prices")
 FINMIND = "https://api.finmindtrade.com/api/v4/data"
 YEAR_DAYS = 250                 # 回看交易日上限(約一年 243)
 MIN_DAYS = 60                   # 需 ≥ 此交易日才進榜(排除剛上市)
+ACTIVE_WITHIN = 2               # 最近 N 交易日內需有成交(排除停牌/下市櫃)
 
 
 def _token() -> str:
@@ -144,6 +145,7 @@ def compute_extremes(end_iso: str | None = None, top: int = 20,
     if not dates:
         return {"error": "無交易日資料"}
     hi, lo, cur, hidate, lodate, ndays = {}, {}, {}, {}, {}, {}
+    last_idx = {}                          # 該股最後出現的交易日 index
     for i, d in enumerate(dates):
         try:
             day = _day_prices(d, token)
@@ -160,7 +162,9 @@ def compute_extremes(end_iso: str | None = None, top: int = 20,
                 lo[code] = mn; lodate[code] = d
             cur[code] = cl                      # 日期升冪 → 最後 = 最新
             ndays[code] = ndays.get(code, 0) + 1
+            last_idx[code] = i
     latest = dates[-1]
+    active_min = len(dates) - ACTIVE_WITHIN    # 需在最近 ACTIVE_WITHIN 交易日內有成交
     try:
         sys.path.insert(0, os.path.join(HERE, "concept_momentum"))
         from stock_names import get_name
@@ -175,8 +179,12 @@ def compute_extremes(end_iso: str | None = None, top: int = 20,
             nm = fmnames.get(code, "")
         return "" if nm == code else nm
     recs = []
+    n_delisted = 0
     for code, c in cur.items():
         if ndays[code] < MIN_DAYS or hi[code] <= 0 or lo[code] <= 0:
+            continue
+        if last_idx[code] < active_min:        # 近期無成交 = 停牌/下市櫃 → 排除
+            n_delisted += 1
             continue
         dd = (c - hi[code]) / hi[code] * 100          # 距高(≤0)
         ru = (c - lo[code]) / lo[code] * 100          # 距低(≥0)
@@ -191,7 +199,7 @@ def compute_extremes(end_iso: str | None = None, top: int = 20,
     drop = sorted(recs, key=lambda r: r["drawdown"])[:top]
     rise = sorted(recs, key=lambda r: -r["rally"])[:top]
     return {"date": latest, "n_universe": len(recs), "n_days": len(dates),
-            "drawdown": drop, "rally": rise}
+            "n_delisted": n_delisted, "drawdown": drop, "rally": rise}
 
 
 # ── 呈現 ────────────────────────────────────────────────
@@ -217,7 +225,8 @@ def format_report(data: dict, top: int = 20) -> str:
         lines.append(f"{i:2d}. {r['code']} {r['name']} {r['rally']:+.1f}%"
                      f"(低{r['yr_low']:g}@{_fmt_dt(r['low_date'])}→收{r['close']:g})")
     lines.append(f"\n樣本 {data['n_universe']} 檔・回看 {data['n_days']} 交易日"
-                 f"(需≥{MIN_DAYS}日)｜還原價、除息不失真")
+                 f"(需≥{MIN_DAYS}日、已排除停牌/下市櫃 {data.get('n_delisted', 0)} 檔)"
+                 f"｜還原價、除息不失真")
     return "\n".join(lines)
 
 
@@ -268,7 +277,9 @@ def render_html(data: dict) -> str:
     return (head +
             f'<section><p class="small">全市場 4 位數個股(非 ETF)近一年極端榜。'
             f'還原價(除權息不失真)。樣本 {data["n_universe"]} 檔・回看 '
-            f'{data["n_days"]} 交易日(上市未滿需≥{MIN_DAYS}日)。⚠ 觀察工具、非買賣訊號。</p></section>'
+            f'{data["n_days"]} 交易日(上市未滿需≥{MIN_DAYS}日;'
+            f'<b>已排除停牌/下市櫃 {data.get("n_delisted", 0)} 檔</b>'
+            f'——近 {ACTIVE_WITHIN} 交易日無成交者)。⚠ 觀察工具、非買賣訊號。</p></section>'
             f'<section><h3>📉 距最高點跌幅最大 Top{len(data["drawdown"])}</h3>'
             + _tbl(data["drawdown"], "drop") + '</section>'
             f'<section><h3>📈 距最低點漲幅最大 Top{len(data["rally"])}</h3>'
