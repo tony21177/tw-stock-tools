@@ -122,6 +122,12 @@ def scan(end_iso: str | None = None, token: str | None = None) -> dict:
         return {"error": "無交易日資料"}
     market = _market_map(token)
     names = ex._finmind_names(token)
+    try:                                     # 有掛個股期的股票代號(TAIFEX 對照)
+        import tw_stock_futures as sf
+        fut_codes = {v["stock"] for v in sf.fetch_taifex_mapping().values()
+                     if v.get("is_fut")}
+    except Exception:
+        fut_codes = set()
     close_series: dict = {}      # code -> {YYYYMMDD: adj_close}
     margin_series: dict = {}     # code -> [{date, buy, balance}]
     for i, d in enumerate(dates):
@@ -179,6 +185,7 @@ def scan(end_iso: str | None = None, token: str | None = None) -> dict:
             "drop5": drop5, "drop5_pct": drop5_pct,
             "drop1": drop1, "drop1_pct": drop1_pct,
             "mr": mr, "wash": wash_gap > 0, "wash_gap": wash_gap,
+            "has_fut": code in fut_codes,
         })
     recs.sort(key=lambda r: -r["drop5_pct"])        # 融資減幅% 大→小
     return {"date": dates[-1], "n_days": len(dates), "rows": recs}
@@ -197,8 +204,9 @@ def format_report(data: dict, top: int = 30) -> str:
     for i, r in enumerate(rows[:top], 1):
         wash = "🧹清洗" if r["wash"] else ""
         mr = f"維持率{r['mr']:.0f}%" if r["mr"] is not None else ""
+        star = "★" if r.get("has_fut") else ""
         lines.append(
-            f"{i:2d}. {r['code']} {r['name']}({r['market']}) "
+            f"{i:2d}. {r['code']} {r['name']}{star}({r['market']}) "
             f"融資{LOOKBACK}日 −{r['drop5_pct']:.0f}%(−{r['drop5']:,}張)"
             f" 股價{r['ret5']:+.0f}% {wash} 收{r['close']:g} {mr} 餘{r['balance']:,}張")
     if not rows:
@@ -256,8 +264,10 @@ def render_html(data: dict) -> str:
             wg = r["wash_gap"]
             wgtxt = (f'🧹+{wg:.0f}' if wg > 0 else f'{wg:.0f}')
             d1p = r["drop1_pct"]
+            star = ' <span title="有個股期貨" style="color:#e6a817">★</span>' if r.get("has_fut") else ""
             h += (f'<tr><td data-v="{i}">{i}</td>'
-                  f'<td>{_h.escape(r["code"])} {_h.escape(r["name"])}</td>'
+                  f'<td data-v="{1 if r.get("has_fut") else 0}">'
+                  f'{_h.escape(r["code"])} {_h.escape(r["name"])}{star}</td>'
                   f'<td>{r["market"]}</td>'
                   f'<td data-v="{r["close"]}">{r["close"]:g}</td>'
                   f'<td data-v="{r["ret5"]}" class="dn">{r["ret5"]:+.1f}%</td>'
@@ -304,7 +314,7 @@ _COL_GLOSSARY = """<section>
 <h3 style="font-size:1.05em;margin:.3em 0">📖 各欄計算方式</h3>
 <ul class="small" style="line-height:1.75;margin:.2em 0 0 1em;padding:0">
 <li><b>#</b> — 依「5日融資減%」由大到小的排名(可點任一欄改排序)。</li>
-<li><b>標的 / 市場</b> — 股票代號+名稱(FinMind TaiwanStockInfo,含興櫃)/ 上市(twse)、上櫃(tpex)、興櫃。</li>
+<li><b>標的 / 市場</b> — 股票代號+名稱(FinMind TaiwanStockInfo,含興櫃)/ 上市(twse)、上櫃(tpex)、興櫃。名稱後 <b>★</b> = <b>有掛個股期貨</b>(TAIFEX 對照;斷頭洗盤反彈可用期貨槓桿做多、或當沖)。</li>
 <li><b>現價</b> — 最新交易日<b>還原收盤價</b>(FinMind TaiwanStockPriceAdj;EOD 非即時)。</li>
 <li><b>5日股價%</b> — (現價 − 5交易日前還原收盤)/ 5日前收盤 × 100%。要求 &lt;0(下跌),確保是賣壓不是獲利了結。</li>
 <li><b>5日融資減%</b> — <b>(5交易日前融資餘額 − 今融資餘額)/ 5日前餘額 × 100%</b>。核心指標,越大=斷頭/認賠殺得越兇。融資餘額來自 FinMind TaiwanStockMarginPurchaseShortSale(單位:張)。</li>
