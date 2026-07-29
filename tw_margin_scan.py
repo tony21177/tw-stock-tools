@@ -39,9 +39,11 @@ sys.path.insert(0, os.path.join(HERE, "concept_momentum"))
 import tw_extremes as ex                                   # noqa: E402
 from tw_margin_monitor import compute_recursive_cost        # noqa: E402
 
-WARN = 140.0        # 斷頭邊緣(警戒)上界
-CALL = 130.0        # 追繳/斷頭線
-MIN_BALANCE = 100   # 融資餘額 ≥ N 張才掃(排除零星)
+# 「融資大減=斷頭潮」落底掃描:找融資急殺(斷頭/認賠)+ 股價下跌的洗盤股(反市場低接)
+LOOKBACK = 5        # 觀察窗(交易日):近 5 日融資變化
+MIN_DROP_PCT = 8.0  # 近 5 日融資減少 ≥ 此% 才算「大量」斷頭
+MIN_BAL = 300       # 一週前融資餘額 ≥ 此(張),才談得上「大量」
+CALL = 130.0        # 追繳/斷頭線(維持率參考)
 RATIO_TWSE = 0.60
 RATIO_TPEX = 0.50
 
@@ -136,72 +138,71 @@ def scan(end_iso: str | None = None, token: str | None = None) -> dict:
         for code, (buy, bal) in md.items():
             margin_series.setdefault(code, []).append(
                 {"date": dk, "buy": buy, "balance": bal})
-    latest = dates[-1].replace("-", "")
+    dk_all = [d.replace("-", "") for d in dates]
+    latest = dk_all[-1]
+    d1 = dk_all[-2] if len(dk_all) >= 2 else latest
+    d5 = dk_all[-1 - LOOKBACK] if len(dk_all) > LOOKBACK else dk_all[0]
     recs = []
     for code, hist in margin_series.items():
         if not (len(code) == 4 and code.isdigit() and not code.startswith("00")):
             continue
-        bal = hist[-1]["balance"]
-        if hist[-1]["date"] != latest or bal < MIN_BALANCE:
-            continue                                # 需最新日仍有餘額
+        bald = {h["date"]: h["balance"] for h in hist}
+        if latest not in bald:
+            continue                                # 需最新日仍有融資
+        bal = bald[latest]
+        b1 = bald.get(d1, bal)
+        b5 = bald.get(d5)
+        if b5 is None or b5 < MIN_BAL:              # 需一週前有一定量的融資(才談「大量斷」)
+            continue
+        drop5 = b5 - bal                            # 5 日融資減少(張,正=減)
+        drop5_pct = round(drop5 / b5 * 100, 1)
+        drop1 = b1 - bal
         prices = close_series.get(code, {})
         cur = prices.get(latest)
-        if not cur:
+        p5 = prices.get(d5)
+        if not cur or not p5:
+            continue
+        ret5 = round((cur / p5 - 1) * 100, 1)       # 5 日股價%
+        if drop5_pct < MIN_DROP_PCT or ret5 >= 0:   # 要「融資大減 + 股價下跌」=斷頭賣壓
             continue
         cost = compute_recursive_cost(hist, prices)
-        if not cost or cost <= 0:
-            continue
-        mr6 = round(cur / (cost * RATIO_TWSE) * 100, 1)
-        mr5 = round(cur / (cost * RATIO_TPEX) * 100, 1)
         typ = market.get(code, "twse")
         ratio = RATIO_TPEX if typ == "tpex" else RATIO_TWSE
-        mr = mr5 if typ == "tpex" else mr6          # 市場成數口徑
-        if mr >= WARN:                              # 只留警戒以下
-            continue
-        call_price = round(cost * ratio * CALL / 100, 2)  # 維持率=130% 的價
-        # 距追繳:現價還要跌 x% 才觸追繳(維持率降到130%);>0=還有緩衝、≤0=已跌破
-        to_call = round((1 - CALL / mr) * 100, 1)
+        mr = round(cur / (cost * ratio) * 100, 0) if cost and cost > 0 else None
+        wash = drop5_pct > -ret5                    # 融資減幅 > 股價跌幅 = 浮額清洗
         recs.append({
             "code": code, "name": names.get(code, ""),
             "market": "上櫃" if typ == "tpex" else ("興櫃" if typ == "emerging" else "上市"),
-            "close": round(cur, 2), "cost": round(cost, 2),
-            "mr": mr, "mr6": mr6, "mr5": mr5,
-            "call_price": call_price, "to_call": to_call, "balance": bal,
+            "close": round(cur, 2), "ret5": ret5,
+            "balance": bal, "bal5": b5,
+            "drop5": drop5, "drop5_pct": drop5_pct, "drop1": drop1,
+            "mr": mr, "wash": wash,
         })
-    recs.sort(key=lambda r: r["mr"])
-    called = [r for r in recs if r["mr"] < CALL]
-    edge = [r for r in recs if CALL <= r["mr"] < WARN]
-    return {"date": dates[-1], "n_days": len(dates),
-            "called": called, "edge": edge}
+    recs.sort(key=lambda r: -r["drop5_pct"])        # 融資減幅% 大→小
+    return {"date": dates[-1], "n_days": len(dates), "rows": recs}
 
 
 # ── 呈現 ────────────────────────────────────────────────
 def format_report(data: dict, top: int = 30) -> str:
     if data.get("error"):
-        return f"融資維持率斷頭掃描: {data['error']}"
+        return f"融資大減(斷頭潮)掃描: {data['error']}"
     d = data["date"].replace("-", "")
-    called, edge = data["called"], data["edge"]
-
-    def _row(r):
-        return (f"  {r['code']} {r['name']}({r['market']}) 維持率 {r['mr']:.0f}%"
-                f"(6成{r['mr6']:.0f}/5成{r['mr5']:.0f})"
-                f" 收{r['close']:g} 成本{r['cost']:g} 融資{r['balance']:,}張")
-
-    lines = [f"⚠️ 融資維持率斷頭掃描 ({d[:4]}/{d[4:6]}/{d[6:]})",
-             "維持率=現價÷(遞迴成本線×融資成數)｜還原價篩選、非即時",
+    rows = data["rows"]
+    lines = [f"💥 融資大減(斷頭潮)掃描 ({d[:4]}/{d[4:6]}/{d[6:]})",
+             f"近{LOOKBACK}日融資急殺+股價下跌=斷頭賣壓宣洩(低接觀察)",
              "━━━━━━━━━━━━",
-             f"🔴 追繳/斷頭區 維持率<130%({len(called)}檔):"]
-    for r in called[:top]:
-        lines.append(_row(r))
-    if not called:
-        lines.append("  (無)")
-    lines.append(f"\n🟠 斷頭邊緣 130~140%({len(edge)}檔):")
-    for r in edge[:top]:
-        lines.append(_row(r))
-    if not edge:
-        lines.append("  (無)")
-    lines.append("\n⚠ 維持率為估算(遞迴成本線、還原價);券商實際成數/整戶維持率"
-                 "不同。單檔精確用 /chip 或 tw_margin_lookup。非買賣訊號。")
+             f"融資減幅% 排行 Top{min(top, len(rows))}(共{len(rows)}檔):"]
+    for i, r in enumerate(rows[:top], 1):
+        wash = "🧹清洗" if r["wash"] else ""
+        mr = f"維持率{r['mr']:.0f}%" if r["mr"] is not None else ""
+        lines.append(
+            f"{i:2d}. {r['code']} {r['name']}({r['market']}) "
+            f"融資{LOOKBACK}日 −{r['drop5_pct']:.0f}%(−{r['drop5']:,}張)"
+            f" 股價{r['ret5']:+.0f}% {wash} 收{r['close']:g} {mr} 餘{r['balance']:,}張")
+    if not rows:
+        lines.append("  (無符合)")
+    lines.append(f"\n🧹清洗=融資減幅>股價跌幅(斷頭殺過頭、浮額清洗、常見落底)。"
+                 f"⚠ 融資/還原價 EOD 估算、非即時,斷頭≠保證反彈,非買賣訊號。")
     return "\n".join(lines)
 
 
@@ -223,63 +224,61 @@ def render_html(data: dict) -> str:
   th:hover{background:#eef2f7;} th .ar{color:#0066cc;font-size:.9em;}
   .red{color:#fff;background:#c0392b;border-radius:3px;padding:1px 5px;}
   .org{color:#fff;background:#e67e22;border-radius:3px;padding:1px 5px;}
+  .dn{color:#0a8a3a;}
   .small{font-size:.85em;color:#666;} .note{background:#fff3f2;border:1px solid #f5cfcf;border-radius:6px;padding:10px 14px;font-size:.88em;line-height:1.6;}
 </style>"""
     d = data.get("date", "").replace("-", "")
     fmt = f"{d[:4]}/{d[4:6]}/{d[6:]}" if len(d) == 8 else d
     head = (f'<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>融資維持率斷頭掃描</title>{css}</head><body>{nav}'
-            f'<h1>⚠️ 融資維持率斷頭掃描 — {fmt}</h1>')
+            f'<title>融資大減斷頭潮掃描</title>{css}</head><body>{nav}'
+            f'<h1>💥 融資大減(斷頭潮)掃描 — {fmt}</h1>')
     if data.get("error"):
         return head + f'<section>⚠ {_h.escape(str(data["error"]))}</section></body></html>'
+    rows = data["rows"]
 
-    def _tbl(rows, badge, tid):
+    def _tbl(rows, tid):
         if not rows:
-            return '<p class="small">(無)</p>'
-        cols = ["#", "標的", "市場", "維持率", "6成", "5成", "現價",
-                "成本線", "追繳價", "距追繳", "融資餘額"]
+            return '<p class="small">(無符合)</p>'
+        cols = ["#", "標的", "市場", "現價", f"{LOOKBACK}日股價%",
+                f"{LOOKBACK}日融資減%", f"{LOOKBACK}日減(張)", "1日減(張)",
+                "融資餘額", "維持率", "清洗"]
         h = (f'<div style="overflow-x:auto"><table id="{tid}"><thead><tr>'
              + "".join(f'<th onclick="sortT(\'{tid}\',{i})">{c}'
                        f'<span class="ar"></span></th>'
                        for i, c in enumerate(cols))
              + '</tr></thead><tbody>')
         for i, r in enumerate(rows, 1):
-            tc = r["to_call"]
-            # tc = 現價跌到追繳價(維持率130%)還要跌幾%;>0=還有緩衝、≤0=已跌破
-            tctxt = (f'還跌{tc:.1f}%' if tc > 0 else '已破追繳')
+            mr = (f'<td data-v="{r["mr"]}">{r["mr"]:.0f}%</td>'
+                  if r["mr"] is not None else '<td data-v="NaN">—</td>')
             h += (f'<tr><td data-v="{i}">{i}</td>'
                   f'<td>{_h.escape(r["code"])} {_h.escape(r["name"])}</td>'
                   f'<td>{r["market"]}</td>'
-                  f'<td data-v="{r["mr"]}"><span class="{badge}">{r["mr"]:.0f}%</span></td>'
-                  f'<td data-v="{r["mr6"]}">{r["mr6"]:.0f}%</td>'
-                  f'<td data-v="{r["mr5"]}">{r["mr5"]:.0f}%</td>'
                   f'<td data-v="{r["close"]}">{r["close"]:g}</td>'
-                  f'<td data-v="{r["cost"]}">{r["cost"]:g}</td>'
-                  f'<td data-v="{r["call_price"]}">{r["call_price"]:g}</td>'
-                  f'<td data-v="{tc}">{tctxt}</td>'
-                  f'<td data-v="{r["balance"]}">{r["balance"]:,}</td></tr>')
+                  f'<td data-v="{r["ret5"]}" class="dn">{r["ret5"]:+.1f}%</td>'
+                  f'<td data-v="{r["drop5_pct"]}"><span class="red">−{r["drop5_pct"]:.0f}%</span></td>'
+                  f'<td data-v="{r["drop5"]}">−{r["drop5"]:,}</td>'
+                  f'<td data-v="{r["drop1"]}">{"−" if r["drop1"]>=0 else "+"}{abs(r["drop1"]):,}</td>'
+                  f'<td data-v="{r["balance"]}">{r["balance"]:,}</td>'
+                  + mr +
+                  f'<td data-v="{1 if r["wash"] else 0}">{"🧹" if r["wash"] else ""}</td></tr>')
         return h + '</tbody></table></div>'
 
     return (head +
-            f'<section><p class="small">全市場 4 位數個股(融資餘額 ≥{MIN_BALANCE} 張)近一年'
-            f'({data["n_days"]} 交易日)遞迴融資成本線估維持率。維持率欄用<b>市場成數</b>'
-            f'(上市6成/上櫃5成),另列 6 成/5 成兩口徑。⚠ 觀察工具、非買賣訊號。</p></section>'
-            f'<section><h3>🔴 追繳/斷頭區 — 維持率 &lt; 130%（{len(data["called"])}）</h3>'
-            + _tbl(data["called"], "red", "tcall") + '</section>'
-            f'<section><h3>🟠 斷頭邊緣 — 維持率 130% ~ 140%（{len(data["edge"])}）</h3>'
-            + _tbl(data["edge"], "org", "tedge") + '</section>'
-            '<section class="note">📖 <b>計算/口徑</b>:'
-            '<b>維持率</b> = 現價 ÷ (遞迴融資成本線 × 融資成數) × 100%。'
-            '<b>遞迴成本線</b>(XQ/三竹同款)= 逐日「今日成本=(昨成本×(餘額−買進)+收盤×買進)÷餘額」,'
-            '近一年迭代(種子不敏感、會收斂)。<b>融資成數</b>:上市 6 成、上櫃 5 成(法規);'
-            '實際依券商/個股而異,故同列 6 成(較保守、維持率較低)與 5 成兩口徑。'
-            '<b>&lt;130%</b>=追繳線(券商發追繳令、補繳不足即斷頭處分);<b>130~140%</b>=警戒邊緣。'
-            '<br>⚠ 用<b>還原收盤</b>估(除息不失真、與看盤軟體原始價略異),且個股維持率≠整戶維持率;'
-            '此為全市場<b>篩選</b>,單檔精確請用 /chip 或 tw_margin_lookup(原始價+即時價)。非買賣訊號。'
-            '<br><b>追繳價</b>=維持率跌到 130% 觸發追繳的價位(成本線×成數×1.3);'
-            '<b>距追繳</b>=現價到追繳價還要跌幾%(「已破」=現價已低於追繳價)。'
-            '點欄位標題可排序。</section>'
+            f'<section><p class="small">全市場 4 位數個股,近 <b>{LOOKBACK}</b> 交易日'
+            f'<b>融資餘額大減(≥{MIN_DROP_PCT:.0f}%)且股價下跌</b> = 斷頭/認賠賣壓宣洩。'
+            f'依融資減幅% 排序(共 {len(rows)} 檔),點標題可排序。'
+            f'反市場低接觀察 —— ⚠ 斷頭≠保證反彈,非買賣訊號。</p></section>'
+            f'<section><h3>💥 融資大減(斷頭潮)排行</h3>'
+            + _tbl(rows, "twash") + '</section>'
+            '<section class="note">📖 <b>邏輯</b>:「發生大量斷頭」的觀察指標是'
+            '<b>融資餘額急速減少</b>(斷頭/認賠強制賣出湧出),不是維持率的水位。'
+            f'<b>{LOOKBACK}日融資減%</b> =(5 交易日前餘額 − 今餘額)/5日前餘額;'
+            f'同時要求 <b>{LOOKBACK}日股價下跌</b>(排除獲利了結那種漲時融資減)。'
+            '<b>🧹清洗</b> = 融資減幅 > 股價跌幅(斷頭殺得比股價還兇、把浮額洗掉,常見落底訊號)。'
+            '<b>維持率</b>(遞迴成本線估)供參:越低代表被斷的部位套越深。'
+            '<br>⚠ 融資餘額為 EOD、還原價估算;斷頭賣壓宣洩<b>不保證</b>反彈(可能基本面壞)。'
+            '單檔精確用 /chip 或 tw_margin_lookup。非買賣訊號。</section>'
             + _SORT_JS + '</body></html>')
 
 
