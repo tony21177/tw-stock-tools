@@ -278,6 +278,7 @@ def render_html(data: dict) -> str:
   .red{color:#fff;background:#c0392b;border-radius:3px;padding:1px 5px;}
   .org{color:#fff;background:#e67e22;border-radius:3px;padding:1px 5px;}
   .dn{color:#0a8a3a;} .up{color:#c0392b;}
+  .dragx{cursor:grab;} .dragx.grabbing{cursor:grabbing;}
   .small{font-size:.85em;color:#666;} .note{background:#fff3f2;border:1px solid #f5cfcf;border-radius:6px;padding:10px 14px;font-size:.88em;line-height:1.6;}
 </style>"""
     d = data.get("date", "").replace("-", "")
@@ -296,7 +297,7 @@ def render_html(data: dict) -> str:
         cols = ["#", "標的", "市場", "現價", f"{LOOKBACK}日股價%",
                 f"{LOOKBACK}日融資減%", f"{LOOKBACK}日減(張)", "1日融資減%",
                 "1日減(張)", "融資餘額", "借券增減", "維持率", "清洗強度"]
-        h = (f'<div style="max-height:78vh;overflow:auto"><table id="{tid}"><thead><tr>'
+        h = (f'<div class="dragx" style="max-height:78vh;overflow:auto"><table id="{tid}"><thead><tr>'
              + "".join(f'<th onclick="sortT(\'{tid}\',{i},event)">{c}'
                        f'<span class="ar"></span></th>'
                        for i, c in enumerate(cols))
@@ -330,7 +331,8 @@ def render_html(data: dict) -> str:
             f'<section><p class="small">全市場 4 位數個股,近 <b>{LOOKBACK}</b> 交易日'
             f'<b>融資餘額大減(≥{MIN_DROP_PCT:.0f}%)且股價下跌</b> = 斷頭/認賠賣壓宣洩。'
             f'依融資減幅% 排序(共 {len(rows)} 檔)。<b>點標題排序</b>、'
-            f'<b>Shift+點</b> 加次要排序欄(多欄排序,例:先維持率再清洗強度)、表頭下滑固定。'
+            f'<b>Shift+點</b> 加次要排序欄(多欄排序,例:先維持率再清洗強度)、表頭下滑固定、'
+            f'<b>按住表格拖拉可左右滑</b>。'
             f'反市場低接觀察 —— ⚠ 斷頭≠保證反彈,非買賣訊號。'
             f'<br>🕙 資料每交易日 <b>22:15</b> 更新(融資 EOD 資料約 21~22 點公布後)。</p></section>'
             + _USAGE +
@@ -416,6 +418,31 @@ function sortT(tid,col,ev){
     if(a) a.textContent=(k.dir=='asc'?' ▲':' ▼')+(keys.length>1?String(idx+1):'');
   });
 }
+// 滑鼠按住拖拉 → 左右捲動(桌機);拖拉超過門檻則吃掉該次點擊,避免誤觸排序
+function initDrag(){
+  document.querySelectorAll('.dragx').forEach(function(el){
+    var down=false, sx, sl, moved=false;
+    el.addEventListener('mousedown', function(e){
+      if(e.button!==0) return;
+      down=true; moved=false; sx=e.pageX; sl=el.scrollLeft; el.classList.add('grabbing');
+    });
+    var stop=function(){ down=false; el.classList.remove('grabbing'); };
+    el.addEventListener('mouseleave', stop);
+    window.addEventListener('mouseup', stop);
+    el.addEventListener('mousemove', function(e){
+      if(!down) return;
+      var dx=e.pageX - sx;
+      if(Math.abs(dx)>4) moved=true;
+      el.scrollLeft = sl - dx;
+      if(moved) e.preventDefault();
+    });
+    el.addEventListener('click', function(e){        // capture:拖拉後吃掉點擊
+      if(moved){ e.stopPropagation(); e.preventDefault(); moved=false; }
+    }, true);
+  });
+}
+if(document.readyState!='loading') initDrag();
+else document.addEventListener('DOMContentLoaded', initDrag);
 </script>"""
 
 
