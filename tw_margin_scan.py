@@ -156,7 +156,8 @@ def scan(end_iso: str | None = None, token: str | None = None) -> dict:
             continue
         drop5 = b5 - bal                            # 5 日融資減少(張,正=減)
         drop5_pct = round(drop5 / b5 * 100, 1)
-        drop1 = b1 - bal
+        drop1 = b1 - bal                            # 1 日融資減少(張)
+        drop1_pct = round(drop1 / b1 * 100, 1) if b1 > 0 else 0.0
         prices = close_series.get(code, {})
         cur = prices.get(latest)
         p5 = prices.get(d5)
@@ -169,14 +170,15 @@ def scan(end_iso: str | None = None, token: str | None = None) -> dict:
         typ = market.get(code, "twse")
         ratio = RATIO_TPEX if typ == "tpex" else RATIO_TWSE
         mr = round(cur / (cost * ratio) * 100, 0) if cost and cost > 0 else None
-        wash = drop5_pct > -ret5                    # 融資減幅 > 股價跌幅 = 浮額清洗
+        wash_gap = round(drop5_pct - abs(ret5), 1)  # 清洗強度=融資減幅−股價跌幅
         recs.append({
             "code": code, "name": names.get(code, ""),
             "market": "上櫃" if typ == "tpex" else ("興櫃" if typ == "emerging" else "上市"),
             "close": round(cur, 2), "ret5": ret5,
             "balance": bal, "bal5": b5,
-            "drop5": drop5, "drop5_pct": drop5_pct, "drop1": drop1,
-            "mr": mr, "wash": wash,
+            "drop5": drop5, "drop5_pct": drop5_pct,
+            "drop1": drop1, "drop1_pct": drop1_pct,
+            "mr": mr, "wash": wash_gap > 0, "wash_gap": wash_gap,
         })
     recs.sort(key=lambda r: -r["drop5_pct"])        # 融資減幅% 大→小
     return {"date": dates[-1], "n_days": len(dates), "rows": recs}
@@ -241,8 +243,8 @@ def render_html(data: dict) -> str:
         if not rows:
             return '<p class="small">(無符合)</p>'
         cols = ["#", "標的", "市場", "現價", f"{LOOKBACK}日股價%",
-                f"{LOOKBACK}日融資減%", f"{LOOKBACK}日減(張)", "1日減(張)",
-                "融資餘額", "維持率", "清洗"]
+                f"{LOOKBACK}日融資減%", f"{LOOKBACK}日減(張)", "1日融資減%",
+                "1日減(張)", "融資餘額", "維持率", "清洗強度"]
         h = (f'<div style="overflow-x:auto"><table id="{tid}"><thead><tr>'
              + "".join(f'<th onclick="sortT(\'{tid}\',{i})">{c}'
                        f'<span class="ar"></span></th>'
@@ -251,6 +253,9 @@ def render_html(data: dict) -> str:
         for i, r in enumerate(rows, 1):
             mr = (f'<td data-v="{r["mr"]}">{r["mr"]:.0f}%</td>'
                   if r["mr"] is not None else '<td data-v="NaN">—</td>')
+            wg = r["wash_gap"]
+            wgtxt = (f'🧹+{wg:.0f}' if wg > 0 else f'{wg:.0f}')
+            d1p = r["drop1_pct"]
             h += (f'<tr><td data-v="{i}">{i}</td>'
                   f'<td>{_h.escape(r["code"])} {_h.escape(r["name"])}</td>'
                   f'<td>{r["market"]}</td>'
@@ -258,10 +263,11 @@ def render_html(data: dict) -> str:
                   f'<td data-v="{r["ret5"]}" class="dn">{r["ret5"]:+.1f}%</td>'
                   f'<td data-v="{r["drop5_pct"]}"><span class="red">−{r["drop5_pct"]:.0f}%</span></td>'
                   f'<td data-v="{r["drop5"]}">−{r["drop5"]:,}</td>'
+                  f'<td data-v="{d1p}">{("−" if d1p>=0 else "+")}{abs(d1p):.0f}%</td>'
                   f'<td data-v="{r["drop1"]}">{"−" if r["drop1"]>=0 else "+"}{abs(r["drop1"]):,}</td>'
                   f'<td data-v="{r["balance"]}">{r["balance"]:,}</td>'
                   + mr +
-                  f'<td data-v="{1 if r["wash"] else 0}">{"🧹" if r["wash"] else ""}</td></tr>')
+                  f'<td data-v="{wg}">{wgtxt}</td></tr>')
         return h + '</tbody></table></div>'
 
     return (head +
@@ -275,7 +281,9 @@ def render_html(data: dict) -> str:
             '<b>融資餘額急速減少</b>(斷頭/認賠強制賣出湧出),不是維持率的水位。'
             f'<b>{LOOKBACK}日融資減%</b> =(5 交易日前餘額 − 今餘額)/5日前餘額;'
             f'同時要求 <b>{LOOKBACK}日股價下跌</b>(排除獲利了結那種漲時融資減)。'
-            '<b>🧹清洗</b> = 融資減幅 > 股價跌幅(斷頭殺得比股價還兇、把浮額洗掉,常見落底訊號)。'
+            '<b>清洗強度</b> = 融資減幅% − 股價跌幅%(>0=🧹融資殺得比股價兇、浮額被洗掉,'
+            '越大越徹底,常見落底;≤0=融資減幅其實沒超過股價跌)。'
+            '<b>1日融資減%</b> 看今天剛發生的急斷頭(可點此欄排序抓「今天正在斷」的)。'
             '<b>維持率</b>(遞迴成本線估)供參:越低代表被斷的部位套越深。'
             '<br>⚠ 融資餘額為 EOD、還原價估算;斷頭賣壓宣洩<b>不保證</b>反彈(可能基本面壞)。'
             '單檔精確用 /chip 或 tw_margin_lookup。非買賣訊號。</section>'
