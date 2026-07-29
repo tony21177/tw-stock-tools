@@ -272,8 +272,9 @@ def render_html(data: dict) -> str:
   table{width:100%;border-collapse:collapse;font-size:.86em;}
   th,td{padding:5px 8px;border-bottom:1px solid #eee;text-align:right;white-space:nowrap;}
   th:nth-child(2),td:nth-child(2),th:nth-child(3),td:nth-child(3){text-align:left;}
-  th{background:#fafafa;color:#555;cursor:pointer;user-select:none;}
-  th:hover{background:#eef2f7;} th .ar{color:#0066cc;font-size:.9em;}
+  th{background:#eef2f7;color:#333;cursor:pointer;user-select:none;
+     position:sticky;top:0;z-index:2;box-shadow:0 1px 0 #ccc;}
+  th:hover{background:#dde7f2;} th .ar{color:#0066cc;font-size:.85em;}
   .red{color:#fff;background:#c0392b;border-radius:3px;padding:1px 5px;}
   .org{color:#fff;background:#e67e22;border-radius:3px;padding:1px 5px;}
   .dn{color:#0a8a3a;} .up{color:#c0392b;}
@@ -295,8 +296,8 @@ def render_html(data: dict) -> str:
         cols = ["#", "標的", "市場", "現價", f"{LOOKBACK}日股價%",
                 f"{LOOKBACK}日融資減%", f"{LOOKBACK}日減(張)", "1日融資減%",
                 "1日減(張)", "融資餘額", "借券增減", "維持率", "清洗強度"]
-        h = (f'<div style="overflow-x:auto"><table id="{tid}"><thead><tr>'
-             + "".join(f'<th onclick="sortT(\'{tid}\',{i})">{c}'
+        h = (f'<div style="max-height:78vh;overflow:auto"><table id="{tid}"><thead><tr>'
+             + "".join(f'<th onclick="sortT(\'{tid}\',{i},event)">{c}'
                        f'<span class="ar"></span></th>'
                        for i, c in enumerate(cols))
              + '</tr></thead><tbody>')
@@ -328,7 +329,8 @@ def render_html(data: dict) -> str:
     return (head +
             f'<section><p class="small">全市場 4 位數個股,近 <b>{LOOKBACK}</b> 交易日'
             f'<b>融資餘額大減(≥{MIN_DROP_PCT:.0f}%)且股價下跌</b> = 斷頭/認賠賣壓宣洩。'
-            f'依融資減幅% 排序(共 {len(rows)} 檔),點標題可排序。'
+            f'依融資減幅% 排序(共 {len(rows)} 檔)。<b>點標題排序</b>、'
+            f'<b>Shift+點</b> 加次要排序欄(多欄排序,例:先維持率再清洗強度)、表頭下滑固定。'
             f'反市場低接觀察 —— ⚠ 斷頭≠保證反彈,非買賣訊號。'
             f'<br>🕙 資料每交易日 <b>22:15</b> 更新(融資 EOD 資料約 21~22 點公布後)。</p></section>'
             + _USAGE +
@@ -376,24 +378,43 @@ _COL_GLOSSARY = """<section>
 
 
 _SORT_JS = """<script>
-function sortT(tid,col){
-  var t=document.getElementById(tid), tb=t.tBodies[0];
-  var rows=Array.prototype.slice.call(tb.rows);
-  var dir=(t.dataset.col==col && t.dataset.dir=='asc')?'desc':'asc';
+// 單擊=以該欄排序(再點反向);Shift+點=加為次要/第三…排序欄(多欄排序)
+function _cmp(a,b,col){
+  var x=a.cells[col].getAttribute('data-v'), y=b.cells[col].getAttribute('data-v');
+  if(x!==null && y!==null){
+    var xn=parseFloat(x), yn=parseFloat(y);
+    if(isNaN(xn)&&isNaN(yn))return 0; if(isNaN(xn))return 1; if(isNaN(yn))return -1;
+    return xn-yn;
+  }
+  return a.cells[col].textContent.trim().localeCompare(b.cells[col].textContent.trim(),'zh-Hant');
+}
+function sortT(tid,col,ev){
+  var t=document.getElementById(tid);
+  if(!t._keys) t._keys=[];
+  var keys=t._keys, ex=null, exi=-1;
+  for(var i=0;i<keys.length;i++){ if(keys[i].col==col){ex=keys[i];exi=i;} }
+  if(ev && ev.shiftKey){                        // 多欄:加/切換次要欄
+    if(ex) ex.dir = ex.dir=='asc'?'desc':'asc';
+    else keys.push({col:col,dir:'asc'});
+  } else {                                       // 單欄:重設
+    if(keys.length==1 && ex) ex.dir = ex.dir=='asc'?'desc':'asc';
+    else t._keys = keys = [{col:col,dir:'asc'}];
+  }
+  var tb=t.tBodies[0], rows=Array.prototype.slice.call(tb.rows);
   rows.sort(function(a,b){
-    var x=a.cells[col].getAttribute('data-v'), y=b.cells[col].getAttribute('data-v'), r;
-    if(x!==null && y!==null){
-      var xn=parseFloat(x), yn=parseFloat(y);
-      if(isNaN(xn)&&isNaN(yn))return 0; if(isNaN(xn))return 1; if(isNaN(yn))return -1;
-      r=xn-yn;
-    } else { r=a.cells[col].textContent.trim().localeCompare(b.cells[col].textContent.trim(),'zh-Hant'); }
-    return dir=='asc'?r:-r;
+    for(var i=0;i<keys.length;i++){
+      var r=_cmp(a,b,keys[i].col);
+      if(r!==0) return keys[i].dir=='asc'?r:-r;
+    }
+    return 0;
   });
   rows.forEach(function(row){tb.appendChild(row);});
-  t.dataset.col=col; t.dataset.dir=dir;
   var ths=t.tHead.rows[0].cells;
   for(var i=0;i<ths.length;i++){var a=ths[i].querySelector('.ar'); if(a)a.textContent='';}
-  var ar=ths[col].querySelector('.ar'); if(ar)ar.textContent=(dir=='asc'?' ▲':' ▼');
+  keys.forEach(function(k,idx){
+    var a=ths[k.col].querySelector('.ar');
+    if(a) a.textContent=(k.dir=='asc'?' ▲':' ▼')+(keys.length>1?String(idx+1):'');
+  });
 }
 </script>"""
 
