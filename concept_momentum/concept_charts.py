@@ -647,6 +647,7 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
     <div class="tab-group-items">
       <a class="tab" href="/market-tomorrow" style="text-decoration:none;color:inherit;">🌏 明天大盤預期</a>
       <a class="tab" href="/extremes" style="text-decoration:none;color:inherit;">📊 一年高低榜</a>
+      <a class="tab" href="/margin-scan" style="text-decoration:none;color:inherit;">⚠️ 融資斷頭掃描</a>
       <a class="tab" href="/intraday-sim" style="text-decoration:none;color:inherit;">📉 盤中走勢模擬</a>
       <a class="tab" href="/adr-premium" style="text-decoration:none;color:inherit;">🇺🇸 ADR 折溢價</a>
       <a class="tab" href="/futures-basis" style="text-decoration:none;color:inherit;">📐 期貨基差</a>

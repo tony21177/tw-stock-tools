@@ -1735,6 +1735,25 @@ def lin_matrix_page():
     return lm.render_html(data)
 
 
+@app.route("/margin-scan")
+def margin_scan_page():
+    import tw_margin_scan as ms
+    cache = os.path.join(HERE, "cache", "margin_scan_latest.json")
+    data = None
+    if os.path.exists(cache):
+        try:
+            with open(cache, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = None
+    if data is None:
+        try:
+            data = ms.scan(request.args.get("date") or None)
+        except Exception as e:
+            data = {"error": f"{type(e).__name__}: {e}"}
+    return ms.render_html(data)
+
+
 @app.route("/extremes")
 def extremes_page():
     import tw_extremes as ex
