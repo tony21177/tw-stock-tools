@@ -154,14 +154,19 @@ def scan(end_iso: str | None = None, token: str | None = None) -> dict:
         mr6 = round(cur / (cost * RATIO_TWSE) * 100, 1)
         mr5 = round(cur / (cost * RATIO_TPEX) * 100, 1)
         typ = market.get(code, "twse")
+        ratio = RATIO_TPEX if typ == "tpex" else RATIO_TWSE
         mr = mr5 if typ == "tpex" else mr6          # 市場成數口徑
         if mr >= WARN:                              # 只留警戒以下
             continue
+        call_price = round(cost * ratio * CALL / 100, 2)  # 維持率=130% 的價
+        # 距追繳:現價還要跌 x% 才觸追繳(維持率降到130%);>0=還有緩衝、≤0=已跌破
+        to_call = round((1 - CALL / mr) * 100, 1)
         recs.append({
             "code": code, "name": names.get(code, ""),
             "market": "上櫃" if typ == "tpex" else ("興櫃" if typ == "emerging" else "上市"),
             "close": round(cur, 2), "cost": round(cost, 2),
-            "mr": mr, "mr6": mr6, "mr5": mr5, "balance": bal,
+            "mr": mr, "mr6": mr6, "mr5": mr5,
+            "call_price": call_price, "to_call": to_call, "balance": bal,
         })
     recs.sort(key=lambda r: r["mr"])
     called = [r for r in recs if r["mr"] < CALL]
@@ -214,7 +219,8 @@ def render_html(data: dict) -> str:
   table{width:100%;border-collapse:collapse;font-size:.86em;}
   th,td{padding:5px 8px;border-bottom:1px solid #eee;text-align:right;white-space:nowrap;}
   th:nth-child(2),td:nth-child(2),th:nth-child(3),td:nth-child(3){text-align:left;}
-  th{background:#fafafa;color:#555;}
+  th{background:#fafafa;color:#555;cursor:pointer;user-select:none;}
+  th:hover{background:#eef2f7;} th .ar{color:#0066cc;font-size:.9em;}
   .red{color:#fff;background:#c0392b;border-radius:3px;padding:1px 5px;}
   .org{color:#fff;background:#e67e22;border-radius:3px;padding:1px 5px;}
   .small{font-size:.85em;color:#666;} .note{background:#fff3f2;border:1px solid #f5cfcf;border-radius:6px;padding:10px 14px;font-size:.88em;line-height:1.6;}
@@ -228,20 +234,31 @@ def render_html(data: dict) -> str:
     if data.get("error"):
         return head + f'<section>⚠ {_h.escape(str(data["error"]))}</section></body></html>'
 
-    def _tbl(rows, badge):
+    def _tbl(rows, badge, tid):
         if not rows:
             return '<p class="small">(無)</p>'
-        h = ('<div style="overflow-x:auto"><table><thead><tr>'
-             '<th>#</th><th>標的</th><th>市場</th><th>維持率</th><th>6成</th>'
-             '<th>5成</th><th>現價</th><th>成本線</th><th>融資餘額(張)</th>'
-             '</tr></thead><tbody>')
+        cols = ["#", "標的", "市場", "維持率", "6成", "5成", "現價",
+                "成本線", "追繳價", "距追繳", "融資餘額"]
+        h = (f'<div style="overflow-x:auto"><table id="{tid}"><thead><tr>'
+             + "".join(f'<th onclick="sortT(\'{tid}\',{i})">{c}'
+                       f'<span class="ar"></span></th>'
+                       for i, c in enumerate(cols))
+             + '</tr></thead><tbody>')
         for i, r in enumerate(rows, 1):
-            h += (f'<tr><td>{i}</td><td>{_h.escape(r["code"])} {_h.escape(r["name"])}</td>'
+            tc = r["to_call"]
+            # tc = 現價跌到追繳價(維持率130%)還要跌幾%;>0=還有緩衝、≤0=已跌破
+            tctxt = (f'還跌{tc:.1f}%' if tc > 0 else '已破追繳')
+            h += (f'<tr><td data-v="{i}">{i}</td>'
+                  f'<td>{_h.escape(r["code"])} {_h.escape(r["name"])}</td>'
                   f'<td>{r["market"]}</td>'
-                  f'<td><span class="{badge}">{r["mr"]:.0f}%</span></td>'
-                  f'<td>{r["mr6"]:.0f}%</td><td>{r["mr5"]:.0f}%</td>'
-                  f'<td>{r["close"]:g}</td><td>{r["cost"]:g}</td>'
-                  f'<td>{r["balance"]:,}</td></tr>')
+                  f'<td data-v="{r["mr"]}"><span class="{badge}">{r["mr"]:.0f}%</span></td>'
+                  f'<td data-v="{r["mr6"]}">{r["mr6"]:.0f}%</td>'
+                  f'<td data-v="{r["mr5"]}">{r["mr5"]:.0f}%</td>'
+                  f'<td data-v="{r["close"]}">{r["close"]:g}</td>'
+                  f'<td data-v="{r["cost"]}">{r["cost"]:g}</td>'
+                  f'<td data-v="{r["call_price"]}">{r["call_price"]:g}</td>'
+                  f'<td data-v="{tc}">{tctxt}</td>'
+                  f'<td data-v="{r["balance"]}">{r["balance"]:,}</td></tr>')
         return h + '</tbody></table></div>'
 
     return (head +
@@ -249,9 +266,9 @@ def render_html(data: dict) -> str:
             f'({data["n_days"]} 交易日)遞迴融資成本線估維持率。維持率欄用<b>市場成數</b>'
             f'(上市6成/上櫃5成),另列 6 成/5 成兩口徑。⚠ 觀察工具、非買賣訊號。</p></section>'
             f'<section><h3>🔴 追繳/斷頭區 — 維持率 &lt; 130%（{len(data["called"])}）</h3>'
-            + _tbl(data["called"], "red") + '</section>'
+            + _tbl(data["called"], "red", "tcall") + '</section>'
             f'<section><h3>🟠 斷頭邊緣 — 維持率 130% ~ 140%（{len(data["edge"])}）</h3>'
-            + _tbl(data["edge"], "org") + '</section>'
+            + _tbl(data["edge"], "org", "tedge") + '</section>'
             '<section class="note">📖 <b>計算/口徑</b>:'
             '<b>維持率</b> = 現價 ÷ (遞迴融資成本線 × 融資成數) × 100%。'
             '<b>遞迴成本線</b>(XQ/三竹同款)= 逐日「今日成本=(昨成本×(餘額−買進)+收盤×買進)÷餘額」,'
@@ -259,8 +276,34 @@ def render_html(data: dict) -> str:
             '實際依券商/個股而異,故同列 6 成(較保守、維持率較低)與 5 成兩口徑。'
             '<b>&lt;130%</b>=追繳線(券商發追繳令、補繳不足即斷頭處分);<b>130~140%</b>=警戒邊緣。'
             '<br>⚠ 用<b>還原收盤</b>估(除息不失真、與看盤軟體原始價略異),且個股維持率≠整戶維持率;'
-            '此為全市場<b>篩選</b>,單檔精確請用 /chip 或 tw_margin_lookup(原始價+即時價)。非買賣訊號。</section>'
-            '</body></html>')
+            '此為全市場<b>篩選</b>,單檔精確請用 /chip 或 tw_margin_lookup(原始價+即時價)。非買賣訊號。'
+            '<br><b>追繳價</b>=維持率跌到 130% 觸發追繳的價位(成本線×成數×1.3);'
+            '<b>距追繳</b>=現價到追繳價還要跌幾%(「已破」=現價已低於追繳價)。'
+            '點欄位標題可排序。</section>'
+            + _SORT_JS + '</body></html>')
+
+
+_SORT_JS = """<script>
+function sortT(tid,col){
+  var t=document.getElementById(tid), tb=t.tBodies[0];
+  var rows=Array.prototype.slice.call(tb.rows);
+  var dir=(t.dataset.col==col && t.dataset.dir=='asc')?'desc':'asc';
+  rows.sort(function(a,b){
+    var x=a.cells[col].getAttribute('data-v'), y=b.cells[col].getAttribute('data-v'), r;
+    if(x!==null && y!==null){
+      var xn=parseFloat(x), yn=parseFloat(y);
+      if(isNaN(xn)&&isNaN(yn))return 0; if(isNaN(xn))return 1; if(isNaN(yn))return -1;
+      r=xn-yn;
+    } else { r=a.cells[col].textContent.trim().localeCompare(b.cells[col].textContent.trim(),'zh-Hant'); }
+    return dir=='asc'?r:-r;
+  });
+  rows.forEach(function(row){tb.appendChild(row);});
+  t.dataset.col=col; t.dataset.dir=dir;
+  var ths=t.tHead.rows[0].cells;
+  for(var i=0;i<ths.length;i++){var a=ths[i].querySelector('.ar'); if(a)a.textContent='';}
+  var ar=ths[col].querySelector('.ar'); if(ar)ar.textContent=(dir=='asc'?' ▲':' ▼');
+}
+</script>"""
 
 
 def main():
