@@ -84,6 +84,43 @@ def _margin_day(date_iso: str, token: str) -> dict:
     return out
 
 
+def _sbl_day(date_iso: str, token: str) -> dict:
+    """某交易日全市場借券賣出餘額 {code: [今餘額張, 增減張]}。單日一次查(今/昨同列)。
+    ⚠ 借券賣出(SBL)≠融券;餘額約 21:30 公布。逐日快取。"""
+    path = os.path.join(CACHE, "sbl_day", f"{date_iso.replace('-', '')}.json")
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    p = {"dataset": "TaiwanDailyShortSaleBalances", "token": token,
+         "start_date": date_iso, "end_date": date_iso}
+    req = urllib.request.Request(FINMIND + "?" + urllib.parse.urlencode(p),
+                                 headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            rows = json.load(r).get("data", [])
+    except Exception:
+        return {}
+    out = {}
+    for r in rows:
+        if r.get("date") != date_iso:
+            continue
+        code = r.get("stock_id", "")
+        cur = (r.get("SBLShortSalesCurrentDayBalance") or 0) / 1000
+        prev = (r.get("SBLShortSalesPreviousDayBalance") or 0) / 1000
+        if code:
+            out[code] = [round(cur), round(cur - prev)]
+    if out:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(out, f)
+        os.replace(tmp, path)
+    return out
+
+
 def _market_map(token: str) -> dict:
     """{code: type}  type ∈ twse/tpex/emerging(TaiwanStockInfo,週快取)。"""
     cache = os.path.join(CACHE, "stock_market_type.json")
@@ -144,6 +181,7 @@ def scan(end_iso: str | None = None, token: str | None = None) -> dict:
         for code, (buy, bal) in md.items():
             margin_series.setdefault(code, []).append(
                 {"date": dk, "buy": buy, "balance": bal})
+    sbl = _sbl_day(dates[-1], token)         # 全市場借券賣出餘額(今/增減)
     dk_all = [d.replace("-", "") for d in dates]
     latest = dk_all[-1]
     d1 = dk_all[-2] if len(dk_all) >= 2 else latest
@@ -186,6 +224,8 @@ def scan(end_iso: str | None = None, token: str | None = None) -> dict:
             "drop1": drop1, "drop1_pct": drop1_pct,
             "mr": mr, "wash": wash_gap > 0, "wash_gap": wash_gap,
             "has_fut": code in fut_codes,
+            "sbl_bal": sbl.get(code, [0, 0])[0],
+            "sbl_chg": sbl.get(code, [0, 0])[1],
         })
     recs.sort(key=lambda r: -r["drop5_pct"])        # 融資減幅% 大→小
     return {"date": dates[-1], "n_days": len(dates), "rows": recs}
@@ -205,10 +245,12 @@ def format_report(data: dict, top: int = 30) -> str:
         wash = "🧹清洗" if r["wash"] else ""
         mr = f"維持率{r['mr']:.0f}%" if r["mr"] is not None else ""
         star = "★" if r.get("has_fut") else ""
+        sblc = r.get("sbl_chg", 0)
+        sbl = f"借券{sblc:+,}張" if sblc else ""
         lines.append(
             f"{i:2d}. {r['code']} {r['name']}{star}({r['market']}) "
             f"融資{LOOKBACK}日 −{r['drop5_pct']:.0f}%(−{r['drop5']:,}張)"
-            f" 股價{r['ret5']:+.0f}% {wash} 收{r['close']:g} {mr} 餘{r['balance']:,}張")
+            f" 股價{r['ret5']:+.0f}% {wash} 收{r['close']:g} {mr} 餘{r['balance']:,}張 {sbl}")
     if not rows:
         lines.append("  (無符合)")
     lines.append(f"\n🧹清洗=融資減幅>股價跌幅(斷頭殺過頭、浮額清洗、常見落底)。"
@@ -234,7 +276,7 @@ def render_html(data: dict) -> str:
   th:hover{background:#eef2f7;} th .ar{color:#0066cc;font-size:.9em;}
   .red{color:#fff;background:#c0392b;border-radius:3px;padding:1px 5px;}
   .org{color:#fff;background:#e67e22;border-radius:3px;padding:1px 5px;}
-  .dn{color:#0a8a3a;}
+  .dn{color:#0a8a3a;} .up{color:#c0392b;}
   .small{font-size:.85em;color:#666;} .note{background:#fff3f2;border:1px solid #f5cfcf;border-radius:6px;padding:10px 14px;font-size:.88em;line-height:1.6;}
 </style>"""
     d = data.get("date", "").replace("-", "")
@@ -252,7 +294,7 @@ def render_html(data: dict) -> str:
             return '<p class="small">(無符合)</p>'
         cols = ["#", "標的", "市場", "現價", f"{LOOKBACK}日股價%",
                 f"{LOOKBACK}日融資減%", f"{LOOKBACK}日減(張)", "1日融資減%",
-                "1日減(張)", "融資餘額", "維持率", "清洗強度"]
+                "1日減(張)", "融資餘額", "借券增減", "維持率", "清洗強度"]
         h = (f'<div style="overflow-x:auto"><table id="{tid}"><thead><tr>'
              + "".join(f'<th onclick="sortT(\'{tid}\',{i})">{c}'
                        f'<span class="ar"></span></th>'
@@ -276,6 +318,9 @@ def render_html(data: dict) -> str:
                   f'<td data-v="{d1p}">{("−" if d1p>=0 else "+")}{abs(d1p):.0f}%</td>'
                   f'<td data-v="{r["drop1"]}">{"−" if r["drop1"]>=0 else "+"}{abs(r["drop1"]):,}</td>'
                   f'<td data-v="{r["balance"]}">{r["balance"]:,}</td>'
+                  f'<td data-v="{r["sbl_chg"]}" class="{"dn" if r["sbl_chg"]<0 else ("up" if r["sbl_chg"]>0 else "")}"'
+                  f' title="今借券賣出餘額 {r["sbl_bal"]:,} 張">'
+                  f'{r["sbl_chg"]:+,}</td>'
                   + mr +
                   f'<td data-v="{wg}">{wgtxt}</td></tr>')
         return h + '</tbody></table></div>'
@@ -284,7 +329,8 @@ def render_html(data: dict) -> str:
             f'<section><p class="small">全市場 4 位數個股,近 <b>{LOOKBACK}</b> 交易日'
             f'<b>融資餘額大減(≥{MIN_DROP_PCT:.0f}%)且股價下跌</b> = 斷頭/認賠賣壓宣洩。'
             f'依融資減幅% 排序(共 {len(rows)} 檔),點標題可排序。'
-            f'反市場低接觀察 —— ⚠ 斷頭≠保證反彈,非買賣訊號。</p></section>'
+            f'反市場低接觀察 —— ⚠ 斷頭≠保證反彈,非買賣訊號。'
+            f'<br>🕙 資料每交易日 <b>22:15</b> 更新(融資 EOD 資料約 21~22 點公布後)。</p></section>'
             + _USAGE +
             f'<section><h3>💥 融資大減(斷頭潮)排行</h3>'
             + _tbl(rows, "twash") + '</section>'
@@ -322,6 +368,7 @@ _COL_GLOSSARY = """<section>
 <li><b>1日融資減%</b> — (昨融資餘額 − 今融資餘額)/ 昨餘額 × 100%。抓<b>今天剛發生的急斷頭</b>;點此欄排序=找「今天正在斷」的。</li>
 <li><b>1日減(張)</b> — 昨融資餘額 − 今融資餘額(絕對張數;+號表示融資反增)。</li>
 <li><b>融資餘額</b> — 今日融資餘額(張)= 目前市場上還沒還的融資部位。</li>
+<li><b>借券增減</b> — 今日<b>借券賣出餘額</b>(SBL 空方部位)較前日的增減(張;滑鼠移上看今日餘額)。<b>綠(減)=借券回補、空方縮手(對低接偏多)</b>;紅(增)=新空進場(偏空)。⚠ 借券賣出≠融券,是另一套 SBL 機制;資料 FinMind TaiwanDailyShortSaleBalances,約 21:30 公布。<b>融資斷頭(多方投降)+ 借券回補(空方投降)同時發生 = 多空雙殺洗盤,更像底部。</b></li>
 <li><b>維持率</b> — 現價 ÷(遞迴融資成本線 × 融資成數)× 100%(上市6成/上櫃5成)。<b>供參的 context</b>:越低=被斷的部位套越深、越是「真斷頭」(非獲利了結)。遞迴成本線=逐日「今日成本=(昨成本×(餘額−買進)+收盤×買進)÷餘額」,近一年迭代。</li>
 <li><b>清洗強度</b> — <b>5日融資減% − 5日股價跌幅%</b>。&gt;0(🧹)=融資殺得比股價還兇、把浮額洗掉,數值越大洗越徹底、越常見落底;≤0=融資減幅其實沒超過股價跌(較不算清洗)。</li>
 </ul>
