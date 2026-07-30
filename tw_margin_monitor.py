@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 台股融資維持率預警
-用 FIFO 從過去 3 個月的融資買/賣/償還資料估算目前融資餘額的加權平均成本，
-再用當前股價計算維持率，篩選 <140% 的標的。
+用 FIFO 從過去 1 年的融資買/賣/償還資料估算目前融資餘額的加權平均成本，
+再用當前股價計算維持率，篩選 <140% 的標的。(2026-07-30 由 3 個月改 1 年)
 
 維持率 = 當前股價 / (加權平均買進價 × 融資成數)
   融資成數 M：上市 60%、上櫃 50%（一般股；警示/管理/全額交割另計）
@@ -10,8 +10,8 @@
 
 資料來源：
   今日餘額：TWSE OpenAPI + TPEx OpenAPI
-  3 個月歷史：FinMind TaiwanStockMarginPurchaseShortSale（per-stock）
-  股價：Yahoo Finance
+  1 年歷史：FinMind TaiwanStockMarginPurchaseShortSale（per-stock）
+  股價：Yahoo Finance（range=1y，須覆蓋 FIFO 視窗）
 """
 
 import argparse
@@ -34,6 +34,12 @@ CACHE_DIR = os.path.expanduser("~/project/tw_stock_tools/margin_cache")
 
 TWSE_MARGIN_RATIO = 0.60
 TPEX_MARGIN_RATIO = 0.50
+
+# FIFO 批次視窗天數：2026-07-30 由 95 天(3 個月)改 365 天(1 年)，與
+# tw_margin_lookup 一致。融資套牢常 >3 個月，3 個月視窗常算不出維持率；
+# 拉長視窗須連價格一起拉長(fetch_yahoo_history range=1y)，否則視窗前買進
+# 無收盤價會被 compute_fifo_cost 丟棄→偏差。視窗前更舊部位仍是黑洞。
+FIFO_WINDOW_DAYS = 365
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
 
@@ -97,11 +103,11 @@ def fetch_tpex_today_margin() -> dict:
 
 
 def fetch_finmind_history(code: str, start_date: str, end_date: str, token: str) -> list[dict]:
-    """Fetch per-stock 3-month margin history from FinMind.
+    """Fetch per-stock margin history from FinMind (range = caller 指定 start~end).
     Returns list of {date, buy, sell, repay, balance}.
-    Cached per stock+end_date to avoid re-fetches."""
+    Cached per stock+start+end to avoid re-fetches."""
     ensure_cache_dir()
-    # cache key 含 start_date — 否則 95 天視窗與全歷史抓取會互撞舊 cache
+    # cache key 含 start_date — 否則 1 年視窗與全歷史抓取會互撞舊 cache
     cache = os.path.join(CACHE_DIR,
                          f"finmind_{code}_{start_date}_{end_date}.json")
     if os.path.exists(cache):
@@ -129,11 +135,11 @@ def fetch_finmind_history(code: str, start_date: str, end_date: str, token: str)
     return rows
 
 
-def fetch_yahoo_history(code: str) -> dict:
-    """Fetch 3-month daily closes from Yahoo Finance.
+def fetch_yahoo_history(code: str, range_str: str = "3mo") -> dict:
+    """Fetch daily closes from Yahoo Finance (預設 3 個月；FIFO 視窗用 1y)。
     Returns {prices: {YYYYMMDD: close}, current_price, market, name, change_pct}."""
     for suffix in [".TW", ".TWO"]:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{suffix}?interval=1d&range=3mo"
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}{suffix}?interval=1d&range={range_str}"
         data = _http_get_json(url, timeout=15, retries=2)
         if not data:
             continue
@@ -207,8 +213,8 @@ def compute_recursive_cost(history: list[dict],
 
     今日成本 = (昨日成本 × (餘額−買進) + 收盤 × 買進) ÷ 餘額
     即：買進以當日收盤計價、賣出/償還以平均成本移除（不動成本）、
-    餘額歸零時重置。與 3 個月 FIFO 視窗不同，全歷史遞迴沒有
-    「舊部位成本未知」黑洞；種子不敏感（2026-07-20 實測 3491/2313
+    餘額歸零時重置。與 FIFO 視窗（有「視窗前舊部位成本未知」黑洞）不同，
+    全歷史遞迴沒有黑洞；種子不敏感（2026-07-20 實測 3491/2313
     以 2018~2025 任一年起算結果完全相同）。
 
     history 需「全歷史」(如 2018-01-01 起) 的 {date, buy, balance} 列，
@@ -353,7 +359,7 @@ def analyze(target_date: str, threshold: float, min_balance: int, finmind_token:
     """Main analysis. threshold: maintenance ratio % (e.g. 140)."""
     # Compute date range
     end_dt = datetime.strptime(target_date, "%Y%m%d")
-    start_dt = end_dt - timedelta(days=95)
+    start_dt = end_dt - timedelta(days=FIFO_WINDOW_DAYS)
     start_date = start_dt.strftime("%Y-%m-%d")
     end_date = end_dt.strftime("%Y-%m-%d")
     print(f"分析區間: {start_date} 到 {end_date}", file=sys.stderr)
@@ -386,7 +392,7 @@ def analyze(target_date: str, threshold: float, min_balance: int, finmind_token:
         if not history:
             continue
 
-        price_data = fetch_yahoo_history(code)
+        price_data = fetch_yahoo_history(code, "1y")   # 需覆蓋 1 年 FIFO 視窗
         if not price_data:
             continue
         time.sleep(0.1)

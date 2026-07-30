@@ -8,8 +8,9 @@
   成數同時給 五成(券商實務常見, 尤其上櫃/高價股) 與 六成(法規上限)
   兩個口徑 — 實際成數依券商與個股而異。警戒 140% / 追繳 130%。
 
-第二段：FIFO 批次分析 (近 3 個月視窗) — 看「誰套在哪個價位」，
-  這是資料商沒有的差異化視角。
+第二段：FIFO 批次分析 (近 1 年視窗) — 看「誰套在哪個價位」，
+  這是資料商沒有的差異化視角。視窗越長越少「舊部位黑洞」(視窗前
+  買進的部位成本未知)，但遞迴成本線 (全歷史) 才是無黑洞的主口徑。
 
 資料：FinMind (全歷史融資買/賣/償還 + 日收盤) + 交易所 MIS 即時價
   (盤中即時、修 Yahoo fallback stale 問題)，Yahoo 為備援。
@@ -181,18 +182,25 @@ def _fetch_full_closes(code: str, start_iso: str, end_iso: str,
             for r in rows or [] if r.get("close")}
 
 
+# FIFO 批次視窗天數：越長越少「舊部位黑洞」(視窗前買進成本未知)。
+# 2026-07-30 由 95 天(3 個月)改為 365 天(1 年)——融資套牢常 >3 個月，
+# 3 個月視窗常讓深套部位算不出維持率(None)；價格與融資歷史皆自 2018 起，
+# 拉長視窗有足夠資料。遞迴成本線(全歷史)仍為無黑洞主口徑。
+FIFO_WINDOW_DAYS = 365
+
+
 def lookup(code: str, target_date: str | None = None, finmind_token: str = "",
            method: str = "fifo") -> str:
     today = target_date or datetime.now().strftime("%Y%m%d")
     end_dt = datetime.strptime(today, "%Y%m%d")
     end_date = end_dt.strftime("%Y-%m-%d")
     full_start = "2018-01-01"                       # 遞迴成本線需全歷史
-    win_start = (end_dt - timedelta(days=95)).strftime("%Y%m%d")
+    win_start = (end_dt - timedelta(days=FIFO_WINDOW_DAYS)).strftime("%Y%m%d")
 
     history = fetch_finmind_history(code, full_start, end_date, finmind_token)
     if not history:
         return f"{code}: 無法取得融資歷史（可能非可融資標的或 API 限流）"
-    # FIFO 批次分析維持原本的 3 個月視窗
+    # FIFO 批次分析視窗（近 1 年；價格/融資歷史皆自 2018 起，涵蓋足夠）
     history_win = [h for h in history if h["date"] >= win_start]
 
     closes = _fetch_full_closes(code, full_start, end_date, finmind_token)
@@ -273,18 +281,18 @@ def lookup(code: str, target_date: str | None = None, finmind_token: str = "",
             "",
         ])
 
-    # ── 第二段：FIFO 3 個月視窗（僅涵蓋可追蹤批次，非整體）──
+    # ── 第二段：FIFO 近 1 年視窗（僅涵蓋可追蹤批次，非整體）──
     if maintenance is not None:
         lines.extend([
-            f"【FIFO 視窗成本（近 3 個月可追蹤批次，成數 {ratio*100:.0f}%）】",
+            f"【FIFO 視窗成本（近 1 年可追蹤批次，成數 {ratio*100:.0f}%）】",
             f"視窗批次成本: ${avg_cost:,.2f} → 該批維持率 {maintenance:.1f}%"
             f"  {_status(maintenance)}",
             "",
         ])
     else:
         lines.extend([
-            f"【FIFO 視窗（近 3 個月）】無可追蹤批次"
-            f"（餘額全為 3 個月前舊部位 → 看上方遞迴成本線）",
+            f"【FIFO 視窗（近 1 年）】無可追蹤批次"
+            f"（餘額全為 1 年前舊部位 → 看上方遞迴成本線）",
             "",
         ])
 
@@ -296,7 +304,7 @@ def lookup(code: str, target_date: str | None = None, finmind_token: str = "",
     balance = cohort_data["current_balance"]
     lines.append(f"目前融資餘額 {balance:,} 張 = "
                   f"可追蹤批次 {tracked:,} 張 + 舊部位 {legacy:,} 張")
-    lines.append(f"（舊部位 = 3 個月區間以前就存在的部位，成本無從得知）")
+    lines.append(f"（舊部位 = 1 年區間以前就存在的部位，成本無從得知）")
     lines.append("")
     lines.append(f"可追蹤批次的維持率分布：")
     buckets = cohort_data["buckets"]
