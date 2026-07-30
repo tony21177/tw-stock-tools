@@ -258,7 +258,8 @@ def send_telegram(message: str, bot_token: str, chat_id: str) -> bool:
         return False
 
 
-def push_new_ftd(data: dict, bot_token: str, chat_id: str):
+def push_new_ftd(data: dict, bot_token: str, chat_id: str,
+                 line_to: list[str] | None = None):
     try:
         with open(PUSHED, encoding="utf-8") as f:
             pushed = json.load(f)
@@ -290,10 +291,22 @@ def push_new_ftd(data: dict, bot_token: str, chat_id: str):
             "守住防線前別重壓;跌破防線=FTD 失敗停損訊號。",
             "⚠ 觀察工具非買賣訊號。詳: http://localhost:5000/ftd",
         ])
-        if send_telegram(msg, bot_token, chat_id):
+        ok_tg = bool(bot_token) and send_telegram(msg, bot_token, chat_id)
+        ok_line = False
+        if line_to:
+            try:
+                import line_push
+                ltok = line_push.resolve_token()
+                for to in line_to:
+                    if line_push.push_text(msg, ltok, to):
+                        ok_line = True
+            except Exception as e:
+                print(f"LINE 推播失敗: {e}", file=sys.stderr)
+        if ok_tg or ok_line:
             pushed[idx["id"]] = last["date"]
             sent = True
-            print(f"已推 {idx['name']} FTD {last['date']}")
+            print(f"已推 {idx['name']} FTD {last['date']} "
+                  f"(TG={'✓' if ok_tg else '✗'} LINE={'✓' if ok_line else '✗'})")
     if sent:
         with open(PUSHED, "w", encoding="utf-8") as f:
             json.dump(pushed, f)
@@ -439,6 +452,7 @@ def main():
     ap.add_argument("--build", action="store_true")
     ap.add_argument("--telegram", action="store_true")
     ap.add_argument("--chat-id", default=DEFAULT_CHAT_ID)
+    ap.add_argument("--line-to", help="LINE 收件者 C/U 開頭 ID,逗號可多個")
     ap.add_argument("--html", action="store_true")
     args = ap.parse_args()
 
@@ -462,12 +476,14 @@ def main():
                     "rally": f"嘗試反彈第{st['rally_day']}天"}[st["state"]]
         print(f"{idx['name']:8} {st['date']} {state_zh} 距高點{st['drawdown']:+.1f}% "
               f"| 歷史FTD {bt.get('n_ftd')}次 失敗率{bt.get('fail_rate')}%")
-    if args.telegram:
-        bot = os.environ.get("TG_BOT_TOKEN", "")
-        if bot:
-            push_new_ftd(data, bot, args.chat_id)
+    if args.telegram or args.line_to:
+        bot = os.environ.get("TG_BOT_TOKEN", "") if args.telegram else ""
+        line_to = ([s.strip() for s in args.line_to.split(",") if s.strip()]
+                   if args.line_to else None)
+        if bot or line_to:
+            push_new_ftd(data, bot, args.chat_id, line_to)
         else:
-            print("無 TG_BOT_TOKEN,略過推播", file=sys.stderr)
+            print("無 TG_BOT_TOKEN/LINE 目標,略過推播", file=sys.stderr)
 
 
 if __name__ == "__main__":
