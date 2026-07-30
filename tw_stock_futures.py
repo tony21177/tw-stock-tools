@@ -275,25 +275,35 @@ def fetch_ranking(date_iso: str | None = None, top_n: int = HOT_TOP_N
         return {"error": "無 FINMIND_TOKEN"}
     sys.path.insert(0, HERE)
     import finmind_client as fc
-    today_iso = date_iso or datetime.now().strftime("%Y-%m-%d")
-    prev_iso = _prev_trading_iso(today_iso)
+    req_iso = date_iso or datetime.now().strftime("%Y-%m-%d")
+    today_iso = req_iso
     mapping = fetch_taifex_mapping()
     if not mapping:
         return {"error": "TAIFEX 對照抓取失敗"}
-    # FinMind 全市場範圍查詢只回第一天(quirk)→ 兩次單日查
-    try:
-        today_rows = fc._call("TaiwanFuturesDaily",
-                              {"start_date": today_iso,
-                               "end_date": today_iso}, token)
-        prev_rows = fc._call("TaiwanFuturesDaily",
-                             {"start_date": prev_iso,
-                              "end_date": prev_iso}, token)
-    except Exception as e:
-        return {"error": f"FinMind: {type(e).__name__}: {e}"}
-    today_rows = [r for r in today_rows if r.get("date") == today_iso]
-    prev_rows = [r for r in prev_rows if r.get("date") == prev_iso]
+    # 自動模式:當日資料未公布(盤前/上午)→ 回退最近有資料的交易日(最多 5 天)
+    today_rows = prev_rows = None
+    prev_iso = today_iso
+    for _ in range(6):
+        prev_iso = _prev_trading_iso(today_iso)
+        # FinMind 全市場範圍查詢只回第一天(quirk)→ 兩次單日查
+        try:
+            today_rows = fc._call("TaiwanFuturesDaily",
+                                  {"start_date": today_iso,
+                                   "end_date": today_iso}, token)
+            prev_rows = fc._call("TaiwanFuturesDaily",
+                                 {"start_date": prev_iso,
+                                  "end_date": prev_iso}, token)
+        except Exception as e:
+            return {"error": f"FinMind: {type(e).__name__}: {e}"}
+        today_rows = [r for r in today_rows if r.get("date") == today_iso]
+        prev_rows = [r for r in prev_rows if r.get("date") == prev_iso]
+        if today_rows:
+            break
+        if date_iso:                       # 指定日期就不回退
+            return {"error": f"{today_iso} 無個股期資料"}
+        today_iso = prev_iso               # 回退一個交易日再試
     if not today_rows:
-        return {"error": f"{today_iso} 無個股期資料"}
+        return {"error": f"{req_iso} 起回溯 5 日皆無個股期資料"}
     # 現貨收盤(算基差)+ 全市場特定法人個股期淨留倉(TAIFEX 大額交易人)
     cash_close = _fetch_cash_close(fc, today_iso, token)
     inst = _fetch_large_trader_net(today_iso, mapping)
@@ -301,7 +311,10 @@ def fetch_ranking(date_iso: str | None = None, top_n: int = HOT_TOP_N
                             today_iso, prev_iso, top_n=top_n,
                             cash_close=cash_close, inst=inst)
     return {"date": today_iso, "prev": prev_iso, "rows": ranking,
-            "inst_n": len(inst)}
+            "inst_n": len(inst),
+            "stale_note": (f"今日({req_iso})資料尚未公布(約 15:30 後更新),"
+                           f"顯示最近交易日 {today_iso}"
+                           if today_iso != req_iso else None)}
 
 
 def _fetch_cash_close(fc, date_iso: str, token: str) -> dict:
@@ -417,11 +430,7 @@ def format_report(data: dict) -> str:
 def render_html(data: dict) -> str:
     """網頁排行表(比照群益個股期火熱排行)。"""
     import html as _h
-    nav = ('<nav><a href="/">← 大盤 dashboard</a> '
-           '<a href="/chip-price">📋 籌碼價量</a> '
-           '<a href="/money-flow">💰 族群資金流</a> '
-           '<a href="/warrant-signal">🎰 權證量能</a> '
-           '<a href="/stock-futures">🔥 個股期火熱</a> <a href="/lin-matrix">📐 林則行矩陣</a></nav>')
+    nav = __import__("site_nav").nav_html("/stock-futures")
     css = """<style>
   body{font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
        max-width:1080px;margin:1em auto;padding:0 1em;background:#f7f7f9;color:#222;}
@@ -445,6 +454,10 @@ def render_html(data: dict) -> str:
             f'<h1>🔥 個股期火熱排行 — {fmt}</h1>')
     if data.get("error"):
         return head + f'<section>⚠ {_h.escape(str(data["error"]))}</section></body></html>'
+    if data.get("stale_note"):
+        head += (f'<section style="background:#fff8e1;border:1px solid #eed9a0;'
+                 f'border-radius:6px;padding:8px 14px;font-size:.9em">'
+                 f'🕒 {_h.escape(data["stale_note"])}</section>')
     rows_html = []
     for r in data["rows"]:
         pcls = "up" if (r["pct"] or 0) > 0 else "dn"

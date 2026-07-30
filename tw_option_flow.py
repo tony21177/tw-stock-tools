@@ -195,7 +195,7 @@ def format_signal_msg(data: dict) -> str:
         "5~10日反彈傾向明顯(勝率69%/73% vs 基準60%/63%)——",
         "此訊號=恐慌/波動事件標記,別當隔日方向用。",
         "⚠ 自營含造市/避險腳,觀察用非買賣訊號。",
-        "詳: http://localhost:5000/option-flow",
+        "詳: " + __import__("site_nav").public_url("/option-flow"),
     ]
     return "\n".join(lines)
 
@@ -203,10 +203,7 @@ def format_signal_msg(data: dict) -> str:
 # ── 呈現 ────────────────────────────────────────────────
 def render_html(data: dict) -> str:
     import html as _h
-    nav = ('<nav><a href="/">← 大盤 dashboard</a> '
-           '<a href="/futures-basis">📐 期貨基差</a> '
-           '<a href="/market-tomorrow">🌏 明天大盤預期</a> '
-           '<a href="/margin-scan">💥 融資斷頭潮</a></nav>')
+    nav = __import__("site_nav").nav_html("/option-flow")
     css = """<style>
   body{font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
        max-width:1000px;margin:1em auto;padding:0 1em;background:#f7f7f9;color:#222;}

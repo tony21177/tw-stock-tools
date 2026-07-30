@@ -75,10 +75,7 @@ def _in_out(strike: float | None, close: float | None, is_call: bool) -> str:
 def render_page(signal_rows: list[dict], day: dict, asof: str,
                 backtest: dict | None = None, terms: dict | None = None) -> str:
     """完整 HTML：nav + 無 edge 揭露 + 當日權證爆量現股表。"""
-    nav = ('<nav><a href="/">← 大盤 dashboard</a> '
-           '<a href="/chip-price">📋 籌碼價量</a> '
-           '<a href="/money-flow">💰 族群資金流</a> '
-           '<a href="/warrant-signal">🎰 權證量能</a></nav>')
+    nav = __import__("site_nav").nav_html("/warrant-signal")
     css = """<style>
   body{font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
        max-width:1000px;margin:1em auto;padding:0 1em;background:#f7f7f9;color:#222;}

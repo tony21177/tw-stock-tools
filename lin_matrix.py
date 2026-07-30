@@ -397,10 +397,7 @@ def format_report(data: dict, top: int = 12) -> str:
 
 def render_html(data: dict) -> str:
     import html as _h
-    nav = ('<nav><a href="/">← 大盤 dashboard</a> '
-           '<a href="/chip-price">📋 籌碼價量</a> '
-           '<a href="/stock-futures">🔥 個股期火熱</a> '
-           '<a href="/lin-matrix">📐 林則行矩陣</a></nav>')
+    nav = __import__("site_nav").nav_html("/lin-matrix")
     css = """<style>
   body{font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
        max-width:1080px;margin:1em auto;padding:0 1em;background:#f7f7f9;color:#222;}

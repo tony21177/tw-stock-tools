@@ -289,7 +289,8 @@ def push_new_ftd(data: dict, bot_token: str, chat_id: str,
             f" 20日後勝率 {bt.get('h20', {}).get('win')}%"
             f" 平均 {bt.get('h20', {}).get('mean')}%",
             "守住防線前別重壓;跌破防線=FTD 失敗停損訊號。",
-            "⚠ 觀察工具非買賣訊號。詳: http://localhost:5000/ftd",
+            "⚠ 觀察工具非買賣訊號。詳: "
+            + __import__("site_nav").public_url("/ftd"),
         ])
         ok_tg = bool(bot_token) and send_telegram(msg, bot_token, chat_id)
         ok_line = False
@@ -315,11 +316,7 @@ def push_new_ftd(data: dict, bot_token: str, chat_id: str,
 # ── 呈現 ────────────────────────────────────────────────
 def render_html(data: dict) -> str:
     import html as _h
-    nav = ('<nav><a href="/">← 大盤 dashboard</a> '
-           '<a href="/market-tomorrow">🌏 明天大盤預期</a> '
-           '<a href="/option-flow">📊 選擇權法人</a> '
-           '<a href="/margin-scan">💥 融資斷頭潮</a> '
-           '<a href="/seasonality">📅 月份季節性</a></nav>')
+    nav = __import__("site_nav").nav_html("/ftd")
     css = """<style>
   body{font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
        max-width:1000px;margin:1em auto;padding:0 1em;background:#f7f7f9;color:#222;}

@@ -324,9 +324,7 @@ def format_report(data: dict, top: int = 30) -> str:
 
 def render_html(data: dict) -> str:
     import html as _h
-    nav = ('<nav><a href="/">← 大盤 dashboard</a> '
-           '<a href="/extremes">📊 一年高低榜</a> '
-           '<a href="/stock-futures">🔥 個股期火熱</a></nav>')
+    nav = __import__("site_nav").nav_html("/margin-scan")
     css = """<style>
   body{font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
        max-width:960px;margin:1em auto;padding:0 1em;background:#f7f7f9;color:#222;}

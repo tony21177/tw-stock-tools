@@ -519,6 +519,7 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>台股概念動能監控 {target_date}</title>
 <style>
   body {{ font-family: -apple-system, "Microsoft JhengHei", sans-serif; margin: 0; padding: 20px; background: #f5f5f7; color: #1d1d1f; }}

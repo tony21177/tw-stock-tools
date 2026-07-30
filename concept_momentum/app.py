@@ -1323,7 +1323,8 @@ def _render_chip_price_page(code: str | None = None,
 </style>
 </head>
 <body>
-<nav><a href="/">← 大盤 dashboard</a> <a href="/chip-price">📋 籌碼價量</a> <a href="/chip-compare?code=3491">📉 兩波對比</a> <a href="/contract-liabilities">💰 合約負債</a> <a href="/inventory">📦 存貨</a> <a href="/shareholders">👥 前十大股東</a></nav>
+{__import__("site_nav").nav_html("/chip-price")}
+<nav><a href="/chip-compare?code=3491">📉 兩波對比</a> <a href="/contract-liabilities">💰 合約負債</a> <a href="/inventory">📦 存貨</a> <a href="/shareholders">👥 前十大股東</a></nav>
 <h1>📊 籌碼價量分析 (broker × price × time)</h1>
 
 <form method="get" action="/chip-price" style="flex-wrap:wrap;">
@@ -3459,13 +3460,7 @@ def _render_adr_premium_page(period: str = "6mo", data: dict | None = None,
 </style>
 </head>
 <body>
-<nav>
-  <a href="/">← 大盤 dashboard</a>
-  <a href="/chip-price">📋 籌碼價量</a>
-  <a href="/inventory">📦 存貨</a>
-  <a href="/shareholders">👥 前十大股東</a>
-  <a href="/adr-premium">🇺🇸 ADR 折溢價</a>
-</nav>
+{__import__("site_nav").nav_html("/adr-premium")}
 <h1>🇺🇸 TSM ADR vs 2330 折溢價</h1>
 <form method="get" action="/adr-premium">
   <label>區間:
@@ -3756,13 +3751,7 @@ def _render_futures_basis_page(m: dict | None = None, error: str = "",
   .small, small {{ font-size:0.85em; color:#666; }}
 </style></head>
 <body>
-<nav>
-  <a href="/">← 大盤 dashboard</a>
-  <a href="/chip-price">📋 籌碼價量</a>
-  <a href="/shareholders">👥 前十大股東</a>
-  <a href="/adr-premium">🇺🇸 ADR 折溢價</a>
-  <a href="/futures-basis">📐 期貨基差</a>
-</nav>
+{__import__("site_nav").nav_html("/futures-basis")}
 <h1>📐 期現貨基差 / 外資期貨留倉監控</h1>
 {body}
 </body>
@@ -4404,9 +4393,9 @@ def second_wave_backtest():
 
 def _render_intraday_sim_page(code: str = "", data: dict | None = None,
                               error: str = "") -> str:
-    nav = ('<nav><a href="/">← 大盤 dashboard</a>'
-           '<a href="/intraday-sim-backtest">🧪 此系統的校準回測</a>'
-           '<a href="/concept-backtest">族群策略回測</a>'
+    nav = (__import__("site_nav").nav_html("/intraday-sim")
+           + '<nav><a href="/intraday-sim-backtest">🧪 此系統的校準回測</a> '
+           '<a href="/concept-backtest">族群策略回測</a> '
            '<a href="/second-wave-backtest">第二波回測</a></nav>')
     css = """<style>
   body { font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
@@ -5639,7 +5628,7 @@ a:hover { text-decoration:underline; }
 <title>💰 族群資金流</title>
 {css}
 </head><body>
-<p><a href="/">&larr; 返回主控板</a></p>
+{__import__("site_nav").nav_html("/money-flow")}
 <h2>💰 族群資金流（最近 60 個交易日）</h2>
 {body}
 {glossary}
