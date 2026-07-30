@@ -7,7 +7,8 @@
   當日淨收權利金 = short_deal_amount − long_deal_amount(正=淨賣方/收錢)
   例 2026-07-30:自營賣權 賣8.96億 − 買7.26億 = 淨收 +1.70億(群訊「put 回收 2e」)
 
-訊號(未回測,觀察用):
+訊號(已回測 2020-2026,見 tw_option_flow_backtest.py:隔日無 edge、
+5~10 日反彈傾向 —— 恐慌/波動事件標記,非隔日方向):
   🟢 轉多觀察:自營 put 淨收 ≥ 1 億 且 ≥ 近 60 交易日淨收的 P90(異常放大)
   🔴 避險/偏空觀察:自營 put 淨買 ≤ −1 億 且 ≤ P10(大買 put 避險)
 
@@ -17,7 +18,7 @@
 資料:FinMind TaiwanOptionInstitutionalInvestors(TXO,三大法人×買賣權,
   金額單位千元;每交易日盤後公布)+ TaiwanStockPrice TAIEX(指數 context)。
 ⚠ caveat:自營商含造市/避險腳,淨收權利金不全是方向單;FinMind 為日合計、
-  無法拆日盤/夜盤;訊號未回測、非買賣訊號。
+  無法拆日盤/夜盤;非買賣訊號。
 
 用法:
   tw_option_flow.py --build                 # 抓資料+寫 cache(網頁用)
@@ -190,7 +191,10 @@ def format_signal_msg(data: dict) -> str:
         f"加權今日 {today.get('taiex_pct', 0):+.2f}%",
         "",
         "收put=賭不跌(偏多)、大買put=避險(偏空)。",
-        "⚠ 自營含造市/避險腳、未回測,觀察用非買賣訊號。",
+        "🧪 回測(2020-26,26次):隔日無edge(勝率50%、還低於基準),",
+        "5~10日反彈傾向明顯(勝率69%/73% vs 基準60%/63%)——",
+        "此訊號=恐慌/波動事件標記,別當隔日方向用。",
+        "⚠ 自營含造市/避險腳,觀察用非買賣訊號。",
         "詳: http://localhost:5000/option-flow",
     ]
     return "\n".join(lines)
@@ -263,6 +267,42 @@ def render_html(data: dict) -> str:
              '<th>外資put淨收</th><th>外資call淨收</th><th>自營put未平倉淨</th>'
              '</tr></thead><tbody>' + "".join(rows_html) + '</tbody></table></div></section>')
 
+    # 回測結論(tw_option_flow_backtest.py 產出;無檔案就不顯示)
+    bt_html = ""
+    bt_path = os.path.join(CACHE, "option_flow_backtest.json")
+    if os.path.exists(bt_path):
+        try:
+            with open(bt_path, encoding="utf-8") as f:
+                bt = json.load(f)
+            bull, base = bt["bull"], bt["base"]
+
+            def _r(h, lab):
+                b, o = bull.get(h, {}), base.get(h, {})
+                if not b.get("n"):
+                    return ""
+                return (f'<tr><td>{lab}</td>'
+                        f'<td>{b["win"]:.0f}%</td><td>{b["mean"]*100:+.2f}%</td>'
+                        f'<td class="small">{o["win"]:.0f}% / {o["mean"]*100:+.2f}%</td></tr>')
+            bt_html = (
+                '<section><h3>🧪 回測結論(' + _h.escape(bt.get("window", "")) + ','
+                f'{bt.get("n_bull", 0)} 次🟢訊號,walk-forward 同參數)</h3>'
+                '<table style="max-width:560px"><thead><tr><th>後續</th><th>勝率</th>'
+                '<th>平均報酬</th><th>對照組(全部日)</th></tr></thead><tbody>'
+                + _r("gap", "隔日開盤跳空") + _r("H1", "隔 1 日")
+                + _r("H3", "隔 3 日") + _r("H5", "隔 5 日") + _r("H10", "隔 10 日")
+                + '</tbody></table>'
+                '<p class="small" style="color:#b03a2e;line-height:1.6">⚠ <b>「收put→隔天就漲」不成立</b>:'
+                '隔日勝率/平均都<b>低於</b>對照組(訊號常出現在連續殺盤中,隔天可能續殺,'
+                '例 2024-08-02 訊號隔日 −8.35%)。<b>真正的訊號價值在 5~10 天</b>:'
+                '恐慌時 IV 飆高、權利金變肥,自營才收得到大錢 → 大額收 put ≈ '
+                '<b>恐慌/波動事件標記</b>,之後 5~10 日常見 V 型反彈(勝率 69%/73% vs '
+                '基準 60%/63%)。⚠ 樣本 26 次且叢集於同一波恐慌(如 2024-08 連 4 天)、'
+                '報酬視窗重疊,t 值高估,當「傾向」看待。另:🔴 大買 put 訊號'
+                '<b>不預測下跌</b>(之後反而偏漲)——兩種極端都只是「波動事件」的影子。</p>'
+                '</section>')
+        except Exception:
+            bt_html = ""
+
     glossary = """<section class="note">📖 <b>怎麼看(白話)</b><br>
 • <b>淨收權利金</b> = 當日「賣出金額 − 買進金額」。<b>正(紅)= 當日淨當賣方、把權利金收進口袋</b>;負(綠)= 淨當買方、付權利金出去。單位億元(FinMind 原始單位千元)。<br>
 • <b>自營 put 淨收(主訊號)</b>:自營商大量<b>賣 put 收錢</b> = 賭「指數不跌破履約價」,收越多把握越大 —— 社群口徑「沒事不會收那麼多」= 轉多觀察。反過來<b>大買 put(大負值)</b>= 花大錢買下跌保險 = 避險/偏空觀察。<br>
@@ -270,12 +310,12 @@ def render_html(data: dict) -> str:
 • <b>外資 put/call</b>:對照用。外資選擇權部位常搭配期貨現貨對沖,方向性比自營的收權利金行為更難單獨解讀。<br>
 • <b>自營put未平倉淨</b>:未平倉(存量)的賣方金額−買方金額。正=整體淨賣方部位。當日淨收看「今天的行為」、未平倉看「累積的底牌」。<br>
 • <b>訊號門檻</b>:淨收 ≥1億 且 ≥近60交易日P90(異常放大才叫訊號,平常的造市進出不算);淨買 ≤−1億 且 ≤P10 反向。觸發才推 Telegram。<br>
-⚠ <b>限制</b>:自營商數字<b>含造市與避險腳</b>,不全是方向單;FinMind 為<b>日合計、無法拆日盤/夜盤</b>(群裡說的「昨晚收1e」看不到,只能看到隔天全日);資料盤後(約15:00後)公布;<b>此訊號未經回測</b>,是社群實戰觀察口徑,純觀察、非買賣訊號。</section>"""
+⚠ <b>限制</b>:自營商數字<b>含造市與避險腳</b>,不全是方向單;FinMind 為<b>日合計、無法拆日盤/夜盤</b>(群裡說的「昨晚收1e」看不到,只能看到隔天全日);資料盤後(約15:00後)公布;回測結論見上節(隔日無 edge、5~10 日反彈傾向),純觀察、非買賣訊號。</section>"""
 
     foot = (f'<p class="small">🕒 每交易日 15:10 更新 · 更新於 '
             f'{_h.escape(data.get("as_of", ""))} · 資料 FinMind '
             f'TaiwanOptionInstitutionalInvestors (TXO)</p>')
-    return head + sig_html + table + glossary + foot + '</body></html>'
+    return head + sig_html + table + bt_html + glossary + foot + '</body></html>'
 
 
 # ── CLI ─────────────────────────────────────────────────
