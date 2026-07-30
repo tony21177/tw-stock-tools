@@ -48,15 +48,21 @@ RATIO_TWSE = 0.60
 RATIO_TPEX = 0.50
 
 
-def _margin_day(date_iso: str, token: str) -> dict:
-    """某交易日全市場融資 {code: [buy, balance]}(張)。逐日快取。"""
+def _margin_day(date_iso: str, token: str, ensure_sell: bool = False) -> dict:
+    """某交易日全市場融資 {code: [buy, balance, sell]}(張)。逐日快取。
+    sell=融資賣出(MarginPurchaseSell,賣股票平倉的張數=斷頭賣壓,不含現金償還)。
+    ensure_sell=True 時,若快取為舊格式(無 sell)則強制重抓補上。"""
     path = os.path.join(MARGIN_DIR, f"{date_iso.replace('-', '')}.json")
     if os.path.exists(path):
         try:
             with open(path, encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
         except Exception:
-            pass
+            data = None
+        if data is not None:
+            # 舊快取為 [buy,bal](長度 2);需要 sell 時才重抓,否則沿用
+            if not ensure_sell or all(len(v) >= 3 for v in data.values()):
+                return data
     p = {"dataset": "TaiwanStockMarginPurchaseShortSale", "token": token,
          "start_date": date_iso, "end_date": date_iso}
     req = urllib.request.Request(FINMIND + "?" + urllib.parse.urlencode(p),
@@ -73,10 +79,47 @@ def _margin_day(date_iso: str, token: str) -> dict:
         code = r.get("stock_id", "")
         bal = int(r.get("MarginPurchaseTodayBalance") or 0)
         buy = int(r.get("MarginPurchaseBuy") or 0)
+        sell = int(r.get("MarginPurchaseSell") or 0)
         if code:
-            out[code] = [buy, bal]
+            out[code] = [buy, bal, sell]
     if out:
         os.makedirs(MARGIN_DIR, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(out, f)
+        os.replace(tmp, path)
+    return out
+
+
+def _vol_day(date_iso: str, token: str) -> dict:
+    """某交易日全市場成交量 {code: 張}(TaiwanStockPriceAdj Trading_Volume/1000)。
+    只給近 LOOKBACK 日算「五日均量」用,逐日快取。"""
+    path = os.path.join(CACHE, "vol_day", f"{date_iso.replace('-', '')}.json")
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    p = {"dataset": "TaiwanStockPriceAdj", "token": token,
+         "start_date": date_iso, "end_date": date_iso}
+    req = urllib.request.Request(FINMIND + "?" + urllib.parse.urlencode(p),
+                                 headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            rows = json.load(r).get("data", [])
+    except Exception:
+        return {}
+    out = {}
+    for r in rows:
+        if r.get("date") != date_iso:
+            continue
+        code = r.get("stock_id", "")
+        vol = r.get("Trading_Volume") or 0
+        if code and vol:
+            out[code] = round(vol / 1000)          # 股 → 張
+    if out:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(out, f)
@@ -178,14 +221,25 @@ def scan(end_iso: str | None = None, token: str | None = None) -> dict:
             print(f"[margin-scan] {i+1}/{len(dates)} {d}", file=sys.stderr, flush=True)
         for code, v in dp.items():
             close_series.setdefault(code, {})[dk] = v[2]
-        for code, (buy, bal) in md.items():
+        for code, v in md.items():
             margin_series.setdefault(code, []).append(
-                {"date": dk, "buy": buy, "balance": bal})
+                {"date": dk, "buy": v[0], "balance": v[1]})
     sbl = _sbl_day(dates[-1], token)         # 全市場借券賣出餘額(今/增減)
     dk_all = [d.replace("-", "") for d in dates]
     latest = dk_all[-1]
     d1 = dk_all[-2] if len(dk_all) >= 2 else latest
     d5 = dk_all[-1 - LOOKBACK] if len(dk_all) > LOOKBACK else dk_all[0]
+
+    # 近 LOOKBACK 日「融資賣壓佔量比」用資料:融資賣出(gross,斷頭賣壓)+ 成交量
+    recent = dates[-LOOKBACK:]                       # 最近 5 個交易日
+    sell_recent: dict = {}       # dk -> {code: 融資賣出張}
+    vol_recent: dict = {}        # dk -> {code: 成交量張}
+    for d in recent:
+        dk = d.replace("-", "")
+        mds = _margin_day(d, token, ensure_sell=True)     # 保證含 sell(舊快取自動補)
+        sell_recent[dk] = {c: v[2] for c, v in mds.items() if len(v) >= 3}
+        vol_recent[dk] = _vol_day(d, token)
+    recent_dks = [d.replace("-", "") for d in recent]
     recs = []
     for code, hist in margin_series.items():
         if not (len(code) == 4 and code.isdigit() and not code.startswith("00")):
@@ -215,6 +269,15 @@ def scan(end_iso: str | None = None, token: str | None = None) -> dict:
         ratio = RATIO_TPEX if typ == "tpex" else RATIO_TWSE
         mr = round(cur / (cost * ratio) * 100, 0) if cost and cost > 0 else None
         wash_gap = round(drop5_pct - abs(ret5), 1)  # 清洗強度=融資減幅−股價跌幅
+        # 融資賣壓佔量% = 近5日融資賣出總張 ÷ LOOKBACK ÷ 近5日均量 × 100
+        # (只算融資「賣出」= 賣股票平倉的斷頭賣壓,不用淨變動,因淨值被當日融資
+        #  買進沖抵會低估真實賣壓;現金償還不上量、也不算。>15% 常是系統性斷頭)
+        sell5 = sum(sell_recent.get(dk, {}).get(code, 0) for dk in recent_dks)
+        vols = [vol_recent.get(dk, {}).get(code) for dk in recent_dks]
+        vols = [v for v in vols if v]
+        vol_avg = sum(vols) / len(vols) if vols else 0
+        sell_ratio = (round(sell5 / LOOKBACK / vol_avg * 100, 1)
+                      if vol_avg > 0 and sell5 > 0 else None)
         recs.append({
             "code": code, "name": names.get(code, ""),
             "market": "上櫃" if typ == "tpex" else ("興櫃" if typ == "emerging" else "上市"),
@@ -223,6 +286,7 @@ def scan(end_iso: str | None = None, token: str | None = None) -> dict:
             "drop5": drop5, "drop5_pct": drop5_pct,
             "drop1": drop1, "drop1_pct": drop1_pct,
             "mr": mr, "wash": wash_gap > 0, "wash_gap": wash_gap,
+            "sell5": sell5, "vol5_avg": round(vol_avg), "sell_ratio": sell_ratio,
             "has_fut": code in fut_codes,
             "sbl_bal": sbl.get(code, [0, 0])[0],
             "sbl_chg": sbl.get(code, [0, 0])[1],
@@ -296,7 +360,8 @@ def render_html(data: dict) -> str:
             return '<p class="small">(無符合)</p>'
         cols = ["#", "標的", "市場", "現價", f"{LOOKBACK}日股價%",
                 f"{LOOKBACK}日融資減%", f"{LOOKBACK}日減(張)", "1日融資減%",
-                "1日減(張)", "融資餘額", "借券增減", "維持率", "清洗強度"]
+                "1日減(張)", "融資餘額", "借券增減", "維持率", "清洗強度",
+                "融資賣壓/量%"]
         h = (f'<div class="dragx" style="max-height:78vh;overflow:auto"><table id="{tid}"><thead><tr>'
              + "".join(f'<th onclick="sortT(\'{tid}\',{i},event)">{c}'
                        f'<span class="ar"></span></th>'
@@ -307,6 +372,15 @@ def render_html(data: dict) -> str:
                   if r["mr"] is not None else '<td data-v="NaN">—</td>')
             wg = r["wash_gap"]
             wgtxt = (f'🧹+{wg:.0f}' if wg > 0 else f'{wg:.0f}')
+            sr = r.get("sell_ratio")
+            if sr is None:
+                sr_td = '<td data-v="-1" title="近5日無融資賣出/量資料">—</td>'
+            else:
+                scls = "red" if sr >= 15 else ("org" if sr >= 10 else "")
+                sinner = f'<span class="{scls}">{sr:.1f}%</span>' if scls else f'{sr:.1f}%'
+                sr_td = (f'<td data-v="{sr}" title="近{LOOKBACK}日融資賣出日均 '
+                         f'{round(r.get("sell5",0)/LOOKBACK):,} 張 / 五日均量 '
+                         f'{r.get("vol5_avg",0):,} 張">{sinner}</td>')
             d1p = r["drop1_pct"]
             star = ' <span title="有個股期貨" style="color:#e6a817">★</span>' if r.get("has_fut") else ""
             h += (f'<tr><td data-v="{i}">{i}</td>'
@@ -324,7 +398,8 @@ def render_html(data: dict) -> str:
                   f' title="今借券賣出餘額 {r["sbl_bal"]:,} 張">'
                   f'{r["sbl_chg"]:+,}</td>'
                   + mr +
-                  f'<td data-v="{wg}">{wgtxt}</td></tr>')
+                  f'<td data-v="{wg}">{wgtxt}</td>'
+                  + sr_td + '</tr>')
         return h + '</tbody></table></div>'
 
     return (head +
@@ -355,6 +430,7 @@ _USAGE = """<section class="note">
 <tr><td style="text-align:left"><b>② 深套落底</b><br>(中線築底)</td><td style="text-align:left">點 <b>維持率</b> 正排</td><td style="text-align:left"><b>維持率&lt;130%</b>(真斷頭、非獲利了結)+ 5日融資減%大;等連續幾天融資不再減=賣壓竭盡</td><td style="text-align:left">波段、等打底</td></tr>
 <tr><td style="text-align:left"><b>③ 大型股錯殺</b><br>(穩健)</td><td style="text-align:left">點 <b>5日減(張)</b> 排序</td><td style="text-align:left">絕對張數大的<b>大型股/權值</b>(流動性好、較不易下市),維持率 130~160% 錯殺居多</td><td style="text-align:left">穩健、資金大</td></tr>
 <tr><td style="text-align:left"><b>④ 浮額徹底清洗</b><br>(籌碼面)</td><td style="text-align:left">點 <b>清洗強度</b> 排序</td><td style="text-align:left">🧹 值最大 = 融資殺得遠比股價兇、籌碼換手最乾淨;配合<b>股價跌幅深(5日股價%)</b></td><td style="text-align:left">看籌碼、找換手</td></tr>
+<tr><td style="text-align:left"><b>⑤ 系統性斷頭警訊</b><br>(賣壓強度)</td><td style="text-align:left">點 <b>融資賣壓/量%</b> 排序</td><td style="text-align:left"><b>&gt;15%(紅)</b>=融資賣單佔當日成交量 1/5、常伴連續跌停=系統性斷頭鐵證;先確認賣壓「宣洩完」(此比開始回落、跌停打開)再低接,別接還在噴的</td><td style="text-align:left">判賣壓竭盡點</td></tr>
 </tbody></table></div>
 <p class="small" style="margin:.4em 0 0"><b>最強落底組合</b>:<b>1日融資急減 + 維持率&lt;130% + 清洗強度高</b> = 今天正在斷、套很深、浮額洗光,賣壓最可能宣洩完。<br>
 <b>共同操作提醒</b>:①<b>別接「跌停鎖死、還在斷」</b>的——等跌停打開、量出來(賣壓真的宣洩)再說 ②<b>斷頭是「技術面賣壓」不篩「基本面好壞」</b>——基本面壞掉的會續破底,務必搭配基本面/財報 ③配合 /chip 籌碼、一年高低榜、族群熱度一起看 ④維持率&lt;100% 的深度套牢多是已卡住殘局、反彈動能弱。⚠ 非買賣訊號、不保證反彈。</p></section>"""
@@ -375,7 +451,8 @@ _COL_GLOSSARY = """<section>
 <li><b>借券增減</b> — 今日<b>借券賣出餘額</b>(SBL 空方部位)較前日的增減(張;滑鼠移上看今日餘額)。<b>綠(減)=借券回補、空方縮手(對低接偏多)</b>;紅(增)=新空進場(偏空)。⚠ 借券賣出≠融券,是另一套 SBL 機制;資料 FinMind TaiwanDailyShortSaleBalances,約 21:30 公布。<b>融資斷頭(多方投降)+ 借券回補(空方投降)同時發生 = 多空雙殺洗盤,更像底部。</b></li>
 <li><b>維持率</b> — 現價 ÷(遞迴融資成本線 × 融資成數)× 100%(上市6成/上櫃5成)。<b>供參的 context</b>:越低=被斷的部位套越深、越是「真斷頭」(非獲利了結)。遞迴成本線=逐日「今日成本=(昨成本×(餘額−買進)+收盤×買進)÷餘額」,近一年迭代。</li>
 <li><b>清洗強度</b> — <b>5日融資減% − 5日股價跌幅%</b>。&gt;0(🧹)=融資殺得比股價還兇、把浮額洗掉,數值越大洗越徹底、越常見落底;≤0=融資減幅其實沒超過股價跌(較不算清洗)。</li>
-</ul>
+<li><b>融資賣壓/量%</b>(新)— <b>近{LOOKBACK}日「融資賣出」總張 ÷ {LOOKBACK} ÷ 近{LOOKBACK}日均量 × 100%</b>。衡量「每天有多少成交量是融資被迫平倉的賣單」。<b>關鍵:用融資「賣出」(gross,賣股票平倉那筆),不是用融資餘額淨變動</b> —— 因為淨變動會被當日的融資「買進」沖抵而低估真實斷頭賣壓(例:淨減看起來 7.7%,但實際融資賣出佔量 14.9%);現金償還不上量、也不計入。<b>&gt;15%(紅)= 融資賣單佔了當日成交量 1/5,常是系統性斷頭/連續跌停的鐵證;10~15%(橙)= 顯著賣壓</b>。滑鼠移上看日均賣出張/五日均量。資料:融資賣出 FinMind MarginPurchaseSell、量 TaiwanStockPriceAdj。<b>與「5日融資減%」互補</b>:減%看餘額縮多少、這欄看賣壓佔量多兇(更貼近盤面被迫賣壓強度)。</li>
+</ul>""".replace("{LOOKBACK}", str(LOOKBACK)) + """
 <p class="small">⚠ 融資餘額為 EOD、還原價估算;<b>斷頭賣壓宣洩不保證反彈</b>(基本面壞會續跌)。個股維持率≠整戶維持率。單檔精確即時請用 /chip 或 tw_margin_lookup(原始價+交易所即時價+FIFO 套牢)。純觀察、非買賣訊號。</p></section>"""
 
 
