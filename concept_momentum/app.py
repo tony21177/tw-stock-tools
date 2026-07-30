@@ -1774,6 +1774,25 @@ def extremes_page():
     return ex.render_html(data)
 
 
+@app.route("/seasonality")
+def seasonality_page():
+    import tw_seasonality as ss
+    cache = os.path.join(HERE, "cache", "seasonality_latest.json")
+    data = None
+    if os.path.exists(cache):
+        try:
+            with open(cache, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = None
+    if data is None:
+        try:
+            data = ss.build()
+        except Exception as e:
+            data = {"error": f"{type(e).__name__}: {e}"}
+    return ss.render_html(data)
+
+
 @app.route("/market-tomorrow")
 def market_tomorrow_page():
     import tw_market_overnight as mo
