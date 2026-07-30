@@ -1774,6 +1774,25 @@ def extremes_page():
     return ex.render_html(data)
 
 
+@app.route("/ftd")
+def ftd_page():
+    import tw_ftd as ftd
+    cache = os.path.join(HERE, "cache", "ftd_latest.json")
+    data = None
+    if os.path.exists(cache):
+        try:
+            with open(cache, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = None
+    if data is None:
+        try:
+            data = ftd.build()
+        except Exception as e:
+            data = {"error": f"{type(e).__name__}: {e}", "indices": []}
+    return ftd.render_html(data)
+
+
 @app.route("/option-flow")
 def option_flow_page():
     import tw_option_flow as of
