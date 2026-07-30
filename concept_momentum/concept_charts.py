@@ -649,6 +649,7 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
       <a class="tab" href="/extremes" style="text-decoration:none;color:inherit;">📊 一年高低榜</a>
       <a class="tab" href="/margin-scan" style="text-decoration:none;color:inherit;">💥 融資斷頭潮</a>
       <a class="tab" href="/seasonality" style="text-decoration:none;color:inherit;">📅 月份季節性</a>
+      <a class="tab" href="/option-flow" style="text-decoration:none;color:inherit;">📊 選擇權法人</a>
       <a class="tab" href="/intraday-sim" style="text-decoration:none;color:inherit;">📉 盤中走勢模擬</a>
       <a class="tab" href="/adr-premium" style="text-decoration:none;color:inherit;">🇺🇸 ADR 折溢價</a>
       <a class="tab" href="/futures-basis" style="text-decoration:none;color:inherit;">📐 期貨基差</a>
