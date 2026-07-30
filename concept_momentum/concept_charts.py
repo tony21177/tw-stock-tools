@@ -586,29 +586,23 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
 <div class="meta">報告日期: {target_date} | 評分: 40% 廣度 + 20% 量能 + 20% RS + 20% 持續天數</div>
 
 <div class="lookup-bar" style="background:white;padding:14px 18px;border-radius:10px;margin-bottom:18px;box-shadow:0 2px 8px rgba(0,0,0,0.06);">
-  <div style="display:flex;flex-wrap:wrap;gap:14px;align-items:center;">
+  <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
     <span style="font-weight:600;font-size:15px;">🔍 單檔快速查詢:</span>
-    <form action="/chip-price" method="get" style="display:flex;gap:4px;">
-      <input type="text" name="code" placeholder="股號" required style="width:80px;padding:6px 8px;font-size:14px;border:1px solid #ccc;border-radius:4px;">
-      <button type="submit" style="padding:6px 12px;background:#0066cc;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;">📋 籌碼價量</button>
-    </form>
-    <form action="/contract-liabilities" method="get" style="display:flex;gap:4px;">
-      <input type="text" name="code" placeholder="股號" required style="width:80px;padding:6px 8px;font-size:14px;border:1px solid #ccc;border-radius:4px;">
-      <button type="submit" style="padding:6px 12px;background:#0066cc;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;">💰 合約負債</button>
-    </form>
-    <form action="/inventory" method="get" style="display:flex;gap:4px;">
-      <input type="text" name="code" placeholder="股號" required style="width:80px;padding:6px 8px;font-size:14px;border:1px solid #ccc;border-radius:4px;">
-      <button type="submit" style="padding:6px 12px;background:#0066cc;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;">📦 存貨</button>
-    </form>
-    <form action="/shareholders" method="get" style="display:flex;gap:4px;">
-      <input type="text" name="code" placeholder="股號" required style="width:80px;padding:6px 8px;font-size:14px;border:1px solid #ccc;border-radius:4px;">
-      <button type="submit" style="padding:6px 12px;background:#0066cc;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;">👥 前十大股東</button>
-    </form>
-    <form action="/margin-lookup" method="get" style="display:flex;gap:4px;">
-      <input type="text" name="code" placeholder="股號" required style="width:80px;padding:6px 8px;font-size:14px;border:1px solid #ccc;border-radius:4px;">
-      <button type="submit" style="padding:6px 12px;background:#0066cc;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;">💳 融資維持率</button>
-    </form>
+    <input type="text" id="qcode" placeholder="股號 (例 2330)" inputmode="numeric"
+           style="width:120px;padding:6px 10px;font-size:14px;border:1px solid #ccc;border-radius:4px;"
+           onkeydown="if(event.key==='Enter')qgo('/chip-price')">
+    <button onclick="qgo('/chip-price')" class="qbtn">📋 籌碼價量</button>
+    <button onclick="qgo('/margin-lookup')" class="qbtn">💳 融資維持率</button>
+    <button onclick="qgo('/contract-liabilities')" class="qbtn">💰 合約負債</button>
+    <button onclick="qgo('/inventory')" class="qbtn">📦 存貨</button>
+    <button onclick="qgo('/shareholders')" class="qbtn">👥 前十大股東</button>
+    <button onclick="qgo('/chip-compare')" class="qbtn">📉 兩波對比</button>
   </div>
+  <style>.qbtn{{padding:6px 12px;background:#0066cc;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;}}
+  .qbtn:hover{{background:#0052a3}}</style>
+  <script>function qgo(path){{var v=document.getElementById('qcode').value.trim();
+    if(!v){{document.getElementById('qcode').focus();return;}}
+    location.href=path+'?code='+encodeURIComponent(v);}}</script>
 </div>
 
 <div class="tabs">
