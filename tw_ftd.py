@@ -330,7 +330,16 @@ def render_html(data: dict) -> str:
     head = (f'<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="utf-8">'
             f'<meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>FTD 反彈確認日</title>{css}</head><body>{nav}'
-            f'<h1>🚀 FTD 反彈確認日(歐尼爾 Follow-Through Day)</h1>')
+            f'<h1>🚀 FTD 反彈確認日(歐尼爾 Follow-Through Day)</h1>'
+            f'<section class="note"><b>📌 FTD 定義</b>:FTD(Follow-Through Day,反彈確認日/續漲日)'
+            f'是威廉·歐尼爾(William O\'Neil,《笑傲股市》作者、IBD 創辦人)提出的<b>技術分析訊號</b>,'
+            f'用來判斷「市場可能從下跌趨勢轉向新的上漲趨勢」。正式定義:<b>市場修正期間,'
+            f'在「嘗試反彈」(不再創新低)的第 4 天或之後,主要股指單日大漲 ≥{FTD_PCT}%'
+            f'(舊版 1.25%),且成交量高於前一交易日</b> —— 價漲+量增同時出現,代表機構資金'
+            f'實質回場,修正可能結束。它是歐尼爾 CAN SLIM 系統中判斷「M(市場方向)」的核心工具:'
+            f'<b>幫你辨識熊市/回檔的結束、給一個較安全的恢復進場時點,而不是試圖精準預測底部</b>;'
+            f'歷史上幾乎每個大底都伴隨 FTD,但約 25~30% 的 FTD 會失敗(之後再創新低),'
+            f'所以它必須搭配紀律:跌破反彈防線就退出。</section>')
     body = []
     for idx in data.get("indices", []):
         if idx.get("error"):
