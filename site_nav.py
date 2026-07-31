@@ -55,7 +55,7 @@ a{color:var(--acc)}
 section{background:var(--card);border:1px solid var(--line);
   box-shadow:none;border-radius:10px}
 table{font-variant-numeric:tabular-nums}
-table thead th{position:sticky;top:var(--navh,36px);z-index:2;background:var(--card2);
+table thead th{position:sticky;top:0;z-index:2;background:var(--card2);
   color:#9fb0c3;letter-spacing:.4px;border-bottom:1px solid #2e405a;
   box-shadow:none}
 th,td{border-bottom:1px solid #1c2634}
@@ -78,6 +78,7 @@ nav.site{position:sticky;top:0;z-index:40;background:rgba(13,17,23,.86);
   backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
   border-bottom:1px solid var(--line);padding:6px 10px;margin:0 -10px 12px;
   border-radius:0 0 10px 10px}
+@media (max-width:640px){nav.site{position:static}}
 nav.site a{color:#9fb0c3}nav.site a:hover{color:var(--acc);text-decoration:none}
 nav.site b{color:var(--acc);text-shadow:0 0 12px rgba(76,194,255,.45)}
 nav a{color:var(--acc)}
@@ -161,6 +162,21 @@ function boot(){
   if(nv)document.documentElement.style.setProperty('--navh',nv.offsetHeight+'px');
   window.addEventListener('resize',function(){
     if(nv)document.documentElement.style.setProperty('--navh',nv.offsetHeight+'px');});
+  // sticky th 的 top:內層捲動容器裡=0(黏容器頂);直接在頁面上=nav 高度
+  // (sticky top 相對「最近的捲動容器」而非視窗;overflow-x:auto 的祖先
+  //  也算捲動容器 → top:0 安全退化為不黏,不會浮在表中間)
+  document.querySelectorAll('table').forEach(function(t){
+    if(!t.tHead)return;
+    var p=t.parentElement,inner=false;
+    while(p&&p!==document.body){
+      var s=getComputedStyle(p);
+      if(/(auto|scroll)/.test(s.overflow+s.overflowX+s.overflowY)){inner=true;break;}
+      p=p.parentElement;
+    }
+    var stickyNav=nv&&getComputedStyle(nv).position==='sticky';
+    var top=inner?'0px':(stickyNav?'var(--navh,36px)':'0px');
+    t.querySelectorAll('thead th').forEach(function(el){el.style.top=top;});
+  });
   document.querySelectorAll('table').forEach(makeSortable);
   document.querySelectorAll('section,div').forEach(function(el){
     if(el.scrollWidth>el.clientWidth+8)makeDraggable(el);});
