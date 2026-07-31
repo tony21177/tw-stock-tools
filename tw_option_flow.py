@@ -83,6 +83,11 @@ def fetch_days(token: str, back_days: int = 220) -> list[dict]:
             rec["dp_sell"] = round(r.get("short_deal_amount", 0) / YI, 2)
             rec["dp_oi"] = round((r.get("short_open_interest_balance_amount", 0)
                                   - r.get("long_open_interest_balance_amount", 0)) / YI, 2)
+        if who == "外資" and cp == "賣權":
+            # 外資 put 未平倉淨(賣-買):長期為負=結構性淨買 put(現貨保險)。
+            # 越深(往 P10 −5億)=避險需求越重;回升=撤保險。存量 context 用。
+            rec["fp_oi"] = round((r.get("short_open_interest_balance_amount", 0)
+                                  - r.get("long_open_interest_balance_amount", 0)) / YI, 2)
     # 加權指數 context
     try:
         trows = _fm("TaiwanStockPrice",
@@ -256,12 +261,13 @@ def render_html(data: dict) -> str:
             f'<tr{hl}><td>{d["date"]}</td>{tp_td}'
             + cell(d.get("dp")) + cell(d.get("dc"))
             + cell(d.get("fp")) + cell(d.get("fc"))
-            + cell(d.get("dp_oi")) + '</tr>')
+            + cell(d.get("dp_oi")) + cell(d.get("fp_oi")) + '</tr>')
 
     table = ('<section><h3>近 60 交易日(單位:億元;正=淨收權利金/淨賣方,負=淨買方)</h3>'
              '<div style="max-height:70vh;overflow:auto"><table><thead><tr>'
              '<th>日期</th><th>加權%</th><th>自營put淨收</th><th>自營call淨收</th>'
              '<th>外資put淨收</th><th>外資call淨收</th><th>自營put未平倉淨</th>'
+             '<th>外資put未平倉淨</th>'
              '</tr></thead><tbody>' + "".join(rows_html) + '</tbody></table></div></section>')
 
     # 回測結論(tw_option_flow_backtest.py 產出;無檔案就不顯示)
@@ -304,7 +310,8 @@ def render_html(data: dict) -> str:
 • <b>淨收權利金</b> = 當日「賣出金額 − 買進金額」。<b>正(紅)= 當日淨當賣方、把權利金收進口袋</b>;負(綠)= 淨當買方、付權利金出去。單位億元(FinMind 原始單位千元)。<br>
 • <b>自營 put 淨收(主訊號)</b>:自營商大量<b>賣 put 收錢</b> = 賭「指數不跌破履約價」,收越多把握越大 —— 社群口徑「沒事不會收那麼多」= 轉多觀察。反過來<b>大買 put(大負值)</b>= 花大錢買下跌保險 = 避險/偏空觀察。<br>
 • <b>自營 call 淨收</b>:收 call = 賭「漲不過」偏壓上檔;大買 call = 偏多。方向解讀與 put 相反。<br>
-• <b>外資 put/call</b>:對照用。外資選擇權部位常搭配期貨現貨對沖,方向性比自營的收權利金行為更難單獨解讀。<br>
+• <b>外資 put/call 淨收(當日流量)</b>:對照用,<b>日常可忽略</b> —— 回測 2020-26(1597 日):外資當日淨收中位數 ≈0、P90 僅 ±0.2億(自營的 1/3 以下),≥1億 的極端日 6.5 年只出現 4 次,樣本太少無統計意義。台指選擇權權利金流主要是自營商(造市)在做;外資的主戰場在期貨與現貨,選擇權多為避險腿,方向意圖被對沖抵銷。<b>方向訊號看自營、避險溫度看外資存量(下欄)。</b><br>
+• <b>外資put未平倉淨(存量)</b>:賣方金額−買方金額。<b>長期為負 = 外資結構性「淨買 put」</b>(中位 −0.5億、P10 −5.1億)—— 持有大量台股現貨,put 是保險。讀法:<b>往深負走(&lt;−5億)= 避險需求急升</b>(外資在加保險、對後市防禦);<b>回升往 0 = 撤保險</b>(防禦解除、偏安心)。這是風向 context、變化速度比水位重要,非進出訊號。<br>
 • <b>自營put未平倉淨</b>:未平倉(存量)的賣方金額−買方金額。正=整體淨賣方部位。當日淨收看「今天的行為」、未平倉看「累積的底牌」。<br>
 • <b>訊號門檻</b>:淨收 ≥1億 且 ≥近60交易日P90(異常放大才叫訊號,平常的造市進出不算);淨買 ≤−1億 且 ≤P10 反向。觸發才推 Telegram。<br>
 ⚠ <b>限制</b>:自營商數字<b>含造市與避險腳</b>,不全是方向單;FinMind 為<b>日合計、無法拆日盤/夜盤</b>(群裡說的「昨晚收1e」看不到,只能看到隔天全日);資料盤後(約15:00後)公布;回測結論見上節(隔日無 edge、5~10 日反彈傾向),純觀察、非買賣訊號。</section>"""
