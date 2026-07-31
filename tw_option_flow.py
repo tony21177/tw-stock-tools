@@ -347,11 +347,25 @@ def main():
     if sig:
         print(sig["label"])
         if args.telegram:
-            bot = os.environ.get("TG_BOT_TOKEN", "")
-            if bot and send_telegram(format_signal_msg(data), bot, args.chat_id):
-                print("已推 Telegram")
-            elif not bot:
-                print("無 TG_BOT_TOKEN,略過推播", file=sys.stderr)
+            # 去重:同一訊號日只推一次(FinMind 同步有 lag,cron 抓到舊日
+            # 資料時訊號會重複出現;比照 tw_ftd 的 pushed 機制)
+            pushed_f = os.path.join(CACHE, "option_flow_pushed.json")
+            try:
+                with open(pushed_f, encoding="utf-8") as f:
+                    pushed = json.load(f)
+            except Exception:
+                pushed = {}
+            if pushed.get("TXO") == sig["date"]:
+                print(f"訊號 {sig['date']} 已推過,略過")
+            else:
+                bot = os.environ.get("TG_BOT_TOKEN", "")
+                if bot and send_telegram(format_signal_msg(data), bot, args.chat_id):
+                    pushed["TXO"] = sig["date"]
+                    with open(pushed_f, "w", encoding="utf-8") as f:
+                        json.dump(pushed, f)
+                    print("已推 Telegram")
+                elif not bot:
+                    print("無 TG_BOT_TOKEN,略過推播", file=sys.stderr)
     else:
         print("無訊號(正常區間)")
 
