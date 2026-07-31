@@ -36,24 +36,72 @@ _CSS = (
     'nav.site b{margin-right:10px;color:#222;white-space:nowrap}</style>'
 )
 
-# 全站統一版型 + 深色模式(注入於 <body> 內、晚於各頁 head style → 同權重下勝出)
+# 全站統一版型 —「金融終端機」深色主題(注入於 <body> 內、晚於各頁 head
+# style → 同權重下勝出;inline style 需 !important 才蓋)。
+# 色票:漲 #ff6b6b / 跌 #34c98e(dataviz 驗證器:對 #0d1117 底對比 ≥3:1 通過;
+# 紅綠對 deutan 色盲不可分為台股語意色之必然,第二編碼=全站數字都帶 +/− 與 ▲▼)。
 _SITE_CSS = """<style>
-body{max-width:1100px}
-table thead th{position:sticky;top:0;z-index:2;background:#eef2f7}
+:root{--bg:#0d1117;--card:#151b23;--card2:#1a2230;--line:#223041;
+  --ink:#dfe6ee;--ink2:#8b98a9;--ink3:#5d6b7d;--acc:#4cc2ff;
+  --up:#ff6b6b;--dn:#34c98e}
+html{background:var(--bg)}
+body{max-width:1100px;background:var(--bg);color:var(--ink);
+  font-variant-numeric:tabular-nums}
+h1,h2,h3,h4,caption{color:#eef3f8}
+h1{letter-spacing:.5px;padding-bottom:8px;position:relative}
+h1:after{content:"";position:absolute;left:0;bottom:0;width:120px;height:3px;
+  border-radius:2px;background:linear-gradient(90deg,var(--acc),transparent)}
+a{color:var(--acc)}
+section{background:var(--card);border:1px solid var(--line);
+  box-shadow:none;border-radius:10px}
+table{font-variant-numeric:tabular-nums}
+table thead th{position:sticky;top:var(--navh,36px);z-index:2;background:var(--card2);
+  color:#9fb0c3;letter-spacing:.4px;border-bottom:1px solid #2e405a;
+  box-shadow:none}
+th,td{border-bottom:1px solid #1c2634}
+tbody tr:hover td{background:rgba(76,194,255,.05)}
+.up{color:var(--up)}.dn{color:var(--dn)}
+.small,.meta{color:var(--ink2)}
+.note{background:#1c1910;border-color:#3d3417;color:#cfc49e}
+.note b,.note strong{color:#e8dcae}
+/* 狀態徽章(ftd/option-flow)深色版 */
+.sigb{background:#0e2b1d;border-color:#1d5c3c;color:#8ce6b6}
+.sigs{background:#2f1416;border-color:#63262b;color:#ff9b9b}
+.signone{background:var(--card2);border-color:var(--line);color:var(--ink2)}
+.st-up{background:#0e2b1d;color:#5fd598;border-color:#1d5c3c}
+.st-corr{background:#2f1416;color:#ff8f8f;border-color:#63262b}
+.st-rally{background:#2b230c;color:#e6c56a;border-color:#5c4c1d}
+.ok{color:var(--dn)}.bad{color:var(--up)}
+.hl{background:#26301c}
+/* 統一導航:sticky 玻璃列 */
+nav.site{position:sticky;top:0;z-index:40;background:rgba(13,17,23,.86);
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--line);padding:6px 10px;margin:0 -10px 12px;
+  border-radius:0 0 10px 10px}
+nav.site a{color:#9fb0c3}nav.site a:hover{color:var(--acc);text-decoration:none}
+nav.site b{color:var(--acc);text-shadow:0 0 12px rgba(76,194,255,.45)}
+nav a{color:var(--acc)}
+/* 表格互動 */
 .adrag{cursor:grab}.adrag.grabbing{cursor:grabbing}
+.dragx{cursor:grab}
 th[data-sortable]{cursor:pointer;user-select:none}
-th[data-sortable]:hover{filter:brightness(.93)}
-th .sarr{color:#0066cc;font-size:.8em;margin-left:2px}
-@media (prefers-color-scheme: dark){
-  body{background:#131518;color:#d4d4d4}
-  section{background:#1c1f24;box-shadow:none}
-  table thead th{background:#242a31;color:#c8cdd3}
-  th,td{border-bottom-color:#2c3138 !important}
-  h1,h2,h3,caption{color:#e6e6e6}
-  a{color:#5da9ff} nav.site a{color:#5da9ff} nav.site b{color:#eee}
-  .note{background:#25200f;border-color:#4a4020;color:#d3ccae}
-  .small,.meta{color:#8a8f96}
-}
+th[data-sortable]:hover{filter:brightness(1.25)}
+th .sarr,th .ar{color:var(--acc);font-size:.8em;margin-left:2px}
+/* 表單 */
+input,select,textarea{background:var(--card2);color:var(--ink);
+  border:1px solid var(--line);border-radius:6px;padding:5px 8px}
+button{background:#1f6feb;color:#fff;border:none;border-radius:6px;
+  padding:6px 12px;cursor:pointer}
+button:hover{background:#2e7ef5}
+/* 捲軸 */
+::-webkit-scrollbar{height:9px;width:9px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:#2b3a4f;border-radius:5px}
+::-webkit-scrollbar-thumb:hover{background:#3b4f6b}
+::selection{background:rgba(76,194,255,.3)}
+/* 頁面自帶的白底 inline 元件(黃條提示等)轉深色卡 */
+section[style*="fff8e1"],div[style*="fff8e1"]{
+  background:#2b230c !important;border-color:#5c4c1d !important;color:#e6c56a}
 </style>"""
 
 # 自動表格增強:①每個 th 可點排序(再點反向;已有自訂 onclick 的表跳過)
@@ -109,6 +157,10 @@ function makeDraggable(el){
   el.addEventListener('click',function(e){if(moved){e.stopPropagation();e.preventDefault();moved=false;}},true);
 }
 function boot(){
+  var nv=document.querySelector('nav.site');
+  if(nv)document.documentElement.style.setProperty('--navh',nv.offsetHeight+'px');
+  window.addEventListener('resize',function(){
+    if(nv)document.documentElement.style.setProperty('--navh',nv.offsetHeight+'px');});
   document.querySelectorAll('table').forEach(makeSortable);
   document.querySelectorAll('section,div').forEach(function(el){
     if(el.scrollWidth>el.clientWidth+8)makeDraggable(el);});

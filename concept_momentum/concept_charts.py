@@ -579,6 +579,39 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
   .tab-content {{ display: none; }}
   .tab-content.active {{ display: block; }}
 </style>
+<style>
+/* ── 深色終端機主題(2026-07-31,與 site_nav._SITE_CSS 同色票)── */
+html{{background:#0d1117}}
+body{{background:#0d1117;color:#dfe6ee}}
+h1,h2{{color:#eef3f8}} h2{{border-bottom-color:#2b3a4f}}
+h3{{color:#ff8585}}
+a{{color:#4cc2ff}}
+.meta{{color:#8b98a9}}
+table th{{background:#1a2230;color:#9fb0c3;border-color:#2e405a}}
+td{{border-bottom:1px solid #1c2634}}
+tr:hover{{background:#16202c}}
+.pos{{color:#ff6b6b}}.neg{{color:#34c98e}}
+.score-low{{background:#2b3a4f;color:#dfe6ee}}
+.leader-table th{{background:#243044}}
+.row-leader{{background:#231418}}.row-laggard{{background:#12241b}}
+.row-leader:hover{{background:#33191f}}.row-laggard:hover{{background:#173423}}
+.tabs .tab{{background:#1a2230;color:#9fb0c3;border:1px solid #223041}}
+.tab:hover{{background:#243044}}
+.tab.active{{background:#4cc2ff;color:#04121f;font-weight:600}}
+.tab-group{{background:#151b23}}
+.tab-group-label{{color:#5d6b7d}}
+.lookup-bar{{background:#151b23 !important;box-shadow:none !important;
+  border:1px solid #223041}}
+.lookup-bar input{{background:#1a2230 !important;color:#dfe6ee;
+  border:1px solid #223041 !important}}
+.qbtn{{background:#1f6feb}}.qbtn:hover{{background:#2e7ef5}}
+.plotly-graph-div{{background:#fff;border-radius:10px}}
+::-webkit-scrollbar{{height:9px;width:9px}}
+::-webkit-scrollbar-track{{background:#0d1117}}
+::-webkit-scrollbar-thumb{{background:#2b3a4f;border-radius:5px}}
+::selection{{background:rgba(76,194,255,.3)}}
+</style>
+
 </head>
 <body>
 <div class="container">
