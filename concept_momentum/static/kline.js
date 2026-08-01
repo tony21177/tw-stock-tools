@@ -45,9 +45,16 @@
     cv.width = W * dpr; cv.height = H * dpr;
     var g = cv.getContext('2d'); g.scale(dpr, dpr);
     g.clearRect(0, 0, W, H);
-    var padR = 52, padL = 4;
-    var kH = H * 0.56, vH = H * 0.16, mH = H * 0.22, gap = H * 0.02;
-    var vT = kH + gap, mT = kH + vH + gap * 2;
+    var padR = 52, padL = 4, LEG = 17, DATE = 15;
+    var chartH = H - LEG * 3 - DATE - 6;
+    var kH = chartH * 0.58, vH = chartH * 0.16, mH = chartH * 0.26;
+    var kTop = 2;
+    var legK = kTop + kH;              // K 面板下方 legend 行(baseline)
+    var vTop = legK + LEG;
+    var legV = vTop + vH;              // VOL 下方 legend 行
+    var mTop = legV + LEG;
+    var legM = mTop + mH;              // MACD 下方 legend 行
+    var dateY = legM + LEG;            // 最底:日期軸
     var n = rows.length;
     var cw = (W - padR - padL) / n, bw = Math.max(1, cw * 0.62);
     var X = function (i) { return padL + i * cw + cw / 2; };
@@ -60,6 +67,16 @@
     var dea = ema(dif, 9);
     var osc = dif.map(function (d, i) { return d - dea[i]; });
 
+    function legend(yBase, items) {
+      var x = padL + 2; g.font = '11px monospace';
+      items.forEach(function (it) {
+        g.fillStyle = it.c; g.fillText(it.t, x, yBase + 12);
+        x += g.measureText(it.t).width + 12;
+      });
+    }
+    function fv(v) { if (v == null) return '—';
+      return v >= 100 ? v.toFixed(0) : v.toFixed(2); }
+
     // ── K 線面板 ──
     var hi = -1e18, lo = 1e18;
     rows.forEach(function (r) { hi = Math.max(hi, r[2]); lo = Math.min(lo, r[3]); });
@@ -67,7 +84,7 @@
       m.forEach(function (v) { if (v != null) { hi = Math.max(hi, v); lo = Math.min(lo, v); } });
     });
     var pr = hi - lo || 1;
-    var Y = function (p) { return 8 + (kH - 16) * (1 - (p - lo) / pr); };
+    var Y = function (p) { return kTop + 6 + (kH - 12) * (1 - (p - lo) / pr); };
     g.strokeStyle = '#1c2634'; g.lineWidth = 1; g.font = '10px monospace';
     [lo, lo + pr / 3, lo + pr * 2 / 3, hi].forEach(function (p) {
       var y = Y(p);
@@ -87,26 +104,39 @@
       var began = false;
       m.forEach(function (v, i) {
         if (v == null) return;
-        var y = top + (hgt - 10) * (1 - (v - ylo) / yr) + 5;
+        var y = top + 5 + (hgt - 10) * (1 - (v - ylo) / yr);
         began ? g.lineTo(X(i), y) : g.moveTo(X(i), y); began = true;
       });
       g.stroke();
     }
-    line(ma5, MA_C[5], 3, kH, lo, pr); line(ma20, MA_C[20], 3, kH, lo, pr);
-    line(ma60, MA_C[60], 3, kH, lo, pr);
+    line(ma5, MA_C[5], kTop, kH, lo, pr); line(ma20, MA_C[20], kTop, kH, lo, pr);
+    line(ma60, MA_C[60], kTop, kH, lo, pr);
+    // K 面板下方:MA 數值列
+    legend(legK, [
+      { t: '日K', c: INK },
+      { t: 'MA5:' + fv(ma5[n - 1]), c: MA_C[5] },
+      { t: 'MA20:' + fv(ma20[n - 1]), c: MA_C[20] },
+      { t: 'MA60:' + fv(ma60[n - 1]), c: MA_C[60] }
+    ]);
 
     // ── VOL 面板 ──
     var vmax = Math.max.apply(null, vols) || 1;
-    var vy = function (v) { return vT + (vH - 4) * (1 - v / vmax) + 2; };
+    var vy = function (v) { return vTop + (vH - 4) * (1 - v / vmax) + 2; };
     rows.forEach(function (r, i) {
       g.fillStyle = r[4] >= r[1] ? UP : DN;
       var x = X(i);
-      g.fillRect(x - bw / 2, vy(r[5]), bw, vT + vH - vy(r[5]));
+      g.fillRect(x - bw / 2, vy(r[5]), bw, vTop + vH - vy(r[5]));
     });
     var v5 = sma(vols, 5), v20 = sma(vols, 20);
-    line(v5, MA_C[5], vT, vH, 0, vmax); line(v20, MA_C[20], vT, vH, 0, vmax);
-    g.fillStyle = MUT;
-    g.fillText((vmax >= 10000 ? (vmax / 1000).toFixed(0) + 'k' : vmax.toFixed(0)), W - padR + 4, vT + 10);
+    line(v5, MA_C[5], vTop, vH, 0, vmax); line(v20, MA_C[20], vTop, vH, 0, vmax);
+    g.fillStyle = MUT; g.font = '10px monospace';
+    g.fillText((vmax >= 10000 ? (vmax / 1000).toFixed(0) + 'k' : vmax.toFixed(0)), W - padR + 4, vTop + 10);
+    // VOL 面板下方:量均值列
+    legend(legV, [
+      { t: 'VOL(張)', c: MUT },
+      { t: '5T:' + Math.round(v5[n - 1] || 0).toLocaleString(), c: MA_C[5] },
+      { t: '20T:' + Math.round(v20[n - 1] || 0).toLocaleString(), c: MA_C[20] }
+    ]);
 
     // ── MACD 面板 ──
     var mhi = 0;
@@ -114,7 +144,7 @@
       mhi = Math.max(mhi, Math.abs(v), Math.abs(dea[i]), Math.abs(osc[i]));
     });
     mhi = mhi || 1;
-    var my = function (v) { return mT + (mH - 8) * (0.5 - v / (2 * mhi)) + 4; };
+    var my = function (v) { return mTop + 4 + (mH - 8) * (0.5 - v / (2 * mhi)); };
     g.strokeStyle = '#1c2634'; g.beginPath();
     g.moveTo(padL, my(0)); g.lineTo(W - padR, my(0)); g.stroke();
     osc.forEach(function (v, i) {
@@ -128,20 +158,23 @@
     g.strokeStyle = '#57c8ff'; g.beginPath();
     dea.forEach(function (v, i) { i ? g.lineTo(X(i), my(v)) : g.moveTo(X(i), my(v)); });
     g.stroke();
-    g.fillStyle = MUT;
-    g.fillText(mhi.toFixed(1), W - padR + 4, mT + 10);
-    g.fillText('-' + mhi.toFixed(1), W - padR + 4, mT + mH - 2);
+    g.fillStyle = MUT; g.font = '10px monospace';
+    g.fillText(mhi.toFixed(1), W - padR + 4, mTop + 10);
+    g.fillText('-' + mhi.toFixed(1), W - padR + 4, mTop + mH - 2);
+    // MACD 面板下方:DIF/MACD9 值列
+    legend(legM, [
+      { t: 'MACD(12,26,9)', c: MUT },
+      { t: 'DIF:' + dif[n - 1].toFixed(2), c: MA_C[5] },
+      { t: 'MACD9:' + dea[n - 1].toFixed(2), c: '#57c8ff' }
+    ]);
 
-    // 面板分隔線 + 日期軸(首/中/尾)
+    // 最底:日期軸(首/中/尾)
     g.fillStyle = MUT; g.font = '10px monospace';
     [0, Math.floor(n / 2), n - 1].forEach(function (i) {
       var d = rows[i][0];
-      g.fillText(d.slice(5), Math.min(X(i), W - padR - 34), kH + gap - 2);
+      var dx = Math.max(padL, Math.min(X(i) - 20, W - padR - 56));
+      g.fillText(d.slice(2), dx, dateY + 10);
     });
-
-    return { ma5: ma5[n - 1], ma20: ma20[n - 1], ma60: ma60[n - 1],
-             v5: v5[n - 1], v20: v20[n - 1],
-             dif: dif[n - 1], dea: dea[n - 1] };
   }
 
   function fmtN(v) {
@@ -155,9 +188,7 @@
       '<div class="klx-box"><div class="klx-head"><span id="klx-t">' + code +
       ' 載入中…</span><span id="klx-chg"></span>' +
       '<button class="klx-close">✕ 關閉</button></div>' +
-      '<div class="klx-leg" id="klx-l1"></div>' +
-      '<canvas id="klx-cv" style="width:100%;height:min(62vh,520px);display:block"></canvas>' +
-      '<div class="klx-leg" id="klx-l2"></div></div>';
+      '<canvas id="klx-cv" style="width:100%;height:min(70vh,560px);display:block"></canvas></div>';
     document.body.appendChild(mask);
     function close() { mask.remove(); document.removeEventListener('keydown', esc); }
     function esc(e) { if (e.key === 'Escape') close(); }
@@ -177,21 +208,7 @@
         chEl.textContent = (chg >= 0 ? '▲+' : '▼') + chg.toFixed(2) + '%';
         chEl.style.color = chg >= 0 ? UP : DN;
         var cv = document.getElementById('klx-cv');
-        var render = function () {
-          var lv = draw(cv, rows);
-          document.getElementById('klx-l1').innerHTML =
-            '日K  <span style="color:' + MA_C[5] + '">MA5:' + fmtN(lv.ma5) + '</span>  ' +
-            '<span style="color:' + MA_C[20] + '">MA20:' + fmtN(lv.ma20) + '</span>  ' +
-            '<span style="color:' + MA_C[60] + '">MA60:' + fmtN(lv.ma60) + '</span>' +
-            '<span style="color:#8b98a9">  (' + rows[0][0] + ' ~ ' + last[0] + ')</span>';
-          document.getElementById('klx-l2').innerHTML =
-            '<span style="color:#8b98a9">VOL(張) </span>' +
-            '<span style="color:' + MA_C[5] + '">5T:' + Math.round(lv.v5 || 0).toLocaleString() + '</span> ' +
-            '<span style="color:' + MA_C[20] + '">20T:' + Math.round(lv.v20 || 0).toLocaleString() + '</span>' +
-            '<span style="color:#8b98a9">  |  MACD(12,26,9) </span>' +
-            '<span style="color:' + MA_C[5] + '">DIF:' + lv.dif.toFixed(2) + '</span> ' +
-            '<span style="color:#57c8ff">MACD9:' + lv.dea.toFixed(2) + '</span>';
-        };
+        var render = function () { draw(cv, rows); };
         render();
         window.addEventListener('resize', render);
       })
