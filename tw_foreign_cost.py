@@ -282,6 +282,41 @@ def render_html(data: dict) -> str:
     else:
         body.append('<section><p class="small">(目前無符合區間的標的)</p></section>')
 
+    bt_html = ""
+    btp = os.path.join(CACHE, "foreign_cost_backtest.json")
+    if os.path.exists(btp):
+        try:
+            bt = json.load(open(btp, encoding="utf-8"))
+            rows_html = []
+            for bname in ("<100", "100-110", "110-140", "140-180", ">180"):
+                b = bt["buckets"].get(bname, {})
+                if not b.get("n"):
+                    continue
+                h20, h60 = b["H20"]["exc"], b["H60"]["exc"]
+                a60 = b["H60"]["abs"]
+                star = " ★" if bname == "110-140" else ""
+                rows_html.append(
+                    f'<tr><td>{_h.escape(bname)}{star}</td><td>{b["n"]:,}</td>'
+                    f'<td>{h20["mean"]:+.2f}%</td><td>{h60["mean"]:+.2f}%</td>'
+                    f'<td>{a60["win"]:.0f}% / {a60["mean"]:+.1f}%</td></tr>')
+            bt_html = (
+                '<section><h3>🧪 回測(' + _h.escape(bt.get("window", "")) + ','
+                '每5日取樣、point-in-time 成本,過濾與本頁相同)</h3>'
+                '<table style="max-width:640px"><thead><tr><th>現價/成本 桶</th>'
+                '<th>樣本</th><th>H20 超額</th><th>H60 超額</th>'
+                '<th>H60 絕對勝率/均</th></tr></thead><tbody>'
+                + "".join(rows_html) + '</tbody></table>'
+                '<p class="small" style="line-height:1.6">結論:<b>單調梯度 —— 外資獲利越多的股票,'
+                '之後越強</b>。★110-140 區超額轉正(H60 +3.6%,在平均個股超額 −12.6% 的年份)'
+                '= 策略有效;但 <b>&gt;140 的「過熱區」其實表現最好</b>(140-180 H60 超額 +13.2%、'
+                '&gt;180 +14.2%)——「外資大賺會調節」的擔心在本樣本不成立,外資獲利=動能延續。'
+                '<b>&lt;100(外資被套)是全表最弱</b>(H60 超額 −14.7%),下限 110 過濾掉弱股'
+                '才是本策略 edge 的主要來源;上限 140 反而切掉了最強的一群。'
+                '⚠ 樣本一年(動能市 regime)、取樣重疊、分布右偏(中位數多為負,靠大贏家);'
+                '梯度與單純價格動能高度相關,未必是「外資成本」獨有資訊。</p></section>')
+        except Exception:
+            bt_html = ""
+
     glossary = f"""<section class="note">📖 <b>怎麼算、怎麼看</b><br>
 • <b>外資成本(遞迴成本線)</b>:比照融資成本線的 XQ 口徑 ——
 「今日成本 = (昨成本 × (持股 − 淨買) + 收盤 × 淨買) ÷ 持股」,外資買進以當日
@@ -302,7 +337,7 @@ def render_html(data: dict) -> str:
 ③種子=視窗首日收盤,低收斂標的種子依賴重 ④觀察工具、未回測、非買賣訊號。</section>"""
     foot = (f'<p class="small">🕙 每交易日 20:40 更新(三大法人+持股資料盤後公布)'
             f' · 更新於 {_h.escape(data.get("as_of", ""))}</p>')
-    return head + "".join(body) + glossary + foot + '</body></html>'
+    return head + "".join(body) + bt_html + glossary + foot + '</body></html>'
 
 
 def main():
