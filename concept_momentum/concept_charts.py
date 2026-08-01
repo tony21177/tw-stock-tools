@@ -579,6 +579,7 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
   .tab-content {{ display: none; }}
   .tab-content.active {{ display: block; }}
 </style>
+      <a class="tab" href="/backtests" style="text-decoration:none;color:inherit;">🧪 策略回測總覽</a>
 <style>
 /* ── 深色終端機主題(2026-07-31,與 site_nav._SITE_CSS 同色票)── */
 html{{background:#0d1117}}
@@ -649,7 +650,6 @@ document.addEventListener('DOMContentLoaded',function(){{
     <button onclick="qgo('/contract-liabilities')" class="qbtn">💰 合約負債</button>
     <button onclick="qgo('/inventory')" class="qbtn">📦 存貨</button>
     <button onclick="qgo('/shareholders')" class="qbtn">👥 前十大股東</button>
-    <button onclick="qgo('/chip-compare')" class="qbtn">📉 兩波對比</button>
   </div>
   <style>.qbtn{{padding:6px 12px;background:#0066cc;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;}}
   .qbtn:hover{{background:#0052a3}}</style>
@@ -683,11 +683,6 @@ document.addEventListener('DOMContentLoaded',function(){{
   <div class="tab-group g-backtest" title="各策略事件研究回測 (含 95% CI 與術語說明)">
     <div class="tab-group-label">🧪 策略回測 · 事件研究</div>
     <div class="tab-group-items">
-      <a class="tab" href="/turnaround-backtest" style="text-decoration:none;color:inherit;">🔄 轉機接力</a>
-      <a class="tab" href="/second-wave-backtest" style="text-decoration:none;color:inherit;">🌊 第二波</a>
-      <a class="tab" href="/lending-backtest" style="text-decoration:none;color:inherit;">🌙 借券</a>
-      <a class="tab" href="/broker-radar-backtest" style="text-decoration:none;color:inherit;">🎯 主力雷達</a>
-      <a class="tab" href="/concept-backtest" style="text-decoration:none;color:inherit;">🔥 族群動能</a>
     </div>
   </div>
   <div class="tab-group g-stock" title="即時工具頁 (非 cron；單檔輸入框在上方快速查詢列)">
@@ -706,7 +701,6 @@ document.addEventListener('DOMContentLoaded',function(){{
       <a class="tab" href="/stock-futures" style="text-decoration:none;color:inherit;">🔥 個股期火熱</a>
       <a class="tab" href="/lin-matrix" style="text-decoration:none;color:inherit;">📐 林則行矩陣</a>
       <a class="tab" href="/warrant-signal" style="text-decoration:none;color:inherit;">🎰 權證量能</a>
-      <a class="tab" href="/chip-compare?code=3491" style="text-decoration:none;color:inherit;">📉 兩波對比</a>
     </div>
   </div>
 </div>

@@ -12,7 +12,7 @@ import math
 import os
 import sys
 from datetime import datetime
-from flask import Flask, jsonify, request, send_from_directory, send_file
+from flask import Flask, jsonify, request, send_from_directory, send_file, redirect
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -1324,7 +1324,7 @@ def _render_chip_price_page(code: str | None = None,
 </head>
 <body>
 {__import__("site_nav").nav_html("/chip-price")}
-<nav><a href="/chip-compare?code=3491">📉 兩波對比</a> <a href="/contract-liabilities">💰 合約負債</a> <a href="/inventory">📦 存貨</a> <a href="/shareholders">👥 前十大股東</a></nav>
+<nav><a href="/contract-liabilities">💰 合約負債</a> <a href="/inventory">📦 存貨</a> <a href="/shareholders">👥 前十大股東</a></nav>
 <h1>📊 籌碼價量分析 (broker × price × time)</h1>
 
 <form method="get" action="/chip-price" style="flex-wrap:wrap;">
@@ -1910,22 +1910,6 @@ def warrant_signal_page():
         terms = {}
     return wsr.render_page(rows, days[-1], days[-1].get("date", ""),
                            backtest=bt, terms=terms)
-
-
-@app.route("/chip-compare")
-def chip_compare():
-    import chip_episode_compare as cec
-    from datetime import datetime as _dt
-    code = (request.args.get("code") or "3491").strip()
-    episodes = [("2025-03-21", "2025-08-31"),
-                ("2026-05-29", _dt.now().strftime("%Y-%m-%d"))]
-    try:
-        data = cec.build_compare(code, episodes)
-    except Exception as e:
-        return _render_chip_compare_page(code=code, error=f"{type(e).__name__}: {e}")
-    if data.get("error"):
-        return _render_chip_compare_page(code=code, error=data["error"])
-    return _render_chip_compare_page(code=code, data=data)
 
 
 @app.route("/contract-liabilities")
@@ -3906,7 +3890,7 @@ def _render_concept_backtest_page(data: dict | None = None, error: str = "") -> 
            '<a href="/shareholders">👥 前十大股東</a>'
            '<a href="/adr-premium">🇺🇸 ADR 折溢價</a>'
            '<a href="/futures-basis">📐 期貨基差</a>'
-           '<a href="/concept-backtest">🧪 族群策略回測</a></nav>')
+           '<a href="/backtests#concept">🧪 族群策略回測</a></nav>')
     css = """<style>
   body { font-family: -apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
          max-width:1100px; margin:1em auto; padding:0 1em; background:#f7f7f9; color:#222; }
@@ -4175,7 +4159,6 @@ new Chart(document.getElementById('eq'),{{type:'line',
             + glossary + caveat + js + tail)
 
 
-@app.route("/concept-backtest")
 def concept_backtest():
     path = os.path.join(HERE, "cache", "concept_backtest.json")
     if not os.path.exists(path):
@@ -4190,8 +4173,8 @@ def concept_backtest():
 
 def _render_second_wave_backtest_page(data: dict | None = None, error: str = "") -> str:
     nav = (__import__("site_nav").nav_html(None) + '<nav><a href="/">← 大盤 dashboard</a>'
-           '<a href="/concept-backtest">🧪 族群策略回測</a>'
-           '<a href="/second-wave-backtest">🌊 第二波回測</a></nav>')
+           '<a href="/backtests#concept">🧪 族群策略回測</a>'
+           '<a href="/backtests#second-wave">🌊 第二波回測</a></nav>')
     css = """<style>
   body { font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
          max-width:1100px; margin:1em auto; padding:0 1em; background:#f7f7f9; color:#222; }
@@ -4397,7 +4380,6 @@ new Chart(document.getElementById('eq'),{{type:'line',
     return head + cards + usage + meta + tbl + charts + method + glossary + caveat + js + tail
 
 
-@app.route("/second-wave-backtest")
 def second_wave_backtest():
     path = os.path.join(HERE, "cache", "second_wave_backtest.json")
     if not os.path.exists(path):
@@ -4413,9 +4395,9 @@ def second_wave_backtest():
 def _render_intraday_sim_page(code: str = "", data: dict | None = None,
                               error: str = "") -> str:
     nav = (__import__("site_nav").nav_html("/intraday-sim")
-           + '<nav><a href="/intraday-sim-backtest">🧪 此系統的校準回測</a> '
-           '<a href="/concept-backtest">族群策略回測</a> '
-           '<a href="/second-wave-backtest">第二波回測</a></nav>')
+           + '<nav><a href="/backtests#intraday">🧪 此系統的校準回測</a> '
+           '<a href="/backtests#concept">族群策略回測</a> '
+           '<a href="/backtests#second-wave">第二波回測</a></nav>')
     css = """<style>
   body { font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
          max-width:1200px; margin:1em auto; padding:0 1em; background:#f7f7f9; color:#222; }
@@ -4682,7 +4664,6 @@ def _render_intraday_backtest_page(data: dict | None = None, error: str = "") ->
     return head + body + method + js + tail
 
 
-@app.route("/intraday-sim-backtest")
 def intraday_sim_backtest():
     path = os.path.join(HERE, "cache", "intraday_sim_backtest.json")
     if not os.path.exists(path):
@@ -4697,8 +4678,8 @@ def intraday_sim_backtest():
 
 def _render_broker_radar_backtest_page(data: dict | None = None, error: str = "") -> str:
     nav = (__import__("site_nav").nav_html(None) + '<nav><a href="/">← 大盤 dashboard</a>'
-           '<a href="/concept-backtest">族群策略回測</a>'
-           '<a href="/second-wave-backtest">第二波回測</a></nav>')
+           '<a href="/backtests#concept">族群策略回測</a>'
+           '<a href="/backtests#second-wave">第二波回測</a></nav>')
     css = """<style>
   body{font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
        max-width:960px;margin:1em auto;padding:0 1em;background:#f7f7f9;color:#222;}
@@ -4797,7 +4778,6 @@ def _render_broker_radar_backtest_page(data: dict | None = None, error: str = ""
     return head + verdict + tbl(rn, "🟢 隔天開盤進場（較真實，v2 預設）") + tbl(rs, "理想化：訊號日收盤進場") + method + glossary + tail
 
 
-@app.route("/broker-radar-backtest")
 def broker_radar_backtest():
     path = os.path.join(HERE, "cache", "broker_radar_backtest.json")
     if not os.path.exists(path):
@@ -5150,8 +5130,8 @@ def chip_price():
 
 def _render_turnaround_backtest_page(data: dict | None = None, error: str = "") -> str:
     nav = (__import__("site_nav").nav_html(None) + '<nav><a href="/">← 大盤 dashboard</a>'
-           '<a href="/second-wave-backtest">🌊 第二波回測</a>'
-           '<a href="/turnaround-backtest">🔄 轉機接力回測</a></nav>')
+           '<a href="/backtests#second-wave">🌊 第二波回測</a>'
+           '<a href="/backtests#turnaround">🔄 轉機接力回測</a></nav>')
     css = """<style>
   body { font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
          max-width:1100px; margin:1em auto; padding:0 1em; background:#f7f7f9; color:#222; }
@@ -5328,7 +5308,6 @@ def _render_turnaround_backtest_page(data: dict | None = None, error: str = "") 
     return head + cards + meta + tbl + l2_tbl + method + glossary + caveat + tail
 
 
-@app.route("/turnaround-backtest")
 def turnaround_backtest():
     path = os.path.join(HERE, "cache", "turnaround_backtest.json")
     if not os.path.exists(path):
@@ -5343,9 +5322,9 @@ def turnaround_backtest():
 
 def _render_lending_backtest_page(data: dict | None = None, error: str = "") -> str:
     nav = (__import__("site_nav").nav_html(None) + '<nav><a href="/">← 大盤 dashboard</a>'
-           '<a href="/second-wave-backtest">🌊 第二波回測</a>'
-           '<a href="/turnaround-backtest">🔄 轉機接力回測</a>'
-           '<a href="/lending-backtest">🔻 借券回測</a></nav>')
+           '<a href="/backtests#second-wave">🌊 第二波回測</a>'
+           '<a href="/backtests#turnaround">🔄 轉機接力回測</a>'
+           '<a href="/backtests#lending">🔻 借券回測</a></nav>')
     css = """<style>
   body { font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
          max-width:1200px; margin:1em auto; padding:0 1em; background:#f7f7f9; color:#222; }
@@ -5540,7 +5519,6 @@ def _render_lending_backtest_page(data: dict | None = None, error: str = "") -> 
     return head + grids + method + glossary + caveat + tail
 
 
-@app.route("/lending-backtest")
 def lending_backtest():
     path = os.path.join(HERE, "cache", "lending_backtest.json")
     if not os.path.exists(path):
@@ -5653,6 +5631,83 @@ a:hover { text-decoration:underline; }
 {glossary}
 </body></html>"""
 
+
+
+# ── 策略回測總覽(2026-08-01 用戶要求:所有回測同一頁,不另開頁面)──
+_BT_SECTIONS = [
+    ("concept", "🧪 族群策略回測", lambda: concept_backtest()),
+    ("second-wave", "🌊 第二波回測", lambda: second_wave_backtest()),
+    ("turnaround", "🔄 轉機接力回測", lambda: turnaround_backtest()),
+    ("lending", "🔻 借券回測", lambda: lending_backtest()),
+    ("intraday", "📉 盤中模擬回測", lambda: intraday_sim_backtest()),
+    ("broker", "🎯 主力雷達回測", lambda: broker_radar_backtest()),
+]
+
+
+@app.route("/backtests")
+def backtests_page():
+    import re as _re
+    styles, parts, toc = [], [], []
+    for anchor, title, fn in _BT_SECTIONS:
+        try:
+            html = fn()
+            if isinstance(html, tuple):
+                html = html[0]
+        except Exception as e:
+            parts.append(f'<section id="{anchor}"><h2>{title}</h2>'
+                         f'<p>⚠ {type(e).__name__}: {e}</p></section>')
+            toc.append(f'<a href="#{anchor}">{title}</a>')
+            continue
+        for st in _re.findall(r"<style[^>]*>.*?</style>", html, _re.S):
+            if st not in styles:
+                styles.append(st)
+        m = _re.search(r"<body[^>]*>(.*)</body>", html, _re.S)
+        body = m.group(1) if m else html
+        body = _re.sub(r"<script[^>]*>.*?</script>", "", body, flags=_re.S)
+        body = _re.sub(r"<nav.*?</nav>", "", body, flags=_re.S)
+        body = _re.sub(r"<h1[^>]*>.*?</h1>", "", body, count=1, flags=_re.S)
+        toc.append(f'<a href="#{anchor}">{title}</a>')
+        parts.append(f'<section id="{anchor}" style="scroll-margin-top:60px">'
+                     f'<h2>{title}</h2>{body}</section>')
+    nav = __import__("site_nav").nav_html("/backtests")
+    toc_html = ('<p style="line-height:2">' +
+                " · ".join(toc) + "</p>")
+    return ("<!DOCTYPE html><html lang=\"zh-Hant\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            "<title>策略回測總覽</title>" + "".join(styles) + "</head><body>"
+            + nav + "<h1>🧪 策略回測總覽</h1>" + toc_html
+            + "".join(parts) + "</body></html>")
+
+
+# 舊回測網址 → 整合頁錨點(兼容書籤/舊連結)
+@app.route("/concept-backtest")
+def _r_bt1():
+    return redirect("/backtests#concept", 301)
+
+
+@app.route("/second-wave-backtest")
+def _r_bt2():
+    return redirect("/backtests#second-wave", 301)
+
+
+@app.route("/turnaround-backtest")
+def _r_bt3():
+    return redirect("/backtests#turnaround", 301)
+
+
+@app.route("/lending-backtest")
+def _r_bt4():
+    return redirect("/backtests#lending", 301)
+
+
+@app.route("/intraday-sim-backtest")
+def _r_bt5():
+    return redirect("/backtests#intraday", 301)
+
+
+@app.route("/broker-radar-backtest")
+def _r_bt6():
+    return redirect("/backtests#broker", 301)
 
 if __name__ == "__main__":
     import argparse
