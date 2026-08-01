@@ -793,7 +793,7 @@ document.addEventListener('DOMContentLoaded', function() {{
   }});
 }});
 </script>
-<script src="/kline.js?v=3"></script>
+<script src="/kline.js?v=4"></script>
 </body>
 </html>
 """

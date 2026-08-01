@@ -71,8 +71,20 @@
       var x = padL + 2; g.font = '11px monospace';
       items.forEach(function (it) {
         g.fillStyle = it.c; g.fillText(it.t, x, yBase + 12);
-        x += g.measureText(it.t).width + 12;
+        x += g.measureText(it.t).width;
+        if (it.a) {                       // 方向箭頭(緊貼值後,紅▲升/綠▼降)
+          g.fillStyle = it.ac; g.fillText(it.a, x, yBase + 12);
+          x += g.measureText(it.a).width;
+        }
+        x += 12;
       });
+    }
+    function trend(series) {              // 均線方向:比最後兩日
+      var a = series[n - 1], b = series[n - 2];
+      if (a == null || b == null) return { a: '', ac: MUT };
+      if (a > b) return { a: '▲', ac: UP };
+      if (a < b) return { a: '▼', ac: DN };
+      return { a: '—', ac: MUT };
     }
     function fv(v) { if (v == null) return '—';
       return v >= 100 ? v.toFixed(0) : v.toFixed(2); }
@@ -112,11 +124,12 @@
     line(ma5, MA_C[5], kTop, kH, lo, pr); line(ma20, MA_C[20], kTop, kH, lo, pr);
     line(ma60, MA_C[60], kTop, kH, lo, pr);
     // K 面板下方:MA 數值列
+    var t5 = trend(ma5), t20 = trend(ma20), t60 = trend(ma60);
     legend(legK, [
       { t: '日K', c: INK },
-      { t: 'MA5:' + fv(ma5[n - 1]), c: MA_C[5] },
-      { t: 'MA20:' + fv(ma20[n - 1]), c: MA_C[20] },
-      { t: 'MA60:' + fv(ma60[n - 1]), c: MA_C[60] }
+      { t: 'MA5:' + fv(ma5[n - 1]), c: MA_C[5], a: t5.a, ac: t5.ac },
+      { t: 'MA20:' + fv(ma20[n - 1]), c: MA_C[20], a: t20.a, ac: t20.ac },
+      { t: 'MA60:' + fv(ma60[n - 1]), c: MA_C[60], a: t60.a, ac: t60.ac }
     ]);
 
     // ── VOL 面板 ──
@@ -132,10 +145,11 @@
     g.fillStyle = MUT; g.font = '10px monospace';
     g.fillText((vmax >= 10000 ? (vmax / 1000).toFixed(0) + 'k' : vmax.toFixed(0)), W - padR + 4, vTop + 10);
     // VOL 面板下方:量均值列
+    var tv5 = trend(v5), tv20 = trend(v20);
     legend(legV, [
       { t: 'VOL(張)', c: MUT },
-      { t: '5T:' + Math.round(v5[n - 1] || 0).toLocaleString(), c: MA_C[5] },
-      { t: '20T:' + Math.round(v20[n - 1] || 0).toLocaleString(), c: MA_C[20] }
+      { t: '5T:' + Math.round(v5[n - 1] || 0).toLocaleString(), c: MA_C[5], a: tv5.a, ac: tv5.ac },
+      { t: '20T:' + Math.round(v20[n - 1] || 0).toLocaleString(), c: MA_C[20], a: tv20.a, ac: tv20.ac }
     ]);
 
     // ── MACD 面板 ──
@@ -162,10 +176,11 @@
     g.fillText(mhi.toFixed(1), W - padR + 4, mTop + 10);
     g.fillText('-' + mhi.toFixed(1), W - padR + 4, mTop + mH - 2);
     // MACD 面板下方:DIF/MACD9 值列
+    var td_ = trend(dif), tde = trend(dea);
     legend(legM, [
       { t: 'MACD(12,26,9)', c: MUT },
-      { t: 'DIF:' + dif[n - 1].toFixed(2), c: MA_C[5] },
-      { t: 'MACD9:' + dea[n - 1].toFixed(2), c: '#57c8ff' }
+      { t: 'DIF:' + dif[n - 1].toFixed(2), c: MA_C[5], a: td_.a, ac: td_.ac },
+      { t: 'MACD9:' + dea[n - 1].toFixed(2), c: '#57c8ff', a: tde.a, ac: tde.ac }
     ]);
 
     // 最底:日期軸(首/中/尾)
