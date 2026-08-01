@@ -60,6 +60,19 @@ FOREIGN_KEYS = [
 ]
 
 
+# 全站標準(2026-08-01 用戶要求):有掛個股期貨的標的,名稱後加 ★
+def _fut_star(code):
+    try:
+        import tw_stock_futures as _sf
+        return " ★" if code in _sf.fut_stock_set() else ""
+    except Exception:
+        return ""
+
+_orig__get_zh_name = _get_zh_name
+
+def _get_zh_name(code, fallback=""):
+    return _orig__get_zh_name(code, fallback) + _fut_star(code)
+
 # ============================================================
 # HTTP helpers
 # ============================================================

@@ -35,6 +35,23 @@ def _get_zh_name(code: str) -> str:
         return ""
 
 
+# 全站標準(2026-08-01 用戶要求):有掛個股期貨的標的,名稱後加 ★
+def _fut_star(code):
+    try:
+        import tw_stock_futures as _sf
+        return " ★" if code in _sf.fut_stock_set() else ""
+    except Exception:
+        return ""
+
+_orig__get_zh_name = _get_zh_name
+
+def _get_zh_name(code, fallback=""):
+    try:
+        base = _orig__get_zh_name(code, fallback)
+    except TypeError:
+        base = _orig__get_zh_name(code)
+    return base + _fut_star(code)
+
 def to_ad_date(roc_date_str: str) -> str:
     """Convert ROC date string like '115年04月17日' to 'YYYYMMDD'."""
     roc_date_str = roc_date_str.strip()

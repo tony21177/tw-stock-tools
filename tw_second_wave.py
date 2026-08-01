@@ -63,6 +63,19 @@ TIER_BIG_TURNOVER_NTD = 1_100_000_000   # 20d 均成交額門檻 (~P67)
 TIER_EARLY_TVP = 0.88                    # 距前高門檻 (today/peak < 0.88 = 反彈早期)
 
 
+# 全站標準(2026-08-01 用戶要求):有掛個股期貨的標的,名稱後加 ★
+def _fut_star(code):
+    try:
+        import tw_stock_futures as _sf
+        return " ★" if code in _sf.fut_stock_set() else ""
+    except Exception:
+        return ""
+
+_orig__get_zh_name = _get_zh_name
+
+def _get_zh_name(code, fallback=""):
+    return _orig__get_zh_name(code, fallback) + _fut_star(code)
+
 def classify_tier(today_vs_peak: float, turn20_ntd: float) -> str:
     """⭐ 早期+大額 / ◐ 早期 / ▽ 已近前高 — 依 2026-07 子群分析分層。"""
     if today_vs_peak < TIER_EARLY_TVP:

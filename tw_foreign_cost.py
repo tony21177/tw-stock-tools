@@ -115,6 +115,15 @@ def _holdings(token: str) -> dict:
     return out
 
 
+def _fut_star(code):
+    """有個股期 → ★(全站標準)"""
+    try:
+        import tw_stock_futures as _sf
+        return " ★" if code in _sf.fut_stock_set() else ""
+    except Exception:
+        return ""
+
+
 def build(token: str | None = None) -> dict:
     token = token or os.environ.get("FINMIND_TOKEN", "")
     if not token:
@@ -197,7 +206,7 @@ def build(token: str | None = None) -> dict:
         # 近 20 日外資淨買(張)
         n20 = sum(nn.get(dk, 0.0) for dk in dks[-20:])
         rows.append({
-            "code": c, "name": names.get(c, ""),
+            "code": c, "name": names.get(c, "") + _fut_star(c),
             "close": round(cur, 2), "cost": round(cost, 2),
             "ratio": round(ratio, 1),
             "hold_pct": round(hold_pct, 1),

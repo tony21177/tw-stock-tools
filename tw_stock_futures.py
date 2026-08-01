@@ -267,6 +267,15 @@ def _prev_trading_iso(today_iso: str) -> str:
     return d.strftime("%Y-%m-%d")
 
 
+def fut_stock_set() -> set:
+    """有掛個股期貨的股票代號集合(全站 ★ 標記共用;TAIFEX 對照,失敗回空集)。"""
+    try:
+        return {v["stock"] for v in fetch_taifex_mapping().values()
+                if v.get("is_fut")}
+    except Exception:
+        return set()
+
+
 def fetch_ranking(date_iso: str | None = None, top_n: int = HOT_TOP_N
                   ) -> dict:
     """抓當日 + 前日全市場個股期 → 排行。回 {date, rows} 或 {error}。"""

@@ -19,6 +19,15 @@ def _esc(s) -> str:
     return _html.escape(str(s))
 
 
+def _fut_star(code):
+    """有個股期 → ★(全站標準)"""
+    try:
+        import tw_stock_futures as _sf
+        return " ★" if code in _sf.fut_stock_set() else ""
+    except Exception:
+        return ""
+
+
 def _stock_name(code: str) -> str:
     try:
         from stock_names import get_name
@@ -150,7 +159,7 @@ def render_page(signal_rows: list[dict], day: dict, asof: str,
         detail = "".join(detail_parts)
         share_cls = "pos" if (r["bull_share_delta"] or 0) > 0 else (
             "neg" if (r["bull_share_delta"] or 0) < 0 else "")
-        name = u.get("name") or _stock_name(r["code"])
+        name = (u.get("name") or _stock_name(r["code"])) + _fut_star(r["code"])
         parts.append(
             f'<tr><td>{_esc(r["code"])}</td>'
             f'<td style="text-align:left">{_esc(name)}</td>'

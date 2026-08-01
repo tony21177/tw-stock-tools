@@ -132,6 +132,15 @@ def _finmind_names(token: str, max_age_h: float = 168.0) -> dict:
     return m
 
 
+def _fut_star(code):
+    """有個股期 → ★(全站標準)"""
+    try:
+        import tw_stock_futures as _sf
+        return " ★" if code in _sf.fut_stock_set() else ""
+    except Exception:
+        return ""
+
+
 def compute_extremes(end_iso: str | None = None, top: int = 20,
                      token: str | None = None) -> dict:
     token = token or _token()
@@ -189,7 +198,7 @@ def compute_extremes(end_iso: str | None = None, top: int = 20,
         dd = (c - hi[code]) / hi[code] * 100          # 距高(≤0)
         ru = (c - lo[code]) / lo[code] * 100          # 距低(≥0)
         recs.append({
-            "code": code, "name": _name(code),
+            "code": code, "name": _name(code) + _fut_star(code),
             "close": round(c, 2),
             "yr_high": round(hi[code], 2), "high_date": hidate[code],
             "yr_low": round(lo[code], 2), "low_date": lodate[code],

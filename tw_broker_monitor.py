@@ -38,6 +38,19 @@ DEFAULT_CHAT_ID = "-5229750819"
 TG_API = "https://api.telegram.org/bot{token}/sendMessage"
 
 
+# 全站標準(2026-08-01 用戶要求):有掛個股期貨的標的,名稱後加 ★
+def _fut_star(code):
+    try:
+        import tw_stock_futures as _sf
+        return " ★" if code in _sf.fut_stock_set() else ""
+    except Exception:
+        return ""
+
+_orig__zh_name = _zh_name
+
+def _zh_name(code, fallback=""):
+    return _orig__zh_name(code, fallback) + _fut_star(code)
+
 def send_telegram(message: str, bot_token: str, chat_id: str) -> bool:
     url = TG_API.format(token=bot_token)
     max_len = 4000
