@@ -103,6 +103,18 @@ button:hover{background:#2e7ef5}
 /* 頁面自帶的白底 inline 元件(黃條提示等)轉深色卡 */
 section[style*="fff8e1"],div[style*="fff8e1"]{
   background:#2b230c !important;border-color:#5c4c1d !important;color:#e6c56a}
+/* 回測/查詢子頁的淺色卡片與統計 tile 轉深色 */
+.card{background:var(--card2);border-color:var(--line)}
+.k{color:var(--ink2)}
+.v{color:#eef3f8}
+.empty,.market-breadth,.report,.recent,.continuity,.meth{
+  background:var(--card2) !important;border-color:var(--line) !important;
+  color:var(--ink)}
+.warn{background:#2b230c;border-color:#5c4c1d;color:#e6c56a}
+.error{background:#2f1416;border-color:#63262b;color:#ff9b9b}
+/* 各頁 .pos/.neg 色深淺不一(有的 #060/#c30 在黑底太暗):提亮但保留
+   各頁自己的紅綠語意(backtest 綠=正報酬、個股期紅=增),不改色相 */
+.pos,.neg{filter:brightness(1.6)}
 </style>"""
 
 # 自動表格增強:①每個 th 可點排序(再點反向;已有自訂 onclick 的表跳過)

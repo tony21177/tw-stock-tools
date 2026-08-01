@@ -1613,7 +1613,7 @@ def _episode_svg(series: list[dict], episodes: list[dict]) -> str:
 
 def _render_chip_compare_page(code: str = "3491", data: dict | None = None,
                               error: str = "") -> str:
-    nav = ('<nav><a href="/">← 大盤 dashboard</a> '
+    nav = (__import__("site_nav").nav_html(None) + '<nav><a href="/">← 大盤 dashboard</a> '
            '<a href="/chip-price">📋 籌碼價量</a> '
            '<a href="/money-flow">💰 族群資金流</a> <a href="/warrant-signal">🎰 權證量能</a> <a href="/stock-futures">🔥 個股期火熱</a></nav>')
     css = """<style>
@@ -3882,7 +3882,7 @@ def _glossary_section(keys: list[str], title: str = "📚 術語說明") -> str:
 
 
 def _render_concept_backtest_page(data: dict | None = None, error: str = "") -> str:
-    nav = ('<nav><a href="/">← 大盤 dashboard</a>'
+    nav = (__import__("site_nav").nav_html(None) + '<nav><a href="/">← 大盤 dashboard</a>'
            '<a href="/chip-price">📋 籌碼價量</a>'
            '<a href="/shareholders">👥 前十大股東</a>'
            '<a href="/adr-premium">🇺🇸 ADR 折溢價</a>'
@@ -4170,7 +4170,7 @@ def concept_backtest():
 
 
 def _render_second_wave_backtest_page(data: dict | None = None, error: str = "") -> str:
-    nav = ('<nav><a href="/">← 大盤 dashboard</a>'
+    nav = (__import__("site_nav").nav_html(None) + '<nav><a href="/">← 大盤 dashboard</a>'
            '<a href="/concept-backtest">🧪 族群策略回測</a>'
            '<a href="/second-wave-backtest">🌊 第二波回測</a></nav>')
     css = """<style>
@@ -4576,7 +4576,7 @@ if(document.getElementById('cAm')) new Chart(document.getElementById('cAm'),
 
 
 def _render_intraday_backtest_page(data: dict | None = None, error: str = "") -> str:
-    nav = ('<nav><a href="/">← 大盤 dashboard</a>'
+    nav = (__import__("site_nav").nav_html(None) + '<nav><a href="/">← 大盤 dashboard</a>'
            '<a href="/intraday-sim">📉 盤中走勢模擬</a></nav>')
     css = """<style>
   body{font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
@@ -4677,7 +4677,7 @@ def intraday_sim_backtest():
 
 
 def _render_broker_radar_backtest_page(data: dict | None = None, error: str = "") -> str:
-    nav = ('<nav><a href="/">← 大盤 dashboard</a>'
+    nav = (__import__("site_nav").nav_html(None) + '<nav><a href="/">← 大盤 dashboard</a>'
            '<a href="/concept-backtest">族群策略回測</a>'
            '<a href="/second-wave-backtest">第二波回測</a></nav>')
     css = """<style>
@@ -4858,7 +4858,7 @@ _BACKTEST_GLOSSARY.update({
 
 def _render_margin_lookup_page(code: str = "", method: str = "fifo",
                                report: str = "", error: str = "") -> str:
-    nav = ('<nav><a href="/">← 大盤 dashboard</a>'
+    nav = (__import__("site_nav").nav_html(None) + '<nav><a href="/">← 大盤 dashboard</a>'
            '<a href="/chip-price">📋 籌碼價量</a></nav>')
     css = """<style>
   body { font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
@@ -5130,7 +5130,7 @@ def chip_price():
 
 
 def _render_turnaround_backtest_page(data: dict | None = None, error: str = "") -> str:
-    nav = ('<nav><a href="/">← 大盤 dashboard</a>'
+    nav = (__import__("site_nav").nav_html(None) + '<nav><a href="/">← 大盤 dashboard</a>'
            '<a href="/second-wave-backtest">🌊 第二波回測</a>'
            '<a href="/turnaround-backtest">🔄 轉機接力回測</a></nav>')
     css = """<style>
@@ -5323,7 +5323,7 @@ def turnaround_backtest():
 
 
 def _render_lending_backtest_page(data: dict | None = None, error: str = "") -> str:
-    nav = ('<nav><a href="/">← 大盤 dashboard</a>'
+    nav = (__import__("site_nav").nav_html(None) + '<nav><a href="/">← 大盤 dashboard</a>'
            '<a href="/second-wave-backtest">🌊 第二波回測</a>'
            '<a href="/turnaround-backtest">🔄 轉機接力回測</a>'
            '<a href="/lending-backtest">🔻 借券回測</a></nav>')
