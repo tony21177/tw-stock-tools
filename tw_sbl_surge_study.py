@@ -51,30 +51,28 @@ SHARES_CACHE = os.path.join(CACHE, "shares_outstanding.json")
 
 
 def load_shares(token: str) -> dict:
-    """{code: 發行張數}。市值 ÷ 原始收盤(最近交易日),週快取。
-    ⚠ 年中增減資會有誤差;僅當常數用。"""
+    """{code: 發行張數}。官方發行股數(TaiwanStockShareholding 外資持股表的
+    NumberOfSharesIssued 欄,全市場單日查),週快取。非市值反推。"""
     if os.path.exists(SHARES_CACHE):
         if (datetime.now().timestamp() - os.path.getmtime(SHARES_CACHE)) / 3600 < 168:
             try:
                 with open(SHARES_CACHE, encoding="utf-8") as f:
-                    return json.load(f)
+                    data = json.load(f)
+                if data.get("_src") == "issued":         # 舊市值版快取作廢
+                    return data["m"]
             except Exception:
                 pass
     d = ex._trading_dates(datetime.now().strftime("%Y-%m-%d"), token)[-1]
-    mv = ex._fm("TaiwanStockMarketValue", {"start_date": d, "end_date": d}, token)
-    px = ex._fm("TaiwanStockPrice", {"start_date": d, "end_date": d}, token)
-    close = {r["stock_id"]: r["close"] for r in px
-             if r.get("date") == d and r.get("close")}
+    rows = ex._fm("TaiwanStockShareholding",
+                  {"start_date": d, "end_date": d}, token)
     out = {}
-    for r in mv:
+    for r in rows:
         c = r.get("stock_id", "")
-        if not _is_common(c):
-            continue
-        cl = close.get(c)
-        if cl and r.get("market_value"):
-            out[c] = round(r["market_value"] / cl / 1000)   # 股→張
+        n = r.get("NumberOfSharesIssued")
+        if _is_common(c) and n:
+            out[c] = round(n / 1000)                     # 股 → 張
     with open(SHARES_CACHE, "w", encoding="utf-8") as f:
-        json.dump(out, f)
+        json.dump({"_src": "issued", "date": d, "m": out}, f)
     return out
 
 
