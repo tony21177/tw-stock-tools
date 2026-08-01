@@ -245,4 +245,5 @@ def nav_html(current: str | None = None) -> str:
         else:
             parts.append(f'<a href="{href}">{label}</a>')
     return (_CSS + _SITE_CSS + '<nav class="site">' + " ".join(parts)
-            + "</nav>" + _ENHANCE_JS)
+            + "</nav>" + _ENHANCE_JS
+            + '<script src="/kline.js"></script>')

@@ -5727,6 +5727,62 @@ a:hover { text-decoration:underline; }
 
 
 
+# ── 全站個股 K 線彈窗(2026-08-01 用戶重要功能)──────────────
+@app.route("/kline.js")
+def kline_js():
+    return send_from_directory(STATIC_DIR, "kline.js",
+                               mimetype="application/javascript")
+
+
+@app.route("/api/kline/<code>")
+def api_kline(code):
+    """個股日 K(原始價,~160 交易日)。回 {code,name,rows:[[date,o,h,l,c,v張],...]}。
+    逐日快取 cache/kline/{code}.json(當日已抓過就直接回)。"""
+    import re as _re
+    from datetime import datetime as _dt, timedelta as _td
+    if not _re.fullmatch(r"\d{4,6}", code):
+        return jsonify({"error": "bad code"}), 400
+    kdir = os.path.join(HERE, "cache", "kline")
+    os.makedirs(kdir, exist_ok=True)
+    today = _dt.now().strftime("%Y-%m-%d")
+    cpath = os.path.join(kdir, f"{code}.json")
+    if os.path.exists(cpath):
+        try:
+            with open(cpath, encoding="utf-8") as f:
+                cached = json.load(f)
+            if cached.get("_asof") == today:
+                return jsonify(cached)
+        except Exception:
+            pass
+    token = os.environ.get("FINMIND_TOKEN", "")
+    start = (_dt.now() - _td(days=240)).strftime("%Y-%m-%d")
+    try:
+        import finmind_client
+        rows = finmind_client.fetch_stock_price(code, start, today, token)
+    except Exception as e:
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 502
+    out = []
+    for r in rows:
+        if not all(r.get(k) is not None for k in ("open", "max", "min", "close")):
+            continue
+        out.append([r["date"], r["open"], r["max"], r["min"], r["close"],
+                    round((r.get("Trading_Volume") or 0) / 1000)])
+    out = out[-160:]
+    try:
+        from stock_names import get_name as _gn
+        name = _gn(code, "")
+    except Exception:
+        name = ""
+    payload = {"_asof": today, "code": code, "name": name, "rows": out}
+    if out:
+        try:
+            with open(cpath, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+        except Exception:
+            pass
+    return jsonify(payload)
+
+
 @app.route("/backtests")
 def _r_bts():
     return redirect("/", 301)
