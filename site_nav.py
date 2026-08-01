@@ -107,6 +107,7 @@ section[style*="fff8e1"],div[style*="fff8e1"]{
 .card{background:var(--card2);border-color:var(--line)}
 .k{color:var(--ink2)}
 .v{color:#eef3f8}
+table.market-breadth{overflow:visible !important}
 .empty,.market-breadth,.report,.recent,.continuity,.meth{
   background:var(--card2) !important;border-color:var(--line) !important;
   color:var(--ink)}
@@ -174,6 +175,24 @@ function boot(){
   if(nv)document.documentElement.style.setProperty('--navh',nv.offsetHeight+'px');
   window.addEventListener('resize',function(){
     if(nv)document.documentElement.style.setProperty('--navh',nv.offsetHeight+'px');});
+  // 大表(≥12列)自動包進 80vh 捲動盒(margin-scan 模式)——否則表格在
+  // overflow-x:auto 的 section 裡時,sticky 相對 section 而 section 不垂直
+  // 捲動(整頁在捲)→ 表頭永遠不黏。包盒後垂直捲動發生在盒內,th top:0 生效
+  document.querySelectorAll('table').forEach(function(t){
+    if(!t.tHead||!t.tBodies.length||t.tBodies[0].rows.length<12)return;
+    var p=t.parentElement;if(!p)return;
+    var ps=getComputedStyle(p);
+    var isWrap=/(auto|scroll)/.test(ps.overflow+ps.overflowX+ps.overflowY)
+               &&p.children.length===1;
+    if(isWrap){                                   // 已有專用捲動盒(如 dragx)
+      if(!ps.maxHeight||ps.maxHeight==='none')p.style.maxHeight='80vh';
+      p.style.overflowY='auto';   // 只有 overflow-x:auto 時 sticky 會失效,補明確 y
+      return;
+    }
+    var w=document.createElement('div');
+    w.style.maxHeight='80vh';w.style.overflow='auto';
+    p.insertBefore(w,t);w.appendChild(t);
+  });
   // sticky th 的 top:內層捲動容器裡=0(黏容器頂);直接在頁面上=nav 高度
   // (sticky top 相對「最近的捲動容器」而非視窗;overflow-x:auto 的祖先
   //  也算捲動容器 → top:0 安全退化為不黏,不會浮在表中間)

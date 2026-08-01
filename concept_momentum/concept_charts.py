@@ -614,6 +614,23 @@ table{{background:transparent}}
 ::-webkit-scrollbar-thumb{{background:#2b3a4f;border-radius:5px}}
 ::selection{{background:rgba(76,194,255,.3)}}
 </style>
+<style>table thead th{{position:sticky !important;top:0;z-index:2}}
+table.market-breadth{{overflow:visible !important}}</style>
+<script>
+document.addEventListener('DOMContentLoaded',function(){{
+  document.querySelectorAll('table').forEach(function(t){{
+    if(!t.tHead||!t.tBodies.length||t.tBodies[0].rows.length<12)return;
+    var p=t.parentElement;if(!p)return;
+    var s=getComputedStyle(p);
+    if(/(auto|scroll)/.test(s.overflow+s.overflowX+s.overflowY)&&p.children.length===1){{
+      if(!s.maxHeight||s.maxHeight==='none')p.style.maxHeight='80vh';return;}}
+    var w=document.createElement('div');
+    w.style.maxHeight='80vh';w.style.overflow='auto';
+    p.insertBefore(w,t);w.appendChild(t);
+  }});
+}});
+</script>
+
 
 </head>
 <body>
