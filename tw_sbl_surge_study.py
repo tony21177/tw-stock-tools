@@ -5,10 +5,11 @@
 問題(用戶 2026-08-01):上市櫃股票「借券賣出餘額大增」後股價怎麼走?
 大量賣出後「陸續回補」又怎麼走?
 
-事件定義(全市場 4 位數普通股,近一年逐日借券賣出餘額):
-  A 大增:10 交易日內餘額增 ≥ +50% 且 增量 ≥ 1,000 張 且 10日前餘額 ≥ 500 張
-         (有規模的突然放空,排除低基期噪音)
-  B 回補:近 60 日餘額峰值 ≥ 3,000 張,餘額首次跌破峰值的 70%(=回補 30%+)
+事件定義(全市場 4 位數普通股,近一年逐日借券賣出餘額;
+門檻用「發行股數 %」—— 借券賣出+融券合計法定上限=發行股數 10%,
+用股本%才跨大小型股可比,發行股數=市值÷原始收盤反推):
+  A 大增:10 交易日內餘額增量 ≥ 發行股數 0.5%(突然的大規模放空)
+  B 回補:近 60 日餘額峰值 ≥ 發行股數 2%(重空狀態),首次跌破峰值 70%(=回補30%+)
   同一檔冷卻 40 交易日(避免重疊視窗重複計數)。
 
 報酬:事件日還原收盤起算 H5/H10/H20/H60 絕對報酬 + 超額(減同期加權指數)。
@@ -38,16 +39,43 @@ import tw_margin_scan as ms                  # noqa: E402
 CACHE = os.path.join(HERE, "concept_momentum", "cache")
 SBL_DIR = os.path.join(CACHE, "sbl_day")
 
-# 事件參數
-SURGE_WIN = 10        # A:回看視窗(交易日)
-SURGE_PCT = 0.50      # A:餘額增幅門檻(+50%)
-SURGE_MIN_ADD = 1000  # A:增量張數門檻
-SURGE_MIN_BASE = 500  # A:基期餘額下限(排除低基期)
-COVER_PEAK_WIN = 60   # B:峰值回看視窗
-COVER_PEAK_MIN = 3000 # B:峰值餘額下限(張)
-COVER_DROP = 0.30     # B:自峰值回補比例門檻
-COOLDOWN = 40         # 同檔事件冷卻(交易日)
+# 事件參數(門檻=發行股數%;法定上限:借券賣出+融券 ≤ 發行股數 10%)
+SURGE_WIN = 10          # A:回看視窗(交易日)
+SURGE_ADD_CAP = 0.005   # A:10日增量 ≥ 發行股數 0.5%
+COVER_PEAK_WIN = 60     # B:峰值回看視窗
+COVER_PEAK_CAP = 0.02   # B:峰值 ≥ 發行股數 2%(重空)
+COVER_DROP = 0.30       # B:自峰值回補比例門檻
+COOLDOWN = 40           # 同檔事件冷卻(交易日)
 HORIZONS = [5, 10, 20, 60]
+SHARES_CACHE = os.path.join(CACHE, "shares_outstanding.json")
+
+
+def load_shares(token: str) -> dict:
+    """{code: 發行張數}。市值 ÷ 原始收盤(最近交易日),週快取。
+    ⚠ 年中增減資會有誤差;僅當常數用。"""
+    if os.path.exists(SHARES_CACHE):
+        if (datetime.now().timestamp() - os.path.getmtime(SHARES_CACHE)) / 3600 < 168:
+            try:
+                with open(SHARES_CACHE, encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+    d = ex._trading_dates(datetime.now().strftime("%Y-%m-%d"), token)[-1]
+    mv = ex._fm("TaiwanStockMarketValue", {"start_date": d, "end_date": d}, token)
+    px = ex._fm("TaiwanStockPrice", {"start_date": d, "end_date": d}, token)
+    close = {r["stock_id"]: r["close"] for r in px
+             if r.get("date") == d and r.get("close")}
+    out = {}
+    for r in mv:
+        c = r.get("stock_id", "")
+        if not _is_common(c):
+            continue
+        cl = close.get(c)
+        if cl and r.get("market_value"):
+            out[c] = round(r["market_value"] / cl / 1000)   # 股→張
+    with open(SHARES_CACHE, "w", encoding="utf-8") as f:
+        json.dump(out, f)
+    return out
 
 
 def backfill(token: str) -> int:
@@ -102,39 +130,41 @@ def load_series(token: str):
     return dks, bal, close, taiex
 
 
-def detect_events(dks, bal):
-    """回傳 events = [{code, dk, i, kind:'surge'|'cover', b0, b1, peak}]"""
-    idx = {d: i for i, d in enumerate(dks)}
+def detect_events(dks, bal, shares):
+    """回傳 events = [{code, dk, i, kind:'surge'|'cover', b0, b1}](門檻=股本%)"""
     events = []
     for code, series in bal.items():
+        sh = shares.get(code)
+        if not sh or sh <= 0:
+            continue                                # 無發行股數資料跳過
         sd = [series.get(d) for d in dks]
         last_ev = {"surge": -10**9, "cover": -10**9}
-        peak = 0.0
         for i in range(len(dks)):
             b = sd[i]
             if b is None:
                 continue
-            # A 大增
+            # A 大增:10日增量 ≥ 股本 SURGE_ADD_CAP
             if i >= SURGE_WIN and sd[i - SURGE_WIN] is not None:
                 b0 = sd[i - SURGE_WIN]
-                if (b0 >= SURGE_MIN_BASE and b >= b0 * (1 + SURGE_PCT)
-                        and b - b0 >= SURGE_MIN_ADD
+                if (b - b0 >= sh * SURGE_ADD_CAP
                         and i - last_ev["surge"] >= COOLDOWN):
                     events.append({"code": code, "dk": dks[i], "i": i,
-                                   "kind": "surge", "b0": b0, "b1": b})
+                                   "kind": "surge", "b0": b0, "b1": b,
+                                   "cap_pct": round((b - b0) / sh * 100, 2)})
                     last_ev["surge"] = i
-            # B 回補:近 COVER_PEAK_WIN 峰值
+            # B 回補:峰值 ≥ 股本 COVER_PEAK_CAP,跌破峰值 70%
             lo = max(0, i - COVER_PEAK_WIN)
             win = [x for x in sd[lo:i + 1] if x is not None]
             if not win:
                 continue
             pk = max(win)
             prev_b = sd[i - 1] if i > 0 else None
-            if (pk >= COVER_PEAK_MIN and b <= pk * (1 - COVER_DROP)
+            if (pk >= sh * COVER_PEAK_CAP and b <= pk * (1 - COVER_DROP)
                     and prev_b is not None and prev_b > pk * (1 - COVER_DROP)
                     and i - last_ev["cover"] >= COOLDOWN):
                 events.append({"code": code, "dk": dks[i], "i": i,
-                               "kind": "cover", "b0": pk, "b1": b})
+                               "kind": "cover", "b0": pk, "b1": b,
+                               "cap_pct": round(pk / sh * 100, 2)})
                 last_ev["cover"] = i
     return events
 
@@ -155,12 +185,24 @@ def _stats(vals):
 
 def study(token: str) -> dict:
     dks, bal, close, taiex = load_series(token)
+    shares = load_shares(token)
+    # sanity:餘額/股本 分布(法定上限 10%,最大值應 ≲10%)
+    caps = []
+    for c, s_ in bal.items():
+        sh = shares.get(c)
+        if sh:
+            mx = max(v for v in s_.values())
+            caps.append(mx / sh * 100)
+    caps.sort()
     print(f"資料 {dks[0]}~{dks[-1]} 共 {len(dks)} 交易日,"
-          f"{len(bal)} 檔有借券餘額", file=sys.stderr)
-    events = detect_events(dks, bal)
+          f"{len(bal)} 檔有借券餘額,{len(caps)} 檔有股本;"
+          f"餘額/股本% 最大值分布 P50={caps[len(caps)//2]:.1f} "
+          f"P90={caps[int(len(caps)*.9)]:.1f} max={caps[-1]:.1f}",
+          file=sys.stderr)
+    events = detect_events(dks, bal, shares)
     out = {"window": f"{dks[0]}~{dks[-1]}", "n_days": len(dks), "params": {
-        "surge": f"{SURGE_WIN}日增≥{SURGE_PCT:.0%} 且 +≥{SURGE_MIN_ADD}張 且 基期≥{SURGE_MIN_BASE}張",
-        "cover": f"{COVER_PEAK_WIN}日峰值≥{COVER_PEAK_MIN}張 回補跨過 {COVER_DROP:.0%}",
+        "surge": f"{SURGE_WIN}日增量 ≥ 發行股數 {SURGE_ADD_CAP:.1%}",
+        "cover": f"{COVER_PEAK_WIN}日峰值 ≥ 發行股數 {COVER_PEAK_CAP:.0%},回補跨過 {COVER_DROP:.0%}",
     }}
     for kind in ("surge", "cover"):
         evs = [e for e in events if e["kind"] == kind]
