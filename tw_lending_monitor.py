@@ -132,39 +132,94 @@ def fetch_sbl_short_selling(date_str: str) -> list[dict]:
         return []
 
     d = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+    # 走 tw_margin_scan._sbl_day(寫入 cache/sbl_day/ 逐日快取,
+    # 供 margin-scan 與借券事件研究共用、每日自動增量)
+    import tw_margin_scan as ms
     try:
-        rows = finmind_client.fetch_short_sale_balances_market(d, token)
+        day = ms._sbl_day(d, token)                 # {code: [今餘額張, 增減張]}
     except Exception as ex:
         print(f"[ERROR] FinMind SBL whole-market: {ex}", file=sys.stderr)
         return []
+    # 規模門檻:昨餘額 ≥ 發行張數 0.3%(用戶指正:量要用發行張數% 才可比;
+    # 舊版無門檻,3張→2張 −33% 也入選 = 噪音)
+    try:
+        from tw_sbl_surge_study import load_shares
+        shares = load_shares(token)
+    except Exception:
+        shares = {}
 
     results = []
-    for r in rows:
-        sid = r.get("stock_id", "")
+    for sid, v in day.items():
         if not (sid.isdigit() and len(sid) == 4):
             continue
-        # Values are in shares (股); convert to lots (張)
-        prev = int(r.get("SBLShortSalesPreviousDayBalance", 0)) / 1000
-        today = int(r.get("SBLShortSalesCurrentDayBalance", 0)) / 1000
-
+        today, chg = v[0], v[1]
+        prev = today - chg
         if prev <= 0:
             continue
-
-        change_pct = ((today - prev) / prev) * 100
-
+        sh = shares.get(sid)
+        if sh and prev < sh * 0.003:                # 規模不足跳過
+            continue
+        change_pct = (today - prev) / prev * 100
         if change_pct > -10.0:
             continue
-
         results.append({
             "code": sid,
-            "name": _get_zh_name(sid),  # lookup from stock_names ISIN cache
+            "name": _get_zh_name(sid),
             "prev_balance": prev,
             "today_balance": today,
             "change_pct": change_pct,
+            "cap_pct": round(prev / sh * 100, 2) if sh else None,   # 昨餘額/股本%
         })
 
     results.sort(key=lambda x: x["change_pct"])
     return results
+
+
+def detect_heavy_cover(date_str: str) -> list[dict]:
+    """🎯 重空股回補(事件研究驗證口徑,tw_sbl_surge_study 2026-08-01):
+    近 60 日餘額峰值 ≥ 發行張數 2%(重空),今日首次跌破峰值 70%(=回補30%+)。
+    回測:回補後 5-10 日為唯一超額轉正視窗、H60 超額差 +7.4pp 全表最大。
+    需 cache/sbl_day/ 逐日快取(已建 250 天,本工具每日增量)。"""
+    import os as _os
+    import json as _json
+    import tw_margin_scan as ms
+    token = _os.environ.get("FINMIND_TOKEN", "")
+    d_iso = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+    try:
+        from tw_sbl_surge_study import load_shares
+        shares = load_shares(token)
+        dates = ms.ex._trading_dates(d_iso, token)[-61:]
+    except Exception as ex:
+        print(f"[WARN] heavy_cover 前置失敗: {ex}", file=sys.stderr)
+        return []
+    series: dict = {}
+    for di in dates:
+        p = _os.path.join(ms.CACHE, "sbl_day", f"{di.replace('-', '')}.json")
+        if not _os.path.exists(p):
+            continue
+        try:
+            with open(p, encoding="utf-8") as f:
+                sd = _json.load(f)
+        except Exception:
+            continue
+        for c, v in sd.items():
+            series.setdefault(c, []).append((di, v[0]))
+    out = []
+    for c, sv in series.items():
+        sh = shares.get(c)
+        if not sh or len(sv) < 10 or sv[-1][0] != dates[-1]:
+            continue
+        vals = [x[1] for x in sv]
+        today, prev = vals[-1], vals[-2] if len(vals) >= 2 else None
+        pk = max(vals)
+        if (pk >= sh * 0.02 and today <= pk * 0.70
+                and prev is not None and prev > pk * 0.70):
+            out.append({"code": c, "name": _get_zh_name(c),
+                        "peak": pk, "today_balance": today,
+                        "cover_pct": round((1 - today / pk) * 100, 1),
+                        "peak_cap_pct": round(pk / sh * 100, 2)})
+    out.sort(key=lambda x: -x["peak_cap_pct"])
+    return out
 
 
 def fetch_stock_info(code: str) -> dict:
@@ -366,15 +421,29 @@ def format_lending_output(results: list[dict], target_date: str) -> str:
     return "\n".join(lines)
 
 
-def format_sbl_output(sbl_results: list[dict], target_date: str) -> str:
+def format_sbl_output(sbl_results: list[dict], target_date: str,
+                      heavy_cover: list[dict] | None = None) -> str:
     """Format 借券賣出大幅減少 results as a separate message."""
     dt = datetime.strptime(target_date, "%Y%m%d")
     date_str = dt.strftime("%Y-%m-%d")
 
     lines = [f"借券賣出大幅減少監控 {date_str}\n"]
+    # 🎯 重空股回補(事件研究驗證:回補後 5-10 日唯一超額轉正視窗)
+    if heavy_cover:
+        lines.append("🎯 重空股回補(60日峰值≥股本2%,首次回補跨過30%)")
+        lines.append("━━━━━━━━━━━━")
+        for r in heavy_cover:
+            lines.append(
+                f"{r['code']} {r['name']}\n"
+                f"  峰值 {r['peak']:,.0f}張(={r['peak_cap_pct']}%股本)→ "
+                f"今 {r['today_balance']:,.0f}張,已回補 {r['cover_pct']}%")
+        lines.append(
+            "🧪 回測(2026-08,近一年1160次): 回補後5-10日為全表唯一超額轉正"
+            "(H5 +0.25% vs 對照-0.97%),H60 絕對+19.1%/勝率61.5%。"
+            "⚠ 回補=還券,動機不唯一(召回/自主);觀察非訊號。\n")
     lines.append(
-        "⚠ 回測(2026-07): 借券賣餘大減後 20 日超額為負(-1.0~-1.4%, CI全負) — "
-        "此為弱勢股觀察名單，非買入訊號。詳 /lending-backtest\n"
+        "⚠ 下方「單日大減」清單回測(2026-07): 20 日超額為負(-1.0~-1.4%) — "
+        "弱勢股觀察名單，非買入訊號(已加規模門檻:昨餘額≥股本0.3%)。詳 /lending-backtest\n"
     )
 
     if not sbl_results:
@@ -552,7 +621,10 @@ def main():
         else:
             print("無借券賣出大幅減少的標的")
 
-        sbl_output = format_sbl_output(sbl_results, target_date)
+        heavy_cover = detect_heavy_cover(target_date)
+        if heavy_cover:
+            print(f"🎯 重空股回補 {len(heavy_cover)} 檔")
+        sbl_output = format_sbl_output(sbl_results, target_date, heavy_cover)
         print("\n" + sbl_output)
 
         if args.json_out_sbl:
@@ -568,6 +640,14 @@ def main():
                             "balance_change_pct": round(s.get("change_pct", 0.0), 2),
                             "today_change_pct": round(s.get("change_pct_price", 0.0), 2),
                         } for s in sbl_results
+                    ],
+                    "heavy_cover": [
+                        {
+                            "code": h["code"], "name": h["name"],
+                            "peak": h["peak"], "today_balance": h["today_balance"],
+                            "cover_pct": h["cover_pct"],
+                            "peak_cap_pct": h["peak_cap_pct"],
+                        } for h in (heavy_cover or [])
                     ],
                 }, f, ensure_ascii=False, indent=2)
             print(f"[lending_monitor] wrote {args.json_out_sbl}", file=sys.stderr)
