@@ -605,6 +605,9 @@ tr:hover{{background:#16202c}}
 .lookup-bar input{{background:#1a2230 !important;color:#dfe6ee;
   border:1px solid #223041 !important}}
 .qbtn{{background:#1f6feb}}.qbtn:hover{{background:#2e7ef5}}
+.chart-wrap{{background:transparent}}
+table{{background:transparent}}
+.tab-content{{background:transparent}}
 .plotly-graph-div{{background:#fff;border-radius:10px}}
 ::-webkit-scrollbar{{height:9px;width:9px}}
 ::-webkit-scrollbar-track{{background:#0d1117}}
