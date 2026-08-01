@@ -207,11 +207,14 @@ def build(token: str | None = None) -> dict:
         })
     in_band = [r for r in rows if RATIO_LO <= r["ratio"] <= RATIO_HI]
     in_band.sort(key=lambda r: -r["hold_pct"])
+    momo = [r for r in rows if r["ratio"] > RATIO_HI]      # 回測:140+ 表現最強
+    momo.sort(key=lambda r: -r["ratio"])
     return {
         "date": dks[-1], "n_days": len(dks),
         "as_of": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "n_universe": len(rows),
         "rows": in_band,
+        "rows_momo": momo,
     }
 
 
@@ -281,6 +284,30 @@ def render_html(data: dict) -> str:
         body.append("".join(h))
     else:
         body.append('<section><p class="small">(目前無符合區間的標的)</p></section>')
+    momo = data.get("rows_momo") or []
+    if momo:
+        h = [f'<section><h3>🚀 外資動能延續區(現價/成本 &gt; {RATIO_HI:.0f}%,共 {len(momo)} 檔)</h3>'
+             '<p class="small">回測:140-180 桶 H60 超額 +13.2%、&gt;180 桶 +14.2% —— '
+             '「外資大賺會調節」在樣本中不成立,獲利越多動能越強;但分布右偏、'
+             '追高風險自負(依 現價/成本 排序)。</p>'
+             '<table><thead><tr><th>#</th><th>標的</th><th>現價</th>'
+             '<th>外資成本</th><th>現價/成本</th><th>外資持股%</th>'
+             '<th>持股(張)</th><th>近20日淨買(張)</th><th>收斂度</th></tr></thead><tbody>']
+        for i, r in enumerate(momo, 1):
+            n20 = r["net20"]
+            n20c = "up" if n20 > 0 else ("dn" if n20 < 0 else "")
+            h.append(
+                f'<tr><td data-v="{i}">{i}</td>'
+                f'<td data-v="{r["code"]}">{_h.escape(r["code"])} {_h.escape(r["name"])}</td>'
+                f'<td data-v="{r["close"]}">{r["close"]:g}</td>'
+                f'<td data-v="{r["cost"]}">{r["cost"]:g}</td>'
+                f'<td data-v="{r["ratio"]}"><b>{r["ratio"]:.0f}%</b></td>'
+                f'<td data-v="{r["hold_pct"]}">{r["hold_pct"]:.1f}%</td>'
+                f'<td data-v="{r["hold"]}">{r["hold"]:,}</td>'
+                f'<td data-v="{n20}" class="{n20c}">{n20:+,}</td>'
+                f'<td data-v="{r["conv"]}">{r["conv"]:.2f}</td></tr>')
+        h.append('</tbody></table></section>')
+        body.append("".join(h))
 
     bt_html = ""
     btp = os.path.join(CACHE, "foreign_cost_backtest.json")
