@@ -310,11 +310,24 @@ def fetch_ranking(date_iso: str | None = None, top_n: int = HOT_TOP_N
     ranking = build_ranking(today_rows, prev_rows, mapping,
                             today_iso, prev_iso, top_n=top_n,
                             cash_close=cash_close, inst=inst)
+    stale_note = None
+    if today_iso != req_iso:
+        # 分辨「今日休市(週末/假日)」vs「交易日但資料還沒出(15:30前)」
+        trading = None
+        try:
+            from is_trading_day import is_trading_day as _itd
+            trading = _itd(req_iso)
+        except Exception:
+            trading = None
+        if trading is False:
+            stale_note = f"今日({req_iso})休市,顯示最近交易日 {today_iso}"
+        elif trading:
+            stale_note = (f"今日({req_iso})資料尚未公布(約 15:30 後更新),"
+                          f"顯示最近交易日 {today_iso}")
+        else:
+            stale_note = f"顯示最近交易日 {today_iso}"
     return {"date": today_iso, "prev": prev_iso, "rows": ranking,
-            "inst_n": len(inst),
-            "stale_note": (f"今日({req_iso})資料尚未公布(約 15:30 後更新),"
-                           f"顯示最近交易日 {today_iso}"
-                           if today_iso != req_iso else None)}
+            "inst_n": len(inst), "stale_note": stale_note}
 
 
 def _fetch_cash_close(fc, date_iso: str, token: str) -> dict:

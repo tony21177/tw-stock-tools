@@ -316,7 +316,8 @@ def render_html(data: dict) -> str:
 • <b>訊號門檻</b>:淨收 ≥1億 且 ≥近60交易日P90(異常放大才叫訊號,平常的造市進出不算);淨買 ≤−1億 且 ≤P10 反向。觸發才推 Telegram。<br>
 ⚠ <b>限制</b>:自營商數字<b>含造市與避險腳</b>,不全是方向單;FinMind 為<b>日合計、無法拆日盤/夜盤</b>(群裡說的「昨晚收1e」看不到,只能看到隔天全日);資料盤後(約15:00後)公布;回測結論見上節(隔日無 edge、5~10 日反彈傾向),純觀察、非買賣訊號。</section>"""
 
-    foot = (f'<p class="small">🕒 每交易日 15:10 更新 · 更新於 '
+    foot = (f'<p class="small">🕒 每交易日 17:00 更新(TAIFEX 15:00 公布、'
+            f'FinMind 約 16~17 點同步)· 更新於 '
             f'{_h.escape(data.get("as_of", ""))} · 資料 FinMind '
             f'TaiwanOptionInstitutionalInvestors (TXO)</p>')
     return head + sig_html + table + bt_html + glossary + foot + '</body></html>'
