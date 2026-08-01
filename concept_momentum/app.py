@@ -1794,6 +1794,25 @@ def ftd_page():
     return ftd.render_html(data)
 
 
+@app.route("/foreign-cost")
+def foreign_cost_page():
+    import tw_foreign_cost as fcst
+    cache = os.path.join(HERE, "cache", "foreign_cost_latest.json")
+    data = None
+    if os.path.exists(cache):
+        try:
+            with open(cache, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = None
+    if data is None:
+        try:
+            data = fcst.build()
+        except Exception as e:
+            data = {"error": f"{type(e).__name__}: {e}"}
+    return fcst.render_html(data)
+
+
 @app.route("/option-flow")
 def option_flow_page():
     import tw_option_flow as of
