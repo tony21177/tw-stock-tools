@@ -116,7 +116,7 @@ def _render_sw(rows: list[dict]) -> str:
         '📌 <b>使用時機</b>：本策略 edge 集中在<b>動能市</b>（2022-24 三年 OOS 超額 ≈0、'
         '2022 熊市為負，大盤轉弱時停用或降倉）；持有約 <b>20 個交易日</b>（短抱 5-10 天期望為負）；'
         '報酬樂透型（中位數 -3~-4%）→ <b>分散持有、勿單押</b>；候選 ≠ 買入訊號，進場前自查急跌非利空所致。'
-        '<a href="/backtests#second-wave">→ 完整回測與限制</a></p>'
+        '<a href="#bt-second-wave">→ 完整回測與限制</a></p>'
     )
     return "\n".join(parts)
 

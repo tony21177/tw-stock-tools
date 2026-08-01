@@ -579,7 +579,6 @@ def generate_html(results: list[dict], taiex_rows: list[dict], target_date: str,
   .tab-content {{ display: none; }}
   .tab-content.active {{ display: block; }}
 </style>
-      <a class="tab" href="/backtests" style="text-decoration:none;color:inherit;">🧪 策略回測總覽</a>
 <style>
 /* ── 深色終端機主題(2026-07-31,與 site_nav._SITE_CSS 同色票)── */
 html{{background:#0d1117}}

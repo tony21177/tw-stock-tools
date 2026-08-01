@@ -37,13 +37,94 @@ def no_cache(resp):
     return resp
 
 
+def _scope_css(css: str, scope: str) -> str:
+    """把 CSS 規則全部加上 scope 前綴(避免注入片段污染宿主頁樣式,
+    例:回測頁 .pos=綠 會蓋掉首頁 .pos=紅 —— 2026-08-01 踩過)。
+    @ 規則整塊丟棄(片段內用不到 media/keyframes);body/html 前綴後
+    永不匹配 = 自然失效。"""
+    import re as _re
+    css = _re.sub(r"@[^{]+\{(?:[^{}]*\{[^}]*\})*[^}]*\}", "", css)
+    out = []
+    for rule in css.split("}"):
+        if "{" not in rule:
+            continue
+        sel, body = rule.split("{", 1)
+        sels = [f"{scope} {x.strip()}" for x in sel.split(",") if x.strip()]
+        if sels:
+            out.append(",".join(sels) + "{" + body + "}")
+    return "".join(out)
+
+
+# 片段內 CSS 會用到的變數(:root 被 scope 後失效 → 全域補一次,只定義變數無副作用)
+_BT_VARS = ("<style>:root{--bg:#0d1117;--card:#151b23;--card2:#1a2230;"
+            "--line:#223041;--ink:#dfe6ee;--ink2:#8b98a9;--ink3:#5d6b7d;"
+            "--acc:#4cc2ff;--up:#ff6b6b;--dn:#34c98e}</style>")
+
+
+def _bt_fragment(fn, title, frag_id, seen_styles=None):
+    """回測 view 輸出 → 可嵌入的摺疊區塊(styles 以 #frag_id 作用域隔離)。"""
+    import re as _re
+    try:
+        html = fn()
+        if isinstance(html, tuple):
+            html = html[0]
+    except Exception as e:
+        return f'<p class="small">⚠ {title} 載入失敗: {type(e).__name__}: {e}</p>'
+    styles = []
+    for st in _re.findall(r"<style[^>]*>(.*?)</style>", html, _re.S):
+        styles.append(_scope_css(st, f"#{frag_id}"))
+    m = _re.search(r"<body[^>]*>(.*)</body>", html, _re.S)
+    body = m.group(1) if m else html
+    body = _re.sub(r"<script[^>]*>.*?</script>", "", body, flags=_re.S)
+    body = _re.sub(r"<nav.*?</nav>", "", body, flags=_re.S)
+    body = _re.sub(r"<h1[^>]*>.*?</h1>", "", body, count=1, flags=_re.S)
+    return ('<details id="' + frag_id + '" class="btwrap" '
+            'style="margin-top:18px;border-top:2px dashed #667;padding-top:10px">'
+            '<summary style="cursor:pointer;font-weight:600;font-size:1.02em">'
+            '🧪 ' + title + '(點開)</summary>'
+            + _BT_VARS + "<style>" + "".join(styles) + "</style>" + body
+            + '</details>')
+
+
+def _inject_tab(html, tab_id, fragment):
+    """把 fragment 插到 <div id="tab_id"> 區塊的最後(下一個 tab div 之前的
+    最後一個 </div> 前)。找不到就原樣返回。"""
+    start = html.find(f'<div id="{tab_id}"')
+    if start < 0:
+        return html
+    nxt = html.find('<div id="tab-', start + 10)
+    seg_end = nxt if nxt > 0 else html.find("</body>", start)
+    if seg_end < 0:
+        return html
+    ins = html.rfind("</div>", start, seg_end)
+    if ins < 0:
+        return html
+    return html[:ins] + fragment + html[ins:]
+
+
 @app.route("/")
 def dashboard():
     html_path = os.path.join(TEMPLATES_DIR, "dashboard.html")
     if not os.path.exists(html_path):
         return ("Dashboard not generated yet. "
                 "Run: python3 concept_charts.py"), 503
-    return send_file(html_path)
+    with open(html_path, encoding="utf-8") as f:
+        html = f.read()
+    # 各策略回測 → 對應分頁底部(2026-08-01 用戶:回測搬到各策略區塊最下面)
+    seen = set()
+    try:
+        html = _inject_tab(html, "tab-snap",
+                           _bt_fragment(concept_backtest, "族群策略回測", "bt-concept", seen))
+        html = _inject_tab(html, "tab-premarket",
+                           _bt_fragment(second_wave_backtest, "第二波回測", "bt-second-wave", seen)
+                           + _bt_fragment(turnaround_backtest, "轉機接力回測", "bt-turnaround", seen))
+        html = _inject_tab(html, "tab-lending",
+                           _bt_fragment(lending_backtest, "借券回測", "bt-lending", seen))
+        html = _inject_tab(html, "tab-broker",
+                           _bt_fragment(broker_radar_backtest, "主力雷達回測", "bt-broker", seen))
+    except Exception:
+        pass                                     # 注入失敗仍回原頁
+    return html
 
 
 @app.route("/png")
@@ -3890,7 +3971,7 @@ def _render_concept_backtest_page(data: dict | None = None, error: str = "") -> 
            '<a href="/shareholders">👥 前十大股東</a>'
            '<a href="/adr-premium">🇺🇸 ADR 折溢價</a>'
            '<a href="/futures-basis">📐 期貨基差</a>'
-           '<a href="/backtests#concept">🧪 族群策略回測</a></nav>')
+           '<a href="/#bt-concept">🧪 族群策略回測</a></nav>')
     css = """<style>
   body { font-family: -apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
          max-width:1100px; margin:1em auto; padding:0 1em; background:#f7f7f9; color:#222; }
@@ -4173,8 +4254,8 @@ def concept_backtest():
 
 def _render_second_wave_backtest_page(data: dict | None = None, error: str = "") -> str:
     nav = (__import__("site_nav").nav_html(None) + '<nav><a href="/">← 大盤 dashboard</a>'
-           '<a href="/backtests#concept">🧪 族群策略回測</a>'
-           '<a href="/backtests#second-wave">🌊 第二波回測</a></nav>')
+           '<a href="/#bt-concept">🧪 族群策略回測</a>'
+           '<a href="/#bt-second-wave">🌊 第二波回測</a></nav>')
     css = """<style>
   body { font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
          max-width:1100px; margin:1em auto; padding:0 1em; background:#f7f7f9; color:#222; }
@@ -4395,9 +4476,9 @@ def second_wave_backtest():
 def _render_intraday_sim_page(code: str = "", data: dict | None = None,
                               error: str = "") -> str:
     nav = (__import__("site_nav").nav_html("/intraday-sim")
-           + '<nav><a href="/backtests#intraday">🧪 此系統的校準回測</a> '
-           '<a href="/backtests#concept">族群策略回測</a> '
-           '<a href="/backtests#second-wave">第二波回測</a></nav>')
+           + '<nav><a href="/intraday-sim#bt-intraday">🧪 此系統的校準回測</a> '
+           '<a href="/#bt-concept">族群策略回測</a> '
+           '<a href="/#bt-second-wave">第二波回測</a></nav>')
     css = """<style>
   body { font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
          max-width:1200px; margin:1em auto; padding:0 1em; background:#f7f7f9; color:#222; }
@@ -4678,8 +4759,8 @@ def intraday_sim_backtest():
 
 def _render_broker_radar_backtest_page(data: dict | None = None, error: str = "") -> str:
     nav = (__import__("site_nav").nav_html(None) + '<nav><a href="/">← 大盤 dashboard</a>'
-           '<a href="/backtests#concept">族群策略回測</a>'
-           '<a href="/backtests#second-wave">第二波回測</a></nav>')
+           '<a href="/#bt-concept">族群策略回測</a>'
+           '<a href="/#bt-second-wave">第二波回測</a></nav>')
     css = """<style>
   body{font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
        max-width:960px;margin:1em auto;padding:0 1em;background:#f7f7f9;color:#222;}
@@ -4794,15 +4875,28 @@ def broker_radar_backtest():
 def intraday_sim():
     code = (request.args.get("code") or "").strip()
     if not code:
-        return _render_intraday_sim_page()
+        html = _render_intraday_sim_page()
+        return _with_intraday_bt(html)
     try:
         import tw_intraday_sim
         data = tw_intraday_sim.run(code, pool="both")
     except Exception as e:
-        return _render_intraday_sim_page(code=code, error=f"{type(e).__name__}: {e}")
+        return _with_intraday_bt(_render_intraday_sim_page(
+            code=code, error=f"{type(e).__name__}: {e}"))
     if data.get("error"):
-        return _render_intraday_sim_page(code=code, error=data["error"])
-    return _render_intraday_sim_page(code=code, data=data)
+        return _with_intraday_bt(_render_intraday_sim_page(
+            code=code, error=data["error"]))
+    return _with_intraday_bt(_render_intraday_sim_page(code=code, data=data))
+
+
+def _with_intraday_bt(html: str) -> str:
+    """盤中模擬頁尾附上自己的回測(策略與回測同區塊)。"""
+    try:
+        return html.replace("</body>", _bt_fragment(
+            intraday_sim_backtest, "盤中模擬回測", "bt-intraday", set())
+            + "</body>", 1)
+    except Exception:
+        return html
 
 
 _BACKTEST_GLOSSARY.update({
@@ -5130,8 +5224,8 @@ def chip_price():
 
 def _render_turnaround_backtest_page(data: dict | None = None, error: str = "") -> str:
     nav = (__import__("site_nav").nav_html(None) + '<nav><a href="/">← 大盤 dashboard</a>'
-           '<a href="/backtests#second-wave">🌊 第二波回測</a>'
-           '<a href="/backtests#turnaround">🔄 轉機接力回測</a></nav>')
+           '<a href="/#bt-second-wave">🌊 第二波回測</a>'
+           '<a href="/#bt-turnaround">🔄 轉機接力回測</a></nav>')
     css = """<style>
   body { font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
          max-width:1100px; margin:1em auto; padding:0 1em; background:#f7f7f9; color:#222; }
@@ -5322,9 +5416,9 @@ def turnaround_backtest():
 
 def _render_lending_backtest_page(data: dict | None = None, error: str = "") -> str:
     nav = (__import__("site_nav").nav_html(None) + '<nav><a href="/">← 大盤 dashboard</a>'
-           '<a href="/backtests#second-wave">🌊 第二波回測</a>'
-           '<a href="/backtests#turnaround">🔄 轉機接力回測</a>'
-           '<a href="/backtests#lending">🔻 借券回測</a></nav>')
+           '<a href="/#bt-second-wave">🌊 第二波回測</a>'
+           '<a href="/#bt-turnaround">🔄 轉機接力回測</a>'
+           '<a href="/#bt-lending">🔻 借券回測</a></nav>')
     css = """<style>
   body { font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
          max-width:1200px; margin:1em auto; padding:0 1em; background:#f7f7f9; color:#222; }
@@ -5633,81 +5727,39 @@ a:hover { text-decoration:underline; }
 
 
 
-# ── 策略回測總覽(2026-08-01 用戶要求:所有回測同一頁,不另開頁面)──
-_BT_SECTIONS = [
-    ("concept", "🧪 族群策略回測", lambda: concept_backtest()),
-    ("second-wave", "🌊 第二波回測", lambda: second_wave_backtest()),
-    ("turnaround", "🔄 轉機接力回測", lambda: turnaround_backtest()),
-    ("lending", "🔻 借券回測", lambda: lending_backtest()),
-    ("intraday", "📉 盤中模擬回測", lambda: intraday_sim_backtest()),
-    ("broker", "🎯 主力雷達回測", lambda: broker_radar_backtest()),
-]
-
-
 @app.route("/backtests")
-def backtests_page():
-    import re as _re
-    styles, parts, toc = [], [], []
-    for anchor, title, fn in _BT_SECTIONS:
-        try:
-            html = fn()
-            if isinstance(html, tuple):
-                html = html[0]
-        except Exception as e:
-            parts.append(f'<section id="{anchor}"><h2>{title}</h2>'
-                         f'<p>⚠ {type(e).__name__}: {e}</p></section>')
-            toc.append(f'<a href="#{anchor}">{title}</a>')
-            continue
-        for st in _re.findall(r"<style[^>]*>.*?</style>", html, _re.S):
-            if st not in styles:
-                styles.append(st)
-        m = _re.search(r"<body[^>]*>(.*)</body>", html, _re.S)
-        body = m.group(1) if m else html
-        body = _re.sub(r"<script[^>]*>.*?</script>", "", body, flags=_re.S)
-        body = _re.sub(r"<nav.*?</nav>", "", body, flags=_re.S)
-        body = _re.sub(r"<h1[^>]*>.*?</h1>", "", body, count=1, flags=_re.S)
-        toc.append(f'<a href="#{anchor}">{title}</a>')
-        parts.append(f'<section id="{anchor}" style="scroll-margin-top:60px">'
-                     f'<h2>{title}</h2>{body}</section>')
-    nav = __import__("site_nav").nav_html("/backtests")
-    toc_html = ('<p style="line-height:2">' +
-                " · ".join(toc) + "</p>")
-    return ("<!DOCTYPE html><html lang=\"zh-Hant\"><head><meta charset=\"utf-8\">"
-            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-            "<title>策略回測總覽</title>" + "".join(styles) + "</head><body>"
-            + nav + "<h1>🧪 策略回測總覽</h1>" + toc_html
-            + "".join(parts) + "</body></html>")
+def _r_bts():
+    return redirect("/", 301)
 
 
-# 舊回測網址 → 整合頁錨點(兼容書籤/舊連結)
 @app.route("/concept-backtest")
 def _r_bt1():
-    return redirect("/backtests#concept", 301)
+    return redirect("/#bt-concept", 301)
 
 
 @app.route("/second-wave-backtest")
 def _r_bt2():
-    return redirect("/backtests#second-wave", 301)
+    return redirect("/#bt-second-wave", 301)
 
 
 @app.route("/turnaround-backtest")
 def _r_bt3():
-    return redirect("/backtests#turnaround", 301)
+    return redirect("/#bt-turnaround", 301)
 
 
 @app.route("/lending-backtest")
 def _r_bt4():
-    return redirect("/backtests#lending", 301)
+    return redirect("/#bt-lending", 301)
 
 
 @app.route("/intraday-sim-backtest")
 def _r_bt5():
-    return redirect("/backtests#intraday", 301)
+    return redirect("/intraday-sim#bt-intraday", 301)
 
 
 @app.route("/broker-radar-backtest")
 def _r_bt6():
-    return redirect("/backtests#broker", 301)
+    return redirect("/#bt-broker", 301)
 
 if __name__ == "__main__":
     import argparse
