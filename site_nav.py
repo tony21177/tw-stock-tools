@@ -18,6 +18,7 @@ NAV_LINKS = [
     ("/option-flow", "📊 選擇權法人"),
     ("/margin-scan", "💥 融資斷頭潮"),
     ("/foreign-cost", "🌐 外資成本"),
+    ("/utility-screen", "🛡 抗跌領頭羊"),
     ("/extremes", "📊 一年高低"),
     ("/seasonality", "📅 月份季節性"),
     ("/stock-futures", "🔥 個股期"),

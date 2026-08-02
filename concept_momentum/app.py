@@ -1875,6 +1875,25 @@ def ftd_page():
     return ftd.render_html(data)
 
 
+@app.route("/utility-screen")
+def utility_screen_page():
+    import tw_utility_screen as us
+    cache = os.path.join(HERE, "cache", "utility_screen_latest.json")
+    data = None
+    if os.path.exists(cache):
+        try:
+            with open(cache, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = None
+    if data is None:
+        try:
+            data = us.scan()
+        except Exception as e:
+            data = {"error": f"{type(e).__name__}: {e}"}
+    return us.render_html(data)
+
+
 @app.route("/foreign-cost")
 def foreign_cost_page():
     import tw_foreign_cost as fcst
