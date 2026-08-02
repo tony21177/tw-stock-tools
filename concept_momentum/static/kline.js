@@ -251,6 +251,8 @@
     document.addEventListener('click', function (e) {
       if (e.target.closest && e.target.closest('.klx-mask')) return;
       if (e.target.closest && e.target.closest('a,button,input,select,summary')) return;
+      var kx = e.target.closest && e.target.closest('[data-kx]');
+      if (kx) { openPopup(kx.getAttribute('data-kx')); return; }
       var c = codeOf(e.target);
       if (c) openPopup(c);
     });

@@ -794,7 +794,7 @@ document.addEventListener('DOMContentLoaded', function() {{
   }});
 }});
 </script>
-<script src="/kline.js?v=4"></script>
+<script src="/kline.js?v=5"></script>
 </body>
 </html>
 """

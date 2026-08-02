@@ -170,6 +170,40 @@ def scan(token: str | None = None) -> dict:
     }
 
 
+def _warm_kline(codes, token):
+    """預抓名單個股日K → cache/kline/{code}.json(與 /api/kline 同格式)。"""
+    import time as _t
+    from datetime import timedelta as _td
+    import finmind_client as fc
+    kdir = os.path.join(CACHE, "kline")
+    os.makedirs(kdir, exist_ok=True)
+    today = datetime.now().strftime("%Y-%m-%d")
+    start = (datetime.now() - _td(days=240)).strftime("%Y-%m-%d")
+    for c in codes:
+        p = os.path.join(kdir, f"{c}.json")
+        try:
+            if os.path.exists(p):
+                with open(p, encoding="utf-8") as f:
+                    if json.load(f).get("_asof") == today:
+                        continue
+            rows = fc.fetch_stock_price(c, start, today, token)
+            out = [[r["date"], r["open"], r["max"], r["min"], r["close"],
+                    round((r.get("Trading_Volume") or 0) / 1000)]
+                   for r in rows
+                   if all(r.get(k) is not None for k in ("open", "max", "min", "close"))]
+            try:
+                from stock_names import get_name as _gn
+                nm = _gn(c, "")
+            except Exception:
+                nm = ""
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump({"_asof": today, "code": c, "name": nm,
+                           "rows": out[-160:]}, f, ensure_ascii=False)
+            _t.sleep(0.15)
+        except Exception:
+            continue
+
+
 def build_and_save(token: str | None = None) -> dict:
     data = scan(token)
     if not data.get("error"):
@@ -177,6 +211,8 @@ def build_and_save(token: str | None = None) -> dict:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
         os.replace(tmp, LATEST)
+        _warm_kline([r["code"] for r in data["rows"]], token
+                    or os.environ.get("FINMIND_TOKEN", ""))
     return data
 
 
@@ -219,14 +255,93 @@ def render_html(data: dict) -> str:
                   f'大盤距 200 日高 {st["days_since"]} 個交易日(啟動需 >{ACT_MIN});'
                   f'目前顯示<b>標準年 RS(250 天)</b>版篩選。</section>')
     rows = data["rows"]
-    body = [banner,
+    avg_rs = (sum(r["rs"] for r in rows) / len(rows)) if rows else 0
+    max_rs = max((r["rs"] for r in rows), default=0)
+    tiles = (
+        '<section style="display:flex;gap:10px;flex-wrap:wrap;padding:10px 14px">'
+        + "".join(
+            f'<div style="min-width:110px"><div class="small">{k}</div>'
+            f'<div style="font-size:1.35em;font-weight:700">{v}</div></div>'
+            for k, v in [("符合股票數", len(rows)),
+                          ("距高點日數", f"{st['days_since']} 天"),
+                          ("最高 RS", f"{max_rs:.0f}"),
+                          ("平均 RS", f"{avg_rs:.1f}")])
+        + '</section>')
+    body = [banner, tiles,
             f'<section><p class="small">濾網:區間RS>{RS_MIN}(全市場百分位,'
             f'IBD 加權式=視窗切四段、最近段雙倍)+ 股價>MA200 + MA50>MA200 + '
             f'日均成交額>1億(近20日估)+ 距自身200日高<{DIST_MAX:.0%}。'
             f'母體 {data["n_universe"]} 檔 → 符合 <b>{len(rows)}</b> 檔,依 RS 排序。'
-            f'點代號看 K 線。</p></section>']
+            f'<b>點卡片開大圖 K 線</b>。</p></section>']
     if rows:
-        h = ['<section><table><thead><tr><th>#</th><th>標的</th><th>現價</th>'
+        cards = ['<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px">']
+        for r in rows:
+            dh = r["dist_high"]
+            cards.append(
+                f'<div class="uscard" data-kx="{r["code"]}" style="background:#151b23;'
+                f'border:1px solid #223041;border-radius:8px;padding:6px;cursor:pointer">'
+                f'<canvas class="usmini" data-code="{r["code"]}" '
+                f'style="width:100%;height:110px;display:block"></canvas>'
+                f'<div style="font:600 12px monospace;color:#dfe6ee;margin-top:4px">'
+                f'{_h.escape(r["code"])} {_h.escape(r["name"])}</div>'
+                f'<div style="font:10px monospace;margin-top:2px;display:flex;gap:6px;flex-wrap:wrap">'
+                f'<span style="background:#1f6feb;color:#fff;border-radius:3px;padding:0 5px">RS {r["rs"]:.0f}</span>'
+                f'<span style="background:#5c4c1d;color:#e6c56a;border-radius:3px;padding:0 5px">距高點 -{dh:.1f}%</span>'
+                f'<span style="color:#8b98a9">成交額 {r["money_e8"]:.2f}億</span>'
+                f'</div></div>')
+        cards.append('</div>')
+        body.append('<section>' + "".join(cards) + '</section>')
+        # mini chart 渲染器(讀 /api/kline,近120根:蠟燭+MA20/60+量)
+        body.append("""<script>
+(function(){
+  var UP='#ff4d4d',DN='#2ecc8f';
+  function sma(a,n){var o=[],s=0;for(var i=0;i<a.length;i++){s+=a[i];if(i>=n)s-=a[i-n];o.push(i>=n-1?s/n:null);}return o;}
+  function mini(cv,rows){
+    rows=rows.slice(-120);
+    var dpr=window.devicePixelRatio||1,W=cv.clientWidth,H=cv.clientHeight;
+    cv.width=W*dpr;cv.height=H*dpr;
+    var g=cv.getContext('2d');g.scale(dpr,dpr);
+    var n=rows.length,cw=W/n,bw=Math.max(1,cw*0.7);
+    var pH=H*0.74,vT=H*0.78,vH=H*0.22;
+    var hi=-1e18,lo=1e18;
+    rows.forEach(function(r){hi=Math.max(hi,r[2]);lo=Math.min(lo,r[3]);});
+    var pr=hi-lo||1;
+    var Y=function(p){return 2+(pH-4)*(1-(p-lo)/pr);};
+    var X=function(i){return i*cw+cw/2;};
+    rows.forEach(function(r,i){
+      var up=r[4]>=r[1];g.strokeStyle=g.fillStyle=up?UP:DN;var x=X(i);
+      g.beginPath();g.moveTo(x,Y(r[2]));g.lineTo(x,Y(r[3]));g.stroke();
+      var y1=Y(Math.max(r[1],r[4])),y2=Y(Math.min(r[1],r[4]));
+      g.fillRect(x-bw/2,y1,bw,Math.max(1,y2-y1));});
+    [[20,'#f5d34c'],[60,'#4cc2ff']].forEach(function(mc){
+      var m=sma(rows.map(function(r){return r[4];}),mc[0]);
+      g.strokeStyle=mc[1];g.lineWidth=1;g.beginPath();var b=false;
+      m.forEach(function(v,i){if(v==null)return;var y=Y(v);
+        b?g.lineTo(X(i),y):g.moveTo(X(i),y);b=true;});
+      g.stroke();});
+    var vm=0;rows.forEach(function(r){vm=Math.max(vm,r[5]);});vm=vm||1;
+    rows.forEach(function(r,i){g.fillStyle=r[4]>=r[1]?UP:DN;
+      var h=vH*r[5]/vm;g.fillRect(X(i)-bw/2,vT+vH-h,bw,h);});
+  }
+  var cvs=[].slice.call(document.querySelectorAll('canvas.usmini'));
+  var q=cvs.slice(),act=0;
+  function next(){
+    if(!q.length)return;
+    if(act>=5){return;}
+    var cv=q.shift();act++;
+    fetch('/api/kline/'+cv.getAttribute('data-code'))
+      .then(function(r){return r.json();})
+      .then(function(d){if(d.rows&&d.rows.length)mini(cv,d.rows);})
+      .catch(function(){})
+      .then(function(){act--;next();});
+    next();
+  }
+  next();
+})();
+</script>""")
+        # 完整表格(摺疊)
+        h = ['<details style="margin-bottom:12px"><summary style="cursor:pointer" class="small">📋 表格檢視(可排序)</summary>',
+             '<section><table><thead><tr><th>#</th><th>標的</th><th>現價</th>'
              f'<th>區間RS</th><th>{n}日報酬</th><th>距200日高</th>'
              '<th>日均額(億)</th></tr></thead><tbody>']
         for i, r in enumerate(rows, 1):
@@ -240,7 +355,7 @@ def render_html(data: dict) -> str:
                 f'{wr:+.1f}%</td>'
                 f'<td data-v="{r["dist_high"]}">−{r["dist_high"]:.1f}%</td>'
                 f'<td data-v="{r["money_e8"]}">{r["money_e8"]:.1f}</td></tr>')
-        h.append('</tbody></table></section>')
+        h.append('</tbody></table></section></details>')
         body.append("".join(h))
     else:
         body.append('<section><p class="small">(目前無符合標的)</p></section>')
