@@ -77,7 +77,10 @@ rsync -az 舊機:/home/kun/project/tw_stock_tools/concept_momentum/cache/ \
 
 1. **主機每日快照**:crontab 加 `30 23 * * * ~/project/tw_stock_tools/deploy/backup_caches.sh`
    (tar 輪替留 7 份,~/backups/,約 2-3GB)
-2. **筆電天然異地備份**:每次開發 `pull_caches.sh --all` 拉全量 = 順便異地備份
+2. **筆電自動異地備份**:筆電 crontab 掛 `deploy/pull_backup.sh`
+   (`@reboot` 每次開機拉 + 開機期間每 4 小時確認)→ 主機的 7 份 tar 快照
+   自動同步到筆電 `~/backups_oracle/`;rsync 增量,每次只傳新的那份。
+   另 `pull_caches.sh --all` 是拉「解開的原始快取」供開發測試,兩者用途不同
 3. (可選)Oracle Object Storage 免費 20GB 再放一份週備份
 
 資料流動單向:**主機是唯一寫入者,筆電只讀副本** — 不會再發生本機誤跑污染歷史檔。
