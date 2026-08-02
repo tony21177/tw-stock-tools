@@ -73,7 +73,7 @@ rsync -az 舊機:/home/kun/project/tw_stock_tools/concept_momentum/cache/ \
 
 嫌大就整包搬(最省事,快取全保留、免 backfill)。
 
-## 4. 驗收清單
+## 4. 驗收清單(常駐主機)
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" http://localhost:5000/          # 200
@@ -83,7 +83,21 @@ crontab -l | wc -l        # ~30 條
 ```
 手機開 ngrok 網址 → 首頁深色 + 點任一代號出 K 線彈窗 = 成功。
 
-## 5. 新機上的 Claude Code 開始工作前
+## 5. 筆電開發 + 常駐主機服務(分離架構,2026-08-02 定案)
+
+**開發在筆電(想關就關),服務在常駐主機(24/7)**:
+
+- 常駐主機:照本文件 §1-4 完整還原(網站/cron/推播/快取都在這;快取的家在這邊)。
+- 筆電:只需 repo + Claude 資產(§2 的 Claude 部分)+ 開發用 FINMIND_TOKEN;
+  **不裝 crontab、不跑 systemd**(避免雙重推播/資料污染)。
+- 日常流程:
+  1. 筆電開發 → `./deploy/deploy.sh user@prod`(push + 遠端 pull + 重啟 + 健檢)
+  2. 或懶人法:常駐主機掛 `deploy/autopull.sh`(每 10 分自動 pull+重啟)
+  3. 筆電要測試資料 → `./deploy/pull_caches.sh user@prod`(拉共用快取;--all 全拉)
+  4. memory 有更新 → commit 前跑 `deploy/sync_claude_assets.sh`
+- ⚠ 只在常駐主機跑 cron;筆電手動測工具時**不要帶 --telegram/--line-to**(免重複推播)。
+
+## 6. 新機上的 Claude Code 開始工作前
 
 1. 確認 memory 已就位(session 會自動載入 `MEMORY.md` 索引)
 2. 讀 `README.md`(策略索引)+ 該次要動的 `docs/` 策略文件
