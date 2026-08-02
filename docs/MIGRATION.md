@@ -107,8 +107,10 @@ crontab -l | wc -l        # ~30 條
   - 主機(primary):`envsubst < crontab.primary.txt | crontab -`
   - 筆電(standby):`envsubst < crontab.standby.txt | crontab -`
     (已去推播旗標;另加 fill_gaps/pull_backup 兩條,見下)
-- 筆電關機期間的資料洞:`deploy/fill_gaps.sh`(@reboot + 每晚 23:00)
-  從主機 `--ignore-existing` 補缺日、不覆蓋本機 → 兩邊收斂一致。
+- **雙向補洞** `deploy/fill_gaps.sh`(筆電 @reboot + 每晚 23:00):
+  逐日快取兩邊互補缺口(拉:筆電關機漏的;推:主機當機/漏抓的)
+  `--ignore-existing` 聯集語意、絕不覆蓋 → **兩邊都收斂到最完整資料**。
+  latest/彙總類檔不同步(各自 cron 每日重建,天然一致)。
 - **故障切換(1 分鐘)**:主機掛了 → 筆電 `envsubst < crontab.primary.txt | crontab -`
   並 `systemctl --user start ngrok-tunnel`(靜態域名自動跟過來);修復後換回。
 - 日常流程:
