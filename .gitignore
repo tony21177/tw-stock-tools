@@ -50,3 +50,4 @@ concept_momentum/cache/kbar/
 concept_momentum/cache/intraday_mkt_matrix.json
 concept_momentum/cache/intraday_sim_backtest.json
 concept_momentum/cache/broker_radar_backtest.json
+deploy/secrets.env

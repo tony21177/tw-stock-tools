@@ -1,0 +1,43 @@
+- [Evidence-based answers](feedback_evidence_based.md) — never guess; say "I don't know" when unsure; verify before asserting
+- [tw_stock_tools location & usage](reference_tw_stock_tools.md) — 台股借券/融資監控工具組在 ~/project/tw_stock_tools/，有完整 README；Telegram chat_id -5229750819
+- [tw_us_correlation default to scan-all](feedback_correlation_scan_default.md) — 查美股 vs 台股相關性時預設全掃 --scan，不要憑直覺挑概念
+- [Update README with every change](feedback_update_readme_with_changes.md) — 每次重大改動 code 都要同步更新 README，不能只 commit code
+- [轉機接力策略 (Turnaround Relay)](reference_strategy_turnaround_relay.md) — tw_daily_screen.py 兩層篩選的策略代號，別名「轉機接力 / 轉機出量能 / TR 策略」，盤前 07:30 cron
+- [強勢股第二波 (Second Wave)](reference_strategy_second_wave.md) — tw_second_wave.py：強勢漲 → 1-2 週急殺 15-25% → 反彈啟動的純技術面 setup
+- [八大策略命名總表](reference_all_strategies.md) — 轉機接力 / 強勢股第二波 / 借券雷達 / 族群熱力 / 主力雷達 / 空頭撤退 / 沉睡巨人 / 美台聯動 對應的工具與排程
+- [/chip skill](reference_chip_skill.md) — 自製 user-level skill 做台股單檔籌碼三線整合 (借券+分點+融資)，含 6 條判讀紀律
+- [大盤寬度看板](reference_market_breadth_dashboard.md) — concept_momentum dashboard 最上方分頁，13 欄 × 60 天大盤+市場寬度數據；自製功能於 2026-05-10 加入
+- [策略歷史榜三分頁](reference_strategy_history_tabs.md) — concept_momentum dashboard 第 2-4 分頁：主力雷達歷史榜 / 盤前訊號 / 借券動向；2026-05-10 加入
+- [FinMind sponsor migration](reference_finmind_migration.md) — 2026-05-11 多個工具改用 FinMind sponsor（lending/prices）；分點 BSR + 還券明細 + 美股仍用原資料源
+- [Cron FINMIND_TOKEN 必設](feedback_cron_finmind_token.md) — Yahoo/TWSE→FinMind 遷移後 cron line 必須帶 FINMIND_TOKEN env，否則靜默失敗
+- [/chip-price skill](reference_chip_price_skill.md) — 自製 skill 做台股單檔當日 BSR broker × price 二維分析；2026-05-13 加入
+- [chip-price 報告必須完整 4 段](feedback_chip_price_telegram_format.md) — 推 Telegram 時禁止省略三階段或任何 section，必須完整貼 format_report 輸出
+- [chip skill 21:30 disclaimer 要 check 當前時間](feedback_chip_skill_time_check.md) — 跑 chip 前先 `date '+%H:%M'`，過 21:30 就標 final 不加 disclaimer
+- [chip 報告必查除權息日 + SBL 真實賣空/平倉/餘額 + 還券五層 caveat](feedback_borrow_pnl_check.md) — chip 前強制查 TaiwanStockDividend 確認 30 天內除權息事件 (⚠ 只有融券有強制回補；借券賣出不強制、可付權益補償，除息前還券潮=召回+自主驅動 ≠ 主動撤退)；借券面 6 條數據強制；借券≠賣空、還券≠平倉、賣價≠借入日開盤、P/L 寫區間
+- [webwright 安裝與用法](reference_webwright.md) — MS Research 瀏覽器 agent harness，~/project/webwright；CLI + Claude Code plugin（marketplace add 要先做）；建了 python→python3 symlink
+- [cron 補跑分類規則](feedback_cron_backfill_rules.md) — 補漏掉的累積數據前先分類：借券/SBL/大盤寬度可從 FinMind 指定日期乾淨補；主力雷達+盤前篩選是 datetime.now() 綁定，硬補會污染 bsr_cache，永久缺別補
+- [margin_lookup 收盤後現價會 stale](feedback_margin_lookup_stale_price.md) — tw_margin_lookup.py Yahoo 404 fallback，收盤後現價可能是盤中舊值；引用維持率/收盤價前先用 FinMind 官方收盤校正
+- [FinMind 沒有 ≠ 財報沒有](feedback_finmind_not_equal_financial_report.md) — 斷言某股「財報沒某科目」前要翻 MOPS 真實財報 PDF 全文搜尋，不能只看 FinMind XBRL 彙總（埋在附註的科目它不一定有）
+- [Dashboard 術語必解釋](feedback_dashboard_glossary.md) — 網頁所有術語要白話解釋；用 app.py _BACKTEST_GLOSSARY + _glossary_section 機制
+- [回測基礎設施 2026-07](reference_backtest_infra.md) — backtest_lib/v2面板/6回測頁/成效追蹤器(週一08:10 TG週報)；各策略回測結論摘要
+- [族群資金流功能](reference_money_flow.md) — concept_momentum 34 主題法人淨流+占比輪動+四象限標記；門檻 0.15pp/0.5億未回測；2026-07-14 上線
+- [兩波下殺籌碼對比 /chip-compare](reference_chip_episode_compare.md) — 單檔兩期價格+借券+外資+融資對比頁；FinMind 單位教訓：融資=張(勿/1000)、借券/法人=股
+- [每日分點快取建置器 chip_cache_builder](reference_chip_cache_builder.md) — 20:30 cron 抓族群∪強勢∪熱門∪watchlist 補 broker_monitor top-200 融資選股缺口；跳過當日已快取
+- [權證量能觀察 /warrant-signal](reference_warrant_signal.md) — TWSE 六類權證爆量×失衡；回測無edge但當觀察工具上線(頁面紅字揭露)；FinMind無權證資料
+- [期貨基差必用除息調整後基差](feedback_futures_basis_dividend.md) — 加權指數是價格指數，除權息旺季結構性逆價差非看空；index_dividend_points.py 精算剩餘除息點數D、前50大權值股覆蓋
+- [隔日沖分點註冊表 daytrade_brokers](reference_daytrade_brokers.md) — 種子+多來源網路交叉比對+資料驅動(大買隔日倒比例)；敘事打⚡隔日沖標籤不改身分分類；永豐匯立雙重確認不在名單
+- [個股期火熱排行 /stock-futures](reference_stock_futures_ranking.md) — 全市場個股期按成交量排名+熱門標記；TAIFEX對照+FinMind；每交易日15:30推睏霸數錢；2026-07-24 停AI敘事改推這個
+- [林則行矩陣選股 /lin-matrix](reference_lin_matrix.md) — 低量箱型盤整→爆量突破+堆疊偵測；三類輸出(突破/貼天花板/盤整)；每交易日15:00推睏霸數錢+田尾三人幫
+- [明天大盤預期 /market-tomorrow](reference_market_overnight.md) — 隔夜美股(SOX/Nasdaq/ADR)→隔天加權指數方向;回測跳空81%/收-收72%,只做指數(個股救不了)
+- [一年高低極端榜 /extremes](reference_extremes.md) — 距最高點跌幅Top20+距最低點漲幅Top20;還原價全市場;每交易日20:00推兩群;LINE每月額度2026-07用完
+- [全市場融資維持率斷頭掃描 /margin-scan](reference_margin_scan.md) — 追繳/斷頭區<130%+邊緣130-140%;遞迴成本線;每交易日22:15重建;首掃195+175檔
+- [月份季節性 /seasonality](reference_seasonality.md) — 指數月份勝率(Yahoo月線,加權/美股/櫃買/台指期)+台股漲停家數月份統計(2015-06起10%制);tw_seasonality.py;每月1號cron
+- [選擇權法人籌碼 /option-flow](reference_option_flow.md) — TXO自營收put觀察(淨收=賣-買金額,≥1億且≥P90);已回測:隔日無edge、5-10日反彈傾向=恐慌事件標記;17:00 cron訊號觸發才推(FinMind同步lag)
+- [FTD 反彈確認日 /ftd](reference_ftd.md) — 歐尼爾FTD狀態機(加權/S&P/Nasdaq);失敗率27.5/25.6/28.8%對上文獻;破防線=停損;07:35+21:45 cron新FTD才推
+- [site_nav 全站共用UI](reference_site_nav.md) — 新頁必掛 nav_html()(自動得排序/sticky/拖拉/深色/favicon);推播連結用 public_url;concept_charts 是 f-string 大括號要跳脫
+- [改動後必須全面檢查](feedback_change_sweep_all.md) — 修一處前先 grep 全 repo 同類 pattern;改cron同步查文案/推播/README;日期文案必考慮非交易日
+- [借券大增/回補事件研究](reference_sbl_surge_study.md) — 門檻用股本%(法定上限10%);大增≠會跌(H60遠勝對照)、回補後5-10日唯一超額轉正;sbl_day快取250天可複用
+- [外資成本線 /foreign-cost](reference_foreign_cost.md) — 遞迴成本(官方持股反推)篩現價110-140%;收斂度<0.3不列入;已VWAP交叉驗證;20:40 cron
+- [有股期一律標★](feedback_star_futures.md) — 全站標準;fut_stock_set() helper;在 name 源頭加星;已覆蓋11個工具
+- [Utility Screen 抗跌領頭羊 /utility-screen](reference_utility_screen.md) — Minervini修正期區間RS(距高點天數為視窗,>20日啟動);濾網RS>85+MA結構+貼高點;與FTD搭檔;20:50 cron
+- [VCP 波動收縮掃描 /vcp](reference_vcp_screen.md) — Minervini型態(遞減收縮+量縮+pivot突破);趨勢模板前置;突破日推TG;與utility/FTD三件套;21:00 cron;未回測

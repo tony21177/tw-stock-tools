@@ -1,0 +1,15 @@
+[Unit]
+Description=Concept Momentum Dashboard (Flask on :5000)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/kun/project/tw_stock_tools
+ExecStart=/usr/bin/python3 /home/kun/project/tw_stock_tools/concept_momentum/app.py --port 5000
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/home/kun/.local/log/concept-dashboard.log
+StandardError=append:/home/kun/.local/log/concept-dashboard.log
+
+[Install]
+WantedBy=default.target

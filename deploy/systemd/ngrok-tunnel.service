@@ -1,0 +1,16 @@
+[Unit]
+Description=ngrok tunnel for Concept Momentum Dashboard
+After=concept-dashboard.service network-online.target
+Requires=concept-dashboard.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sleep 2
+ExecStart=/usr/local/bin/ngrok http 5000 --log=stdout
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/home/kun/.local/log/ngrok.log
+StandardError=append:/home/kun/.local/log/ngrok.log
+
+[Install]
+WantedBy=default.target

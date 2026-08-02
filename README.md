@@ -69,5 +69,8 @@
 
 ## 開發備忘
 
+**搬機 / 讓另一台 Claude Code 接續** → [docs/MIGRATION.md](docs/MIGRATION.md)(memory/skills/crontab/systemd 都在 `claude/` 與 `deploy/`)。
+
+
 環境變數 / 檔案位置 / 回測共用工具(backtest_lib)/ 參數掃描(tw_param_sweep,
 他人 WIP 勿動)/ 資料源文件 / 部署需求 / Backlog → 全在 [docs/infra.md](docs/infra.md)。
