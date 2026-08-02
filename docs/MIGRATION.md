@@ -99,9 +99,18 @@ crontab -l | wc -l        # ~30 條
 
 **開發在筆電(想關就關),服務在常駐主機(24/7)**:
 
-- 常駐主機:照本文件 §1-4 完整還原(網站/cron/推播/快取都在這;快取的家在這邊)。
-- 筆電:只需 repo + Claude 資產(§2 的 Claude 部分)+ 開發用 FINMIND_TOKEN;
-  **不裝 crontab、不跑 systemd**(避免雙重推播/資料污染)。
+**模式(2026-08-02 定案):Active-Active 資料 / Single-Push 通知**
+
+- 兩邊都跑同一套 cron(資料雙軌累積,互為備援);
+  **推播與 ngrok 只在 primary**(避免通知×2 與域名衝突)。
+- 角色 crontab 由 `deploy/make_crontabs.sh` 產生:
+  - 主機(primary):`envsubst < crontab.primary.txt | crontab -`
+  - 筆電(standby):`envsubst < crontab.standby.txt | crontab -`
+    (已去推播旗標;另加 fill_gaps/pull_backup 兩條,見下)
+- 筆電關機期間的資料洞:`deploy/fill_gaps.sh`(@reboot + 每晚 23:00)
+  從主機 `--ignore-existing` 補缺日、不覆蓋本機 → 兩邊收斂一致。
+- **故障切換(1 分鐘)**:主機掛了 → 筆電 `envsubst < crontab.primary.txt | crontab -`
+  並 `systemctl --user start ngrok-tunnel`(靜態域名自動跟過來);修復後換回。
 - 日常流程:
   1. 筆電開發 → `./deploy/deploy.sh user@prod`(push + 遠端 pull + 重啟 + 健檢)
   2. 或懶人法:常駐主機掛 `deploy/autopull.sh`(每 10 分自動 pull+重啟)
