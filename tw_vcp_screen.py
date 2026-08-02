@@ -19,7 +19,8 @@ VCP 波動收縮型態掃描 (tw_vcp_screen) — Minervini Volatility Contractio
   突破:收盤 > 昨日前的 pivot 且 當日量 ≥ 50日均量×1.5 = 「今日突破」→ 推播
 
 資料:year_prices 還原高低收 + vol_day 量(自動補到 60 日)。
-⚠ 未回測(林則行箱型突破台股回測為負的前車之鑑已揭露;VCP 條件不同待驗)。
+⚠ 已回測(tw_vcp_backtest,2026-08-02):一年僅 8 事件、失敗率 50%、H20 超額 −5.2%
+  (趨勢模板對照 +1.8%)→ 台股機械式追突破無證據有效,定位=觀察清單。
 
 用法:
   tw_vcp_screen.py --build              # 掃描 + 寫 cache
@@ -263,8 +264,10 @@ def push_breakouts(data: dict, bot: str, chat_id: str):
             f"  收縮 {'→'.join(str(x) + '%' for x in r['depths'])} "
             f"| 突破量 {r.get('brk_vol_x', 0)}x"
             + (" | 🛡抗跌名單" if r["in_utility"] else ""))
-    lines += ["", "⚠ 未回測、非買賣訊號。詳: "
-              + __import__("site_nav").public_url("/vcp")]
+    lines += ["", "🧪 回測(2025-05~2026-05):事件僅8次、失敗率50%、",
+              "H20超額 −5.2%(模板對照 +1.8%)— 台股機械式追突破無證據有效,",
+              "多為低波動金融股假突破。此為觀察通知、強烈不建議直接追價。",
+              "詳: " + __import__("site_nav").public_url("/vcp")]
     body = urllib.parse.urlencode(
         {"chat_id": chat_id, "text": "\n".join(lines)}).encode()
     try:
@@ -386,6 +389,39 @@ def render_html(data: dict) -> str:
   next();
 })();
 </script>"""
+    bt_html = ""
+    btp = os.path.join(CACHE, "vcp_backtest.json")
+    if os.path.exists(btp):
+        try:
+            bt = json.load(open(btp, encoding="utf-8"))
+            rows_h = []
+            for h in (5, 10, 20, 60):
+                e = bt["H"][str(h)]["exc"]
+                a = bt["H"][str(h)]["abs"]
+                tm = bt["base_tmpl"][str(h)]["exc"]
+                if not a.get("n"):
+                    continue
+                rows_h.append(f'<tr><td>H{h}</td><td>{a["win"]:.0f}%</td>'
+                              f'<td>{e["mean"]:+.2f}%</td><td>{tm["mean"]:+.2f}%</td></tr>')
+            bt_html = (
+                '<section><h3>🧪 回測(' + _h.escape(bt.get("window", "")) + ','
+                f'walk-forward point-in-time,事件 {bt.get("n_events")} 次,'
+                f'突破失敗率 {bt.get("fail_rate")}%)</h3>'
+                '<table style="max-width:520px"><thead><tr><th>後續</th><th>絕對勝率</th>'
+                '<th>超額(減大盤)</th><th>趨勢模板對照超額</th></tr></thead><tbody>'
+                + "".join(rows_h) + '</tbody></table>'
+                '<p class="small" style="color:#b03a2e;line-height:1.6">'
+                '⚠ <b>結論:目前參數下「VCP 突破追價」在台股無證據有 edge,方向偏負。</b>'
+                '①一年僅 8 次事件=極稀有,統計不可靠,但方向一致偏負(H20 超額 −5.2%,'
+                '而同期「僅通過趨勢模板」對照為 +1.8%)。②事件幾乎全是<b>低波動金融股'
+                '(台中銀/聯邦銀/開發金/國票金…)的假突破</b> —— 末段緊縮 ≤8% + 量縮'
+                '條件在台股天然偏向抓到牛皮金融股,而非美股式成長股 VCP;失敗率 50%。'
+                '③與林則行箱型同教訓:<b>台股「型態突破追價」一再驗證無效</b>。'
+                '本頁定位=觀察清單(看收縮與供給枯竭的過程),突破訊號僅供參考、'
+                '不建議機械式追突破;搭配 /ftd 大盤轉折與基本面自行判斷。</p></section>')
+        except Exception:
+            bt_html = ""
+
     glossary = f"""<section class="note">📖 <b>VCP 白話</b><br>
 • <b>型態邏輯</b>:上升趨勢中的整理,回檔一次比一次淺(卡片上的「18→12→6%」
 就是收縮序列)= 願意賣的人越來越少;<b>量縮(乾涸值 = 近5日均量/50日均量)</b>
@@ -399,7 +435,7 @@ FTD 大盤轉折 → 名單中 VCP 突破者為首選。大盤修正未止時,�
 非買賣訊號。</section>"""
     foot = (f'<p class="small">🕙 每交易日 21:00 更新,突破日推 Telegram · 更新於 '
             f'{_h.escape(data.get("as_of", ""))}</p>')
-    return head + "".join(body) + mini_js + glossary + foot + '</body></html>'
+    return head + "".join(body) + mini_js + bt_html + glossary + foot + '</body></html>'
 
 
 def main():

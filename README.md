@@ -26,7 +26,7 @@
 | 20:00 | 📊 一年高低榜 `/extremes` | 距一年高跌最深/距低漲最多 Top20,推兩群 | — | [docs](docs/strategies/extremes.md) |
 | 20:40 | 🌐 外資成本線 `/foreign-cost` | 遞迴外資成本,110-140% 穩健區+140%+動能區 | ✅ 單調梯度:獲利越多越強 | [docs](docs/strategies/foreign-cost.md) |
 | 20:50 | 🛡 抗跌領頭羊 `/utility-screen` | Minervini 修正期區間RS(距高點天數為窗)卡片牆 | ⚠ 未回測 | [docs](docs/strategies/utility-screen.md) |
-| 21:00 | 🌀 VCP 波動收縮 `/vcp` | 遞減收縮+量縮+pivot,突破日推 | ⚠ 未回測 | [docs](docs/strategies/vcp.md) |
+| 21:00 | 🌀 VCP 波動收縮 `/vcp` | 遞減收縮+量縮+pivot,突破日推 | ⚠ 初步負(8事件/失敗率50%,僅觀察) | [docs](docs/strategies/vcp.md) |
 | 21:30 | 🌙 空頭撤退(推播) | 借券賣餘大減+🎯重空回補(股本%口徑) | ✅ 回補後5-10日唯一正超額 | [docs](docs/tools/lending-monitor.md) |
 | 22:15 | 💥 融資斷頭潮 `/margin-scan` | 融資大減washout+賣壓/量%+維持率 | —(方法學驗證) | [docs](docs/strategies/margin-scan.md) |
 | 每月1號 | 📅 月份季節性 `/seasonality` | 7指數月份勝率+台股漲停家數月統計 | —(統計) | [docs](docs/strategies/seasonality.md) |
