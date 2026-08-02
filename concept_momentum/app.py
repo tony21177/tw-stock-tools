@@ -1875,6 +1875,25 @@ def ftd_page():
     return ftd.render_html(data)
 
 
+@app.route("/vcp")
+def vcp_page():
+    import tw_vcp_screen as vs
+    cache = os.path.join(HERE, "cache", "vcp_latest.json")
+    data = None
+    if os.path.exists(cache):
+        try:
+            with open(cache, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            data = None
+    if data is None:
+        try:
+            data = vs.scan()
+        except Exception as e:
+            data = {"error": f"{type(e).__name__}: {e}"}
+    return vs.render_html(data)
+
+
 @app.route("/utility-screen")
 def utility_screen_page():
     import tw_utility_screen as us
