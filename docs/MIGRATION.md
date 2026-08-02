@@ -116,3 +116,32 @@ crontab -l | wc -l        # ~30 條
 3. 鐵律都在 memory:紅漲綠跌、★ 標記、術語白話、改動全檢查、
    新頁 checklist(`reference-site-nav`)、commit 規範(明確 stage、勿 `git add -A`)
 4. **舊機持續開發時**:commit 前跑 `deploy/sync_claude_assets.sh` 讓 memory/skills 同步進版控
+
+## 7. 回遷:關掉雲端、改回本地跑
+
+整套架構可逆,回遷 ≈ 30 分鐘:
+
+```bash
+# ① 最後一次全量同步(雲 → 筆電)
+./deploy/pull_caches.sh ubuntu@ORACLE_IP --all     # 原始快取全量
+./deploy/pull_backup.sh                             # 最後的 tar 快照
+
+# ② 雲端停服務(先停,避免雙跑)
+ssh -i ~/.ssh/oracle_arm ubuntu@ORACLE_IP \
+  'crontab -r; systemctl --user disable --now concept-dashboard ngrok-tunnel'
+
+# ③ 筆電恢復生產身分
+set -a && source deploy/secrets.env && set +a
+envsubst < deploy/crontab.sanitized.txt | crontab -   # 排程裝回
+systemctl --user enable --now concept-dashboard ngrok-tunnel
+# ngrok 靜態域名綁帳號不綁機器 → 雲端 agent 停掉後,筆電啟動即接手同一網址
+
+# ④ 驗收(同 §4)後,Oracle console 終止 instance(免費層,無違約金)
+```
+
+**可逆的關鍵設計**:code/文件/Claude 資產在 git;crontab/systemd 是去敏設定檔
+(secrets 分離);ngrok 域名跟帳號走;資料靠每日快照+筆電自動異地備份,
+任何時點筆電手上都有 ≤24 小時新的完整資料。
+
+⚠ 回遷後記得把筆電 crontab 裡的兩條 pull_backup 拿掉(自己拉自己無意義),
+並恢復 cron_catchup(WSL 掛機補跑又需要了)。
