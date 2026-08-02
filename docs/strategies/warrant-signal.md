@@ -1,0 +1,5 @@
+# 🎫 權證量能觀察(/warrant-signal)
+
+> 本文件自 README 拆出(2026-08-02 文件重整)。索引見 [README](../../README.md)。
+
+🎰 **權證量能觀察**（`/warrant-signal`，2026-07-22 加）— 每日盤後抓 TWSE 六類權證（`MI_INDEX?type=0999/P/B/C/X/Y`，認購/認售/牛熊/可展延），按標的現股彙總成交金額，篩「權證總額 ≥ 近20日均 2 倍」的爆量現股 + 認購/認售失衡方向 + 發行券商分布 + 主要權證明細。模組 `concept_momentum/warrant_flow.py`（抓取+彙總+日檔）、`warrant_signal.py`（爆量×失衡×方向）、`warrant_signal_backtest.py`（事件研究）、`warrant_signal_renderer.py`（頁面）。18:30 cron 每日抓取累積 `cache/warrant_flow/{date}.json`。⚠ **2026-07-21 回測（63 交易日）證實此訊號無預測 edge**：空方（認售僅認購 ~8%）從未觸發、多方無顯著正報酬（t≈0、CI95 全跨0）、收緊爆量門檻反而顯著為負（券商分銷/散戶追高的造市 confound）→ **本頁為觀察工具、非買賣訊號，回測結論在頁面紅字揭露**。**LINE 推播**（2026-07-22 加）：`warrant_push.py` 18:40 cron 把當日爆量現股 Top N 推到群組（睏霸數錢），含現股中文名 + 主要權證履約價/距到期天數，訊息最前面含無 edge 免責；收件者 `warrant_push_config.json`、沿用 `line_push.py`。**權證條款 cache**（2026-07-22 加）：`fetch_warrant_terms`/`ensure_terms` 從**元大權證網 `GetWarData.ashx` API**（POST、gzip、任何券商權證都可查）增量抓履約價/到期日/最後交易日/行使比例，靜態永久存 `cache/warrant_terms.json`（run_day 為當日 top_warrants 增量填充）；網頁 + 推播顯示履約價、距到期天數、價內外（現股收盤 vs 履約價）、行使比例。設計/回測結論見 `docs/superpowers/specs/2026-07-21-warrant-signal-design.md`
