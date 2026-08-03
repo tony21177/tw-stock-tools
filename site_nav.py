@@ -26,6 +26,7 @@ NAV_LINKS = [
     ("/lin-matrix", "📐 林則行"),
     ("/futures-basis", "📐 期貨基差"),
     ("/adr-premium", "🇺🇸 ADR"),
+    ("/us-correlation", "🔗 美台聯動"),
     ("/warrant-signal", "🎫 權證"),
     ("/money-flow", "💰 資金流"),
     ("/chip-price", "🧬 籌碼價量"),

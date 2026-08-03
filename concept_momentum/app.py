@@ -5856,6 +5856,253 @@ def _r_bt5():
 def _r_bt6():
     return redirect("/#bt-broker", 301)
 
+# ── 美台聯動:台股 vs 美股個股相關性 ─────────────────────────────
+_US_CORR_GLOSSARY = {
+    "相關係數 (correlation)": "兩個報酬序列的 Pearson 相關,−1~+1。>0.6 強相關(跟著美股動)、"
+        "0.3-0.6 中等、<0.3 弱(走自己的路)、<0 反向(少見,多半是雜訊)。",
+    "β 調整 (超額報酬)": "先各自扣掉大盤影響再比:台股扣 ^TWII、美股扣 ^GSPC 的 β 貢獻,"
+        "剩下的「超額報酬」才拿來算相關。這樣才看得出「除了大盤齊漲齊跌之外,兩檔是否真的同步」。"
+        "勾「原始報酬」則不扣,是直觀的「NVDA 漲台股也漲」視角(數字通常偏高)。",
+    "D-1 時差配對": "台股白天開盤時美股還沒開,反應的是美股「昨晚」的表現 → "
+        "配對用台股第 D 天 vs 美股第 D-1 天(最近交易日)。",
+    "視窗": "拿最近幾個台股交易日來算。240≈一年、120≈半年、60≈一季。"
+        "視窗短對近期敏感但雜訊大;長則穩定但反應慢。",
+}
+_BACKTEST_GLOSSARY.update(_US_CORR_GLOSSARY)
+
+_us_scan_state: dict = {}   # peer_key → {"status": "running"/"done"/"error", ...}
+_US_CORR_DIR = os.path.join(HERE, "cache", "us_corr")
+
+
+def _us_corr_modules():
+    sys.path.insert(0, os.path.dirname(HERE))
+    import tw_us_correlation as uc
+    import data_fetcher
+    return uc, data_fetcher
+
+
+_us_yahoo_memo: dict = {}
+
+
+def _us_memo_fetch_install(uc, data_fetcher):
+    """當日記憶化 fetch_yahoo(^TWII 等會被每檔重抓,快取省 5 成請求)。"""
+    today = datetime.now().strftime("%Y%m%d")
+    orig = data_fetcher.fetch_yahoo.__wrapped__ if hasattr(
+        data_fetcher.fetch_yahoo, "__wrapped__") else data_fetcher.fetch_yahoo
+
+    def memo(symbol, range_str="3mo"):
+        k = (symbol, range_str, today)
+        if k not in _us_yahoo_memo:
+            _us_yahoo_memo[k] = orig(symbol, range_str)
+        return _us_yahoo_memo[k]
+    memo.__wrapped__ = orig
+    data_fetcher.fetch_yahoo = memo
+    uc.fetch_yahoo = memo
+
+
+def _us_corr_compute(peers: list[str], stocks: list[str], window: int,
+                     raw: bool, code_to_concepts: dict | None) -> list[dict]:
+    uc, df = _us_corr_modules()
+    _us_memo_fetch_install(uc, df)
+    yahoo_range = "2y" if window > 200 else ("1y" if window > 100 else "6mo")
+    market_us = None if raw else "^GSPC"
+    us_excess = {}
+    for p in peers:
+        ex = uc.fetch_excess_series(p, market_us, yahoo_range)
+        if ex:
+            us_excess[p] = ex
+    if not us_excess:
+        raise RuntimeError("抓不到任何美股 peer 資料(代號打錯?)")
+    rows = []
+    for code in stocks:
+        tw_map, name = uc.fetch_tw_excess(code, raw=raw, range_str=yahoo_range)
+        if not tw_map:
+            continue
+        recent = sorted(tw_map.keys())[-window:]
+        twr = {d: tw_map[d] for d in recent}
+        corrs = {}
+        for p in peers:
+            if p not in us_excess:
+                corrs[p] = None
+                continue
+            usd = sorted(us_excess[p].keys())[-(window + 5):]
+            pairs = uc.lagged_pairs(twr, {d: us_excess[p][d] for d in usd})
+            corrs[p] = (uc.correlation([x for x, _ in pairs], [y for _, y in pairs])
+                        if len(pairs) >= 10 else None)
+        rows.append({"code": code, "name": name, "corrs": corrs,
+                     "concepts": (code_to_concepts or {}).get(code, [])})
+    rows.sort(key=lambda r: max((c for c in r["corrs"].values() if c is not None),
+                                default=-2), reverse=True)
+    return rows
+
+
+def _us_scan_worker(peers: list[str], window: int, raw: bool, key: str):
+    try:
+        uc, _ = _us_corr_modules()
+        concepts = json.load(open(os.path.join(HERE, "cache", "concepts.json")))
+        code_to_concepts: dict = {}
+        for k, v in concepts["themes"].items():
+            for s in v.get("stocks", []):
+                code_to_concepts.setdefault(s, []).append(k)
+        stocks = list(code_to_concepts.keys())
+        rows = _us_corr_compute(peers, stocks, window, raw, code_to_concepts)
+        os.makedirs(_US_CORR_DIR, exist_ok=True)
+        out = {"peers": peers, "window": window, "raw": raw,
+               "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+               "n_universe": len(stocks), "rows": rows}
+        with open(os.path.join(_US_CORR_DIR, key + ".json"), "w") as f:
+            json.dump(out, f, ensure_ascii=False)
+        _us_scan_state[key] = {"status": "done"}
+    except Exception as e:
+        _us_scan_state[key] = {"status": "error", "msg": f"{type(e).__name__}: {e}"}
+
+
+def _us_corr_table(rows: list[dict], peers: list[str], top: int,
+                   fut_set: set) -> str:
+    def cell(c):
+        if c is None:
+            return "<td>—</td>"
+        cls = ("corr-hi" if c >= 0.6 else ("corr-mid" if c >= 0.3 else ""))
+        return f'<td class="{cls}">{c:+.2f}</td>'
+    h = "".join(f"<th>{_esc(p)}</th>" for p in peers)
+    out = [f'<div class="table-scroll"><table class="report-table"><thead><tr>'
+           f'<th>代號</th><th>名稱</th>{h}<th>max</th><th>所屬概念</th></tr></thead><tbody>']
+    for r in rows[:top]:
+        star = "★" if r["code"] in fut_set else ""
+        cs = [c for c in r["corrs"].values() if c is not None]
+        mx = f"{max(cs):+.2f}" if cs else "—"
+        cells = "".join(cell(r["corrs"].get(p)) for p in peers)
+        out.append(
+            f'<tr><td>{_esc(r["code"])}</td><td>{_esc(r["name"])}{star}</td>'
+            f'{cells}<td><b>{mx}</b></td>'
+            f'<td class="small">{_esc("、".join(r["concepts"][:3]))}</td></tr>')
+    out.append("</tbody></table></div>")
+    return "".join(out)
+
+
+@app.route("/us-correlation")
+def us_correlation_page():
+    import threading
+    uc, _ = _us_corr_modules()
+    concepts = json.load(open(os.path.join(HERE, "cache", "concepts.json")))
+    themes = concepts["themes"]
+
+    peer_arg = (request.args.get("peer") or "").upper().replace(" ", "")
+    peers = [p for p in peer_arg.split(",") if p][:4]
+    concept = request.args.get("concept") or ""
+    try:
+        window = min(240, max(20, int(request.args.get("window") or 240)))
+    except ValueError:
+        window = 240
+    raw = request.args.get("raw") == "1"
+    top = 30
+
+    try:
+        from tw_stock_futures import fut_stock_set
+        fut_set = fut_stock_set()
+    except Exception:
+        fut_set = set()
+
+    body = ""
+    note = ""
+    if concept and concept in themes:
+        use_peers = peers or uc.US_PEERS.get(concept, [])
+        if not use_peers:
+            body = '<section class="note">此概念沒有預設美股 peer,請自行輸入代號。</section>'
+        else:
+            try:
+                rows = _us_corr_compute(use_peers, themes[concept]["stocks"],
+                                        window, raw, None)
+                body = (f'<section><h3>{_esc(themes[concept]["name_zh"])} vs '
+                        f'{_esc(",".join(use_peers))}(視窗 {window} 交易日)</h3>'
+                        + _us_corr_table(rows, use_peers, top, fut_set) + '</section>')
+            except Exception as e:
+                body = f'<section class="error">⚠ {_esc(str(e))}</section>'
+    elif peers:
+        key = "_".join(peers) + f"_w{window}" + ("_raw" if raw else "")
+        cache_f = os.path.join(_US_CORR_DIR, key + ".json")
+        state = _us_scan_state.get(key, {})
+        if state.get("status") == "running":
+            note = ('<meta http-equiv="refresh" content="20">'
+                    '<section class="note">⏳ 全市場掃描中(約 2-5 分鐘,每檔台股都要抓一年價格)…'
+                    '頁面每 20 秒自動刷新。</section>')
+        elif os.path.exists(cache_f):
+            d = json.load(open(cache_f))
+            rows = d["rows"]
+            body = (f'<section><h3>全市場 {d["n_universe"]} 檔 vs '
+                    f'{_esc(",".join(d["peers"]))}(視窗 {d["window"]},'
+                    f'{"原始報酬" if d.get("raw") else "β 調整"})</h3>'
+                    f'<p class="meta">掃描完成時間 {d["at"]} · '
+                    f'<a href="?peer={",".join(peers)}&window={window}'
+                    f'{"&raw=1" if raw else ""}&rescan=1">🔄 重新掃描</a></p>'
+                    + _us_corr_table(rows, d["peers"], top, fut_set) + '</section>')
+            if state.get("status") == "error":
+                body = f'<section class="error">⚠ 上次掃描失敗:{_esc(state.get("msg", ""))}</section>' + body
+        if (not os.path.exists(cache_f) and state.get("status") != "running") \
+                or request.args.get("rescan") == "1":
+            if state.get("status") != "running":
+                _us_scan_state[key] = {"status": "running"}
+                threading.Thread(target=_us_scan_worker,
+                                 args=(peers, window, raw, key), daemon=True).start()
+                if not note:
+                    note = ('<meta http-equiv="refresh" content="20">'
+                            '<section class="note">⏳ 已啟動全市場掃描(約 2-5 分鐘)…'
+                            '頁面每 20 秒自動刷新。</section>')
+        if state.get("status") == "error" and not body:
+            note = f'<section class="error">⚠ 掃描失敗:{_esc(state.get("msg", ""))}</section>'
+
+    opts = ['<option value="">— 全市場掃描(34 概念聯集)—</option>']
+    for k, v in themes.items():
+        sel = ' selected' if k == concept else ''
+        dp = ",".join(uc.US_PEERS.get(k, []))
+        opts.append(f'<option value="{_esc(k)}"{sel}>{_esc(v["name_zh"])}'
+                    f'{"(預設 " + dp + ")" if dp else ""}</option>')
+
+    glossary = _glossary_section(list(_US_CORR_GLOSSARY.keys()))
+    nav = __import__("site_nav").nav_html("/us-correlation")
+    css = """<style>
+  body{font-family:-apple-system,"Segoe UI","Microsoft JhengHei",sans-serif;
+       max-width:1100px;margin:1em auto;padding:0 1em;}
+  h1{font-size:1.35em;margin:.4em 0;}
+  table.report-table{width:100%;border-collapse:collapse;font-size:.9em;}
+  table.report-table th,table.report-table td{padding:6px 9px;text-align:right;}
+  table.report-table td:first-child,table.report-table th:first-child,
+  table.report-table td:nth-child(2),table.report-table th:nth-child(2),
+  table.report-table td:last-child,table.report-table th:last-child{text-align:left;}
+  .corr-hi{color:#ff6b6b;font-weight:700}
+  .corr-mid{color:#e6c56a}
+  .small{font-size:.82em;color:#8b98a9}
+  .meta{color:#8b98a9;font-size:.85em}
+  input,select{padding:6px 8px;border:1px solid #223041;border-radius:4px;
+    background:#1a2230;color:#dfe6ee;}
+  button{padding:6px 14px;}
+</style>"""
+    return f"""<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>🔗 美台聯動查詢</title>{css}</head><body>{nav}{note}
+<h1>🔗 美台聯動:台股 vs 美股個股相關性</h1>
+<form method="get">
+  <label>美股代號(逗號分隔,最多 4 檔) </label>
+  <input name="peer" value="{_esc(",".join(peers))}" placeholder="例: NVDA,MSFT">
+  <label> 範圍 </label>
+  <select name="concept">{"".join(opts)}</select>
+  <label> 視窗 </label>
+  <select name="window">
+    <option value="240"{" selected" if window == 240 else ""}>240(一年)</option>
+    <option value="120"{" selected" if window == 120 else ""}>120(半年)</option>
+    <option value="60"{" selected" if window == 60 else ""}>60(一季)</option>
+  </select>
+  <label><input type="checkbox" name="raw" value="1"{" checked" if raw else ""}>
+  原始報酬(不扣大盤)</label>
+  <button>查詢</button>
+</form>
+<p class="meta">概念模式即時算(數十秒);全市場掃描背景跑(2-5 分鐘)結果快取當日有效。
+點代號可開 K 線。★=有個股期貨。</p>
+{body}
+{glossary}
+</body></html>"""
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
