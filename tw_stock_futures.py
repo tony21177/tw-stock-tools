@@ -306,11 +306,15 @@ def fetch_ranking(date_iso: str | None = None, top_n: int = HOT_TOP_N
             return {"error": f"FinMind: {type(e).__name__}: {e}"}
         today_rows = [r for r in today_rows if r.get("date") == today_iso]
         prev_rows = [r for r in prev_rows if r.get("date") == prev_iso]
-        if today_rows:
+        # 完整性門檻:FinMind 盤後同步中會先出現「部分」資料(如 15:17 僅
+        # 30/360 個代碼),不能有資料就當就緒 → 今日列數需 ≥ 前日 40%
+        complete = (len(today_rows) >= max(100, int(len(prev_rows) * 0.4))
+                    if prev_rows else bool(today_rows))
+        if today_rows and (complete or date_iso):
             break
         if date_iso:                       # 指定日期就不回退
             return {"error": f"{today_iso} 無個股期資料"}
-        today_iso = prev_iso               # 回退一個交易日再試
+        today_iso = prev_iso               # 回退一個交易日再試(缺或不完整)
     if not today_rows:
         return {"error": f"{req_iso} 起回溯 5 日皆無個股期資料"}
     # 現貨收盤(算基差)+ 全市場特定法人個股期淨留倉(TAIFEX 大額交易人)
@@ -331,8 +335,8 @@ def fetch_ranking(date_iso: str | None = None, top_n: int = HOT_TOP_N
         if trading is False:
             stale_note = f"今日({req_iso})休市,顯示最近交易日 {today_iso}"
         elif trading:
-            stale_note = (f"今日({req_iso})資料尚未公布(約 15:30 後更新),"
-                          f"顯示最近交易日 {today_iso}")
+            stale_note = (f"今日({req_iso})資料尚未公布或仍在同步中"
+                          f"(通常 15:30~16:30 完整),顯示最近完整交易日 {today_iso}")
         else:
             stale_note = f"顯示最近交易日 {today_iso}"
     return {"date": today_iso, "prev": prev_iso, "rows": ranking,
@@ -634,6 +638,9 @@ def main():
         with open(args.json_out, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=1)
     if args.line_to and not data.get("error"):
+        if data.get("stale_note"):
+            print(f"⚠ 資料非當日({data.get('date')}),跳過推播", file=sys.stderr)
+            return
         import line_push
         tok = line_push.resolve_token()
         if tok:
