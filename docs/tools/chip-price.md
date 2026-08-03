@@ -1,5 +1,7 @@
 # 日內籌碼×價格(tw_chip_price /chip-price)
 
+> ⚠ **每日 08:50 定時推播已取消(2026-08-03,用戶指示)**;手動 `/chip-price` 查詢與 `/chip` skill 照常可用,20:30 分點快取建置照跑。
+>
 > 本文件自 README 拆出(2026-08-02 文件重整)。索引見 [README](../../README.md)。
 
 ## tw_chip_price.py — 單檔日內籌碼 × 價格 × 時間 三維分析 (CLI / Skill)

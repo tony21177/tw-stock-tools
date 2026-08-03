@@ -40,4 +40,5 @@
 - [外資成本線 /foreign-cost](reference_foreign_cost.md) — 遞迴成本(官方持股反推)篩現價110-140%;收斂度<0.3不列入;已VWAP交叉驗證;20:40 cron
 - [有股期一律標★](feedback_star_futures.md) — 全站標準;fut_stock_set() helper;在 name 源頭加星;已覆蓋11個工具
 - [Utility Screen 抗跌領頭羊 /utility-screen](reference_utility_screen.md) — Minervini修正期區間RS(距高點天數為視窗,>20日啟動);濾網RS>85+MA結構+貼高點;與FTD搭檔;20:50 cron
-- [VCP 波動收縮掃描 /vcp](reference_vcp_screen.md) — Minervini型態(遞減收縮+量縮+pivot突破);趨勢模板前置;突破日推TG;與utility/FTD三件套;21:00 cron;未回測
+- [VCP 波動收縮掃描 /vcp](reference_vcp_screen.md) — Minervini型態(遞減收縮+量縮+pivot突破);趨勢模板前置;突破日推TG;與utility/FTD三件套;21:00 cron;回測初步負(8事件/失敗率50%,僅觀察)
+- [常駐主機搬遷TODO](project_host_migration_todo.md) — 暫緩;TODO在repo docs/TODO.md;deploy/腳本全就緒只差主機;筆電仍是唯一生產機
