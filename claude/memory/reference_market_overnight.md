@@ -33,3 +33,5 @@ metadata:
 - **每交易日 07:30 cron 推睏霸數錢(C96e49)+田尾三人幫(Ca0735)**(盤前、美股收盤後;`--line-to a,b` 逗號分隔,推播時強制抓最新隔夜 max_age_h=0)+存 cache/market_overnight_history/。cron 閘 is_trading_day.py(需 FINMIND_TOKEN);工具本身只用 Yahoo 不需 FinMind。
 
 相關:[[reference-lin-matrix]](同樣「回測誠實揭露無/有edge」)、[[reference-strategy-history-tabs]]
+
+**2026-08-03**:07:30 推播(LINE 兩群)依用戶指示取消;cron 保留 --json-out 繼續累積 market_overnight_history(頁面與回測依賴),網頁照常。

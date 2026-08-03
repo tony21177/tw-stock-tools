@@ -16,6 +16,7 @@ metadata:
 - **外資買賣超區**（2026-07-15 加入同頁）：上市/上櫃**官方公布值**（上市 FinMind TaiwanStockTotalInstitutionalInvestors、上櫃櫃買中心 open data `tpex.org.tw/www/zh-tw/insti/summary?date=YYYY/MM/DD&type=Daily&response=json`）+ 當日個股買/賣超 Top15（近似值、排除 ETF）。缺官方時近似回填加 ~ 標示。口徑教訓：近似加總必須含 ETF（07-15 外資買 ETF +91.6 億，只算個股差官方 ~55 億）。schema 升級用 `--backfill N --force` enrich 舊日檔
 - **入口**：dashboard「訊號監控」tab（17:00 烤入）+ `/money-flow` 獨立頁（即時）+ 動能排行表兩欄 + 每日 TG 摘要（只推當日資料存在的日子）
 - **回補**：`python3 concept_money_flow.py --backfill 60`（resumable、需 FINMIND_TOKEN、FinMind 單日全市場 2 次呼叫）
+- **主力個股 drivers**（2026-08-03 加入）：`aggregate_day` 每族群留 |法人淨額| 前 4 名且 ≥1 億個股，存日檔 `drivers` 欄 `[{c,n,i(億)}]`；TG 摘要匯入/流出 Top5 附 `↳` 子行、出貨疑慮附賣壓前 3；頁面族群名下小字 span（`data-kx` 可點 K 線彈窗，pos紅/neg綠）。舊日檔無此欄 → 顯示容錯略過；可 `--backfill N --force` enrich
 - 注意：一檔可屬多主題 → 占比加總 >100%；權值股爆量會讓所屬主題占比同時失真
 - 設計/計畫文件：`docs/superpowers/specs/2026-07-14-concept-money-flow-design.md`、`docs/superpowers/plans/2026-07-14-concept-money-flow.md`
 
