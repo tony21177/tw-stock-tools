@@ -5746,8 +5746,9 @@ table.market-breadth td { padding:6px 10px; border-bottom:1px solid #eee;
 table.market-breadth th { background:#fafafa; font-weight:600; text-align:center; }
 table.market-breadth td:first-child,
 table.market-breadth th:first-child { text-align:left; }
-.pos { color:#0a7e0a; }
-.neg { color:#c30; }
+/* 台股慣例:紅=買超/正、綠=賣超/負(與 dashboard 分頁一致) */
+.pos { color:#c30; }
+.neg { color:#060; }
 a { color:#007aff; text-decoration:none; }
 a:hover { text-decoration:underline; }
 </style>"""

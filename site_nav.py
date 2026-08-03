@@ -48,8 +48,17 @@ _SITE_CSS = """<style>
   --ink:#dfe6ee;--ink2:#8b98a9;--ink3:#5d6b7d;--acc:#4cc2ff;
   --up:#ff6b6b;--dn:#34c98e}
 html{background:var(--bg)}
-body{max-width:1100px;background:var(--bg);color:var(--ink);
+body{max-width:1100px;margin-left:auto;margin-right:auto;
+  padding-left:10px;padding-right:10px;
+  background:var(--bg);color:var(--ink);
   font-variant-numeric:tabular-nums}
+/* 大螢幕:放寬全站寬度上限並置中(!important 蓋過各工具頁自設的 840-1080px)。
+   94vw 留兩側呼吸空間;1680px 防超寬螢幕字行過長 */
+@media (min-width:1280px){
+  body{max-width:min(94vw,1680px) !important;
+    margin-left:auto !important;margin-right:auto !important}
+  .container{max-width:none}
+}
 h1,h2,h3,h4,caption{color:#eef3f8}
 h1{letter-spacing:.5px;padding-bottom:8px;position:relative}
 h1:after{content:"";position:absolute;left:0;bottom:0;width:120px;height:3px;
@@ -116,6 +125,14 @@ table.market-breadth{overflow:visible !important}
   color:var(--ink)}
 .warn{background:#2b230c;border-color:#5c4c1d;color:#e6c56a}
 .error{background:#2f1416;border-color:#63262b;color:#ff9b9b}
+/* 各獨立頁自帶的白色表頭(table.xxx th 權重高於上面的 table thead th):
+   同權重後載覆蓋。dashboard 內 scoped 回測片段有 #id 前綴權重更高,不受影響 */
+table.report-table th,table.market-breadth th{background:var(--card2)}
+/* inline style 白底(分點 drilldown 表頭列、統計 tile)轉深色卡 */
+tr[style*="fafafa"],div[style*="fafafa"]{
+  background:var(--card2) !important;color:var(--ink)}
+/* 各頁查詢 form 白底轉深色卡 */
+form{background:var(--card);color:var(--ink)}
 /* 各頁 .pos/.neg 色深淺不一(有的 #060/#c30 在黑底太暗):提亮但保留
    各頁自己的紅綠語意(backtest 綠=正報酬、個股期紅=增),不改色相 */
 .pos,.neg{filter:brightness(1.6)}
