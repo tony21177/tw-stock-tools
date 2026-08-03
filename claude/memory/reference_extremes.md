@@ -1,6 +1,6 @@
 ---
 name: reference-extremes
-description: 一年高低極端榜 /extremes — 距最高點跌幅Top20 + 距最低點漲幅Top20；還原價全市場；每交易日20:00推兩群
+description: 一年高低極端榜 /extremes — 距最高點跌幅Top20 + 距最低點漲幅Top20；還原價全市場；20:00只更新頁面(推播2026-08-03取消)
 metadata:
   node_type: reference
   type: reference
@@ -28,7 +28,7 @@ metadata:
 
 ## 上線
 - 網頁 `/extremes`(app.py route 讀 extremes_latest.json、無則即時算)+ 首頁 nav(concept_charts.py + dashboard.html)
-- **每交易日 20:00 cron**(盤後還原價齊,is_trading_day 守門,帶 FINMIND_TOKEN)推睏霸數錢(C96e49)+田尾三人幫(Ca0735)
+- **每交易日 20:00 cron**(盤後還原價齊,is_trading_day 守門,帶 FINMIND_TOKEN)只更新 extremes_latest.json 供頁面用;**LINE 推播 2026-08-03 應用戶要求取消**(--line-to flag 保留可手動推)
 
 ## ⚠ LINE 每月額度
 2026-07-28 推播遇 HTTP 429「reached your monthly limit」—— LINE Messaging API 免費方案每月訊息上限用完(影響所有推播工具,非本工具問題),需等月初重置或升級方案。

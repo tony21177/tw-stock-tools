@@ -23,7 +23,7 @@
 | 17:00 | 📊 選擇權法人 `/option-flow` | 自營收put=恐慌事件標記,訊號日推 | ✅ 隔日無edge、5-10日反彈傾向 | [docs](docs/strategies/option-flow.md) |
 | 18:00 | 🎯 主力雷達(推播+首頁榜) | 分點+融資連動 | ✅ 詳文件 | [docs](docs/tools/broker-radar.md) |
 | 18:30 | 🎫 權證量能 `/warrant-signal` | 六類權證爆量×失衡 | ⚠ 無edge,觀察 | [docs](docs/strategies/warrant-signal.md) |
-| 20:00 | 📊 一年高低榜 `/extremes` | 距一年高跌最深/距低漲最多 Top20,推兩群 | — | [docs](docs/strategies/extremes.md) |
+| 20:00 | 📊 一年高低榜 `/extremes` | 距一年高跌最深/距低漲最多 Top20(僅更新頁面,不推播) | — | [docs](docs/strategies/extremes.md) |
 | 20:40 | 🌐 外資成本線 `/foreign-cost` | 遞迴外資成本,110-140% 穩健區+140%+動能區 | ✅ 單調梯度:獲利越多越強 | [docs](docs/strategies/foreign-cost.md) |
 | 20:50 | 🛡 抗跌領頭羊 `/utility-screen` | Minervini 修正期區間RS(距高點天數為窗)卡片牆 | ⚠ 未回測 | [docs](docs/strategies/utility-screen.md) |
 | 21:00 | 🌀 VCP 波動收縮 `/vcp` | 遞減收縮+量縮+pivot,突破日推 | ⚠ 初步負(8事件/失敗率50%,僅觀察) | [docs](docs/strategies/vcp.md) |
