@@ -124,3 +124,5 @@ originSessionId: e67fcb4a-ba3e-4b10-8dd9-8d8a51bbed3d
 - 實作 plan: `docs/superpowers/plans/2026-05-13-chip-price-analysis.md`
 - 主要 commits: 5332917 (TPEx) / 935d984 (08:50 cron) / a7ef5db (broker_lookup A+B) / bf31416 (C+backfill) / 1ede92a (adaptive band) / 7abbb99 (wash detection) / 4c43fce (tick time-classification) / a097a24 (time-based 三階段)
 - 2026-05-13 教科書案例: 2313 5/12 +5.69% (高盛 +11,837 教科書追進) → 5/13 -6.51% (高盛 -14,015 完全反轉)；3491 5/12 -5.36% (無法人承接) → 5/13 0.00% (無反彈確認)；6282 5/12 V 型反轉 (摩根大通 +3,738 確認底部)
+
+**2026-08-03**:每日 08:50 單檔籌碼推播 cron(tw_chip_price_daily.sh,watchlist 3491)已依用戶指示取消;手動查詢/skill 不受影響,chip_cache_builder 20:30 照跑。

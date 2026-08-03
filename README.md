@@ -9,7 +9,7 @@
 
 | 排程 | 策略 / 頁面 | 一句話 | 回測 | 文件 |
 |---|---|---|---|---|
-| 07:30 | 🌏 明天大盤預期 `/market-tomorrow` | 隔夜美股+台指期夜盤→隔日加權方向,推兩群 | ✅ 跳空87%/收收77% | [docs](docs/strategies/market-tomorrow.md) |
+| 07:30 | 🌏 明天大盤預期 `/market-tomorrow` | 隔夜美股+台指期夜盤→隔日加權方向(推播已取消,網頁看) | ✅ 跳空87%/收收77% | [docs](docs/strategies/market-tomorrow.md) |
 | 07:30 | 🔁 轉機接力(推播) | 兩層篩選:毛利改善+量能+ABCD 訊號 | ✅ 詳文件 | [docs](docs/tools/turnaround.md) |
 | 07:35+21:45 | 🚀 FTD 反彈確認 `/ftd` | 歐尼爾修正期反彈確認日(加權/S&P/Nasdaq),新FTD推兩群 | ✅ 失敗率27.5%對上文獻;隔日弱/5-10日強 | [docs](docs/strategies/ftd.md) |
 | 07:40 | 🌊 強勢股第二波(推播) | 強勢→急殺15-25%→反彈啟動 | ✅ 動能市限定 | [docs](docs/tools/second-wave.md) |
