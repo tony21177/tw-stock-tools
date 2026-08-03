@@ -177,7 +177,7 @@ def render_tab(view_rows: list[dict], asof: str,
         share_txt = f"{share:.2f}" if share is not None else "—"
         parts.append(
             '<tr>'
-            f'<td>{r["name_zh"]}</td>'
+            f'<td>{r["name_zh"]}{_drivers_html(r)}</td>'
             f'<td title="{_TAG_DESC.get(r.get("tag", "—"), "")}">{r.get("tag", "—")}</td>'
             f'<td class="{cls}">{net:+.1f}</td>'
             f'<td>{r.get("foreign_net_ntd", 0) or 0:+.1f}</td>'
@@ -234,6 +234,31 @@ def _tg_row(r: dict) -> str:
             f"投{(r.get('trust_net_ntd') or 0):+.1f}){s}")
 
 
+def _drivers_html(r) -> str:
+    """族群名下方小字行:各主力個股 span(data-kx 可點開 K 線彈窗)。無資料回空字串。"""
+    ds = r.get("drivers") or []
+    if not ds:
+        return ""
+    spans = []
+    for d in ds[:4]:
+        cls = "pos" if d["i"] > 0 else "neg"
+        spans.append(
+            f'<span data-kx="{d["c"]}" class="{cls}" style="cursor:pointer;">'
+            f'{d["c"]}{d["n"]}{d["i"]:+g}</span>')
+    return ('<div style="font-size:0.72em; opacity:0.85; margin-top:2px; '
+            'white-space:nowrap;" title="法人淨買賣金額(億),點代號看 K 線">'
+            + " ".join(spans) + "</div>")
+
+
+def _tg_drivers(r) -> str | None:
+    """族群主力個股一行:↳ 2330台積電-180 2317鴻海+25(億)。無資料回 None。"""
+    ds = r.get("drivers") or []
+    if not ds:
+        return None
+    parts = [f"{d['c']}{d['n']}{d['i']:+g}" for d in ds[:4]]
+    return "    ↳ " + " ".join(parts) + "(億)"
+
+
 def build_tg_summary(view_rows: list[dict], date_str: str) -> str:
     """Telegram 文字摘要：資金匯入/流出 Top5（依成交值占比 vs 20日均，
     業界類股資金流口徑、精確）+ ⚠ 出貨疑慮 + 連續 ≥5 日異常。"""
@@ -250,12 +275,18 @@ def build_tg_summary(view_rows: list[dict], date_str: str) -> str:
     if pos:
         for r in pos:
             lines.append(f"  {_tg_row(r)}")
+            d = _tg_drivers(r)
+            if d:
+                lines.append(d)
     else:
         lines.append("  （無）")
     lines.append("\n資金流出 Top5（占比降）:")
     if neg:
         for r in neg:
             lines.append(f"  {_tg_row(r)}")
+            d = _tg_drivers(r)
+            if d:
+                lines.append(d)
     else:
         lines.append("  （無）")
     warns = [r for r in view_rows if r.get("tag") == "⚠"]
@@ -265,6 +296,10 @@ def build_tg_summary(view_rows: list[dict], date_str: str) -> str:
             sv = r.get("share_vs_20d")
             sv_txt = f"占比{sv:+.2f}pp " if sv is not None else ""
             lines.append(f"  {r['name_zh']} {sv_txt}法人{(r.get('inst_net_ntd') or 0):+.1f}億")
+            sellers = [d for d in (r.get("drivers") or []) if d["i"] < 0][:3]
+            if sellers:
+                lines.append("    ↳ 賣壓:" + " ".join(
+                    f"{d['c']}{d['n']}{d['i']:+g}" for d in sellers) + "(億)")
     streaky = [r for r in view_rows if abs(r.get("streak", 0)) >= 5]
     if streaky:
         lines.append("\n📌 連續 ≥5 日:")

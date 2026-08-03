@@ -112,10 +112,12 @@ def aggregate_day(date_yyyymmdd: str, inst_rows: list[dict],
         market_turnover += m
 
     out_themes = {}
+    _names = names or {}
     for tkey, tval in themes.items():
         f_ntd = t_ntd = d_ntd = 0.0
         turnover = 0.0
         missing = []
+        per_stock = []                     # (code, 法人淨額) — 族群內個股貢獻
         for code in tval.get("stocks", []):
             code = str(code)
             turnover += money.get(code, 0.0)
@@ -125,10 +127,16 @@ def aggregate_day(date_yyyymmdd: str, inst_rows: list[dict],
                 continue
             slot = net.get(code)
             if slot:
+                si = (slot["f"] + slot["t"] + slot["d"]) * px
                 f_ntd += slot["f"] * px
                 t_ntd += slot["t"] * px
                 d_ntd += slot["d"] * px
+                per_stock.append((code, si))
         inst = f_ntd + t_ntd + d_ntd
+        # 主力個股:|法人淨額| 前 4 名且 ≥1 億(誰導致這個族群的流入/流出)
+        drivers = sorted(per_stock, key=lambda x: -abs(x[1]))[:4]
+        drivers = [{"c": c, "n": _names.get(c, ""), "i": round(v / YI, 1)}
+                   for c, v in drivers if abs(v) >= YI]
         out_themes[tkey] = {
             "inst_net_ntd": round(inst / YI, 2),
             "foreign_net_ntd": round(f_ntd / YI, 2),
@@ -137,6 +145,7 @@ def aggregate_day(date_yyyymmdd: str, inst_rows: list[dict],
             "mkt_share_pct": (round(turnover / market_turnover * 100, 3)
                                if market_turnover > 0 else None),
             "missing": missing,
+            "drivers": drivers,
         }
     out = {"date": date_yyyymmdd, "market_turnover_ntd": market_turnover,
            "themes": out_themes}
@@ -306,6 +315,7 @@ def build_view_rows(day_files: list[dict], themes: dict) -> list[dict]:
         row = {
             "theme_key": tkey,
             "name_zh": tval.get("name_zh", tkey),
+            "drivers": (cur or {}).get("drivers") or [],
             "inst_net_ntd": cur["inst_net_ntd"],
             "foreign_net_ntd": cur["foreign_net_ntd"],
             "trust_net_ntd": cur["trust_net_ntd"],
