@@ -1,27 +1,33 @@
 #!/usr/bin/env python3
 """
-台股概念 vs 美股 peer 相關性查詢
+台股概念 vs 美股 peer 相關性查詢(v2 演算法,2026-08-04)
 
-對指定的台股概念，計算其成員與對應美股 peer 的近 N 天 β 調整後相關係數。
-找出真的跟著美股 narrative 跑的標的，與只是名字像但實際走自己路的。
+對指定的台股概念(或全市場),計算成員與美股 peer 的 β 調整後相關係數。
+找出真的跟著美股 narrative 跑的標的,與只是名字像但實際走自己路的。
 
-公式：
-  TPE 股票報酬 = 對 ^TWII 做 β 調整後的 excess returns
-  US 股票報酬  = 對 ^GSPC 做 β 調整後的 excess returns
-  correlation = Pearson(TPE_excess, US_excess)，以 TPE 日期為基準
-                並對齊到「TPE D 配對 US D-1 之最近交易日」（TPE 對美股的反應有 1 天時差）
+v2 演算法(詳細說明見 docs/tools/us-correlation.md):
+  1. 還原價:報酬一律用 Yahoo adjclose(除權息還原),消除除息日假報酬
+  2. 缺值防護:相鄰兩筆收盤相隔 >5 個日曆日(停牌)的報酬捨棄
+  3. β 同視窗:β 只用「相關係數視窗內」的資料估,不用全抓取範圍(regime 對齊)
+  4. 美股雙因子:excess = r − b1·SPX − b2·NDXresid(NDX 對 SPX 迴歸的殘差,
+     正交化科技因子;非科技股 b2≈0 自動退化為單因子)。台股仍對 ^TWII 單因子
+     (櫃買指數 ^TWOII Yahoo 資料落後數週,不可用,上櫃股照用 ^TWII)
+  5. Winsorize:相關係數計算前,兩序列各自截尾在 mean±3σ,防單日暴漲暴跌
+     (財報日/漲跌停共現)綁架 Pearson
+  6. 顯著性+穩定性:輸出配對數 n、Fisher 95% CI、前半/後半視窗分算 r;
+     |前半−後半| > 0.20 或正負相反標 ⚠(相關可能由短期巧合貢獻)
+  7. 時差配對:TPE D ↔ 嚴格小於 D 的最近美股交易日(台股反應美股前一晚)
 
-correlation 解讀：
-  > 0.6  強相關（跟著美股動）
-  0.3-0.6 中等
-  < 0.3  弱相關（自己走自己的路）
-  < 0    反向（少見，多半是雜訊）
+correlation 解讀:
+  > 0.6  強相關(跟著美股動)  0.3-0.6 中等  < 0.3 弱  < 0 反向(多為雜訊)
+  ⚠ = 前後半視窗不一致,短期巧合風險;n < 100 時 CI 很寬,r < 0.3 基本不顯著
 
 Usage:
   python3 tw_us_correlation.py ASIC自研晶片
   python3 tw_us_correlation.py AI伺服器_ODM --window 90
   python3 tw_us_correlation.py NVIDIA供應鏈 --peer NVDA
-  python3 tw_us_correlation.py --list   # 列出所有概念與預設 peer
+  python3 tw_us_correlation.py --peer NVDA          # 全市場掃描
+  python3 tw_us_correlation.py --list
 """
 
 import argparse
@@ -32,7 +38,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "concept_momentum"))
-from data_fetcher import fetch_stock, fetch_yahoo  # noqa: E402
+import data_fetcher  # noqa: E402
 
 # Concept → US peer tickers. Curated to match the dominant US narrative driver
 # for each TW concept. Edit / add as themes evolve.
@@ -73,290 +79,346 @@ US_PEERS = {
 }
 
 
-def daily_returns(closes: list[float]) -> list[float]:
-    return [(closes[i] - closes[i - 1]) / closes[i - 1]
-            for i in range(1, len(closes)) if closes[i - 1] > 0]
+# ── 當日記憶化 fetch(^TWII/^GSPC/^NDX 只抓一次;掃描時省一半請求) ──
+_memo: dict = {}
 
 
-def correlation(xs: list[float], ys: list[float]) -> float:
+def fetch_yahoo(symbol: str, range_str: str = "3mo") -> list[dict]:
+    k = (symbol, range_str)
+    if k not in _memo:
+        _memo[k] = data_fetcher.fetch_yahoo(symbol, range_str)
+    return _memo[k]
+
+
+_names_cache: dict = {}
+
+
+def stock_name(code: str) -> str:
+    """本地名稱快取(TWSE ISIN + FinMind TaiwanStockInfo),不打 Yahoo。"""
+    if not _names_cache:
+        try:
+            from stock_names import get_name as _gn
+            _names_cache["_gn"] = _gn
+        except Exception:
+            _names_cache["_gn"] = None
+        try:
+            fm = json.load(open(os.path.join(
+                HERE, "concept_momentum", "cache", "finmind_names.json")))
+            _names_cache["_fm"] = fm.get("names", fm) if isinstance(fm, dict) else {}
+        except Exception:
+            _names_cache["_fm"] = {}
+    gn = _names_cache["_gn"]
+    if gn:
+        n = gn(code)
+        if n and n != code:
+            return n
+    return _names_cache["_fm"].get(code, code)
+
+
+# ── 報酬與統計基元 ─────────────────────────────────────────────
+def dated_returns(rows: list[dict]) -> dict:
+    """{date: return}。用還原價 adj;相鄰兩筆相隔 >5 日曆日(停牌)捨棄該筆報酬。"""
+    from datetime import datetime as _dt
+    out = {}
+    prev_c, prev_d = None, None
+    for r in rows:
+        c = r.get("adj") or r.get("close")
+        d = r.get("date")
+        if not c or not d:
+            continue
+        if prev_c and prev_c > 0:
+            gap = (_dt.strptime(d, "%Y%m%d") - _dt.strptime(prev_d, "%Y%m%d")).days
+            if gap <= 5:
+                out[d] = (c - prev_c) / prev_c
+        prev_c, prev_d = c, d
+    return out
+
+
+def winsorize(xs: list[float], k: float = 3.0) -> list[float]:
+    n = len(xs)
+    if n < 5:
+        return xs
+    m = sum(xs) / n
+    sd = math.sqrt(sum((x - m) ** 2 for x in xs) / n)
+    if sd == 0:
+        return xs
+    lo, hi = m - k * sd, m + k * sd
+    return [min(max(x, lo), hi) for x in xs]
+
+
+def pearson(xs: list[float], ys: list[float]) -> float:
     n = min(len(xs), len(ys))
     if n < 5:
         return 0.0
     xs, ys = xs[-n:], ys[-n:]
-    mx = sum(xs) / n
-    my = sum(ys) / n
+    mx, my = sum(xs) / n, sum(ys) / n
     num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
     dx = math.sqrt(sum((x - mx) ** 2 for x in xs))
     dy = math.sqrt(sum((y - my) ** 2 for y in ys))
     return num / (dx * dy) if dx > 0 and dy > 0 else 0.0
 
 
-def linear_beta(stock: list[float], market: list[float]) -> float:
-    n = min(len(stock), len(market))
+# 向後相容別名(app.py 舊呼叫)
+correlation = pearson
+
+
+def corr_stats(xs: list[float], ys: list[float]) -> dict | None:
+    """winsorize 後的 Pearson + n + Fisher 95% CI + 前/後半視窗 r + 穩定旗標。"""
+    n = min(len(xs), len(ys))
     if n < 10:
-        return 1.0
-    xs = market[-n:]
-    ys = stock[-n:]
-    mx = sum(xs) / n
-    my = sum(ys) / n
-    cov = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
-    varx = sum((x - mx) ** 2 for x in xs)
-    return cov / varx if varx > 0 else 1.0
+        return None
+    xs, ys = winsorize(xs[-n:]), winsorize(ys[-n:])
+    r = pearson(xs, ys)
+    half = n // 2
+    r1 = pearson(xs[:half], ys[:half]) if half >= 10 else None
+    r2 = pearson(xs[half:], ys[half:]) if half >= 10 else None
+    ci_lo = ci_hi = None
+    if n > 3 and abs(r) < 1:
+        z = 0.5 * math.log((1 + r) / (1 - r))
+        se = 1 / math.sqrt(n - 3)
+        ci_lo = math.tanh(z - 1.96 * se)
+        ci_hi = math.tanh(z + 1.96 * se)
+    unstable = (r1 is not None and r2 is not None
+                and (abs(r1 - r2) > 0.20 or (r1 * r2 < 0 and max(abs(r1), abs(r2)) > 0.1)))
+    return {"r": r, "n": n, "r_front": r1, "r_back": r2,
+            "ci_lo": ci_lo, "ci_hi": ci_hi, "unstable": bool(unstable)}
 
 
-def excess_returns(stock: list[float], market: list[float]) -> list[float]:
-    if len(stock) != len(market) or len(stock) < 10:
-        return stock
-    b = linear_beta(stock, market)
-    return [s - b * m for s, m in zip(stock, market)]
+def beta_residual(stock: dict, factors: list[dict], window: int) -> dict:
+    """多因子 OLS 殘差(逐因子 Gram-Schmidt 已由呼叫端保證正交或近正交)。
+    只用日期交集的最近 window 筆估 β。回傳 {date: residual}。"""
+    dates = sorted(set(stock) & set.intersection(*[set(f) for f in factors]))         if factors else sorted(stock)
+    dates = dates[-window:]
+    if len(dates) < 30 or not factors:
+        return {d: stock[d] for d in sorted(stock)[-window:]}
+    ys = [stock[d] for d in dates]
+    betas = []
+    resid = ys[:]
+    for f in factors:
+        fs = [f[d] for d in dates]
+        mf = sum(fs) / len(fs)
+        mr = sum(resid) / len(resid)
+        var = sum((x - mf) ** 2 for x in fs)
+        cov = sum((x - mf) * (y - mr) for x, y in zip(fs, resid))
+        b = cov / var if var > 0 else 0.0
+        betas.append(b)
+        resid = [y - b * x for y, x in zip(resid, fs)]
+    return dict(zip(dates, resid))
 
 
-def fetch_excess_series(ticker: str, market_ticker: str | None,
-                         range_str: str = "6mo"):
-    """Fetch ticker's returns. If market_ticker given, β-adjust to excess returns.
-    Returns dict {date_yyyymmdd: return}."""
+# ── 因子序列 ──────────────────────────────────────────────────
+def us_factors(range_str: str, window: int) -> list[dict]:
+    """[SPX 報酬, NDX 正交殘差]。NDX 抓不到時退化為單因子。"""
+    spx = dated_returns(fetch_yahoo("^GSPC", range_str))
+    if not spx:
+        return []
+    ndx = dated_returns(fetch_yahoo("^NDX", range_str))
+    if not ndx:
+        return [spx]
+    ndx_resid = beta_residual(ndx, [spx], window + 60)
+    return [spx, ndx_resid]
+
+
+def fetch_us_excess(ticker: str, range_str: str, window: int,
+                    raw: bool = False) -> dict:
     rows = fetch_yahoo(ticker, range_str)
-    if not rows:
+    rets = dated_returns(rows)
+    if not rets or len(rets) < 30:
         return {}
-    closes = [r["close"] for r in rows if r.get("close")]
-    if len(closes) < 30:
-        return {}
-    rets = daily_returns(closes)
-    dates = [r["date"] for r in rows if r.get("close")][1:]
-    if market_ticker is None:
-        return dict(zip(dates, rets))
-
-    market_rows = fetch_yahoo(market_ticker, range_str)
-    if not market_rows:
-        return dict(zip(dates, rets))
-    m_closes = [r["close"] for r in market_rows if r.get("close")]
-    m_rets = daily_returns(m_closes)
-    m_dates = [r["date"] for r in market_rows if r.get("close")][1:]
-    m_map = dict(zip(m_dates, m_rets))
-
-    paired = [(rets[i], m_map[d]) for i, d in enumerate(dates) if d in m_map]
-    if len(paired) < 10:
-        return dict(zip(dates, rets))
-    rs = [p[0] for p in paired]
-    ms = [p[1] for p in paired]
-    ex = excess_returns(rs, ms)
-    ds = [d for d in dates if d in m_map]
-    return dict(zip(ds, ex))
+    if raw:
+        return rets
+    factors = us_factors(range_str, window)
+    if not factors:
+        return rets
+    return beta_residual(rets, factors, window)
 
 
-def fetch_tw_excess(code: str, raw: bool = False, range_str: str = "6mo"):
-    """Fetch TPE stock's returns. β-adjust vs ^TWII unless raw=True.
-    Returns ({date: return}, name)."""
+def fetch_tw_excess(code: str, raw: bool = False, range_str: str = "6mo",
+                    window: int = 240):
+    """回傳 ({date: excess_return}, 名稱)。β 對 ^TWII 同視窗估。"""
     rows = []
-    name = code
     for suffix in [".TW", ".TWO"]:
         rows = fetch_yahoo(code + suffix, range_str)
         if rows:
-            # We need the company name; fetch_stock returns it. Run once for name.
-            info = fetch_stock(code)
-            if info:
-                name = info.get("name", code)
             break
-    if not rows or len(rows) < 30:
+    name = stock_name(code)
+    rets = dated_returns(rows)
+    if not rets or len(rets) < 30:
         return {}, name
-    closes = [r["close"] for r in rows if r.get("close")]
-    rets = daily_returns(closes)
-    dates = [r["date"] for r in rows if r.get("close")][1:]
     if raw:
-        return dict(zip(dates, rets)), name
-
-    twi_rows = fetch_yahoo("^TWII", range_str)
-    twi_closes = [r["close"] for r in twi_rows if r.get("close")]
-    twi_rets = daily_returns(twi_closes)
-    twi_dates = [r["date"] for r in twi_rows if r.get("close")][1:]
-    twi_raw = dict(zip(twi_dates, twi_rets))
-
-    paired = [(rets[i], twi_raw[d]) for i, d in enumerate(dates) if d in twi_raw]
-    if len(paired) < 10:
-        return dict(zip(dates, rets)), name
-    rs = [p[0] for p in paired]
-    ms = [p[1] for p in paired]
-    ex = excess_returns(rs, ms)
-    ds = [d for d in dates if d in twi_raw]
-    return dict(zip(ds, ex)), name
+        return rets, name
+    twii = dated_returns(fetch_yahoo("^TWII", range_str))
+    if not twii:
+        return rets, name
+    return beta_residual(rets, [twii], window), name
 
 
 def lagged_pairs(tw_map: dict, us_map: dict) -> list[tuple[float, float]]:
-    """Pair TPE date D with the latest US date STRICTLY LESS THAN D
-    (TPE D session reacts to US D-1 close, never US D since US session
-    for D hasn't happened yet during TPE D's session)."""
-    us_dates_sorted = sorted(us_map.keys())
+    """TPE D 配對「嚴格小於 D 的最近美股交易日」(台股反應美股前一晚)。"""
+    us_sorted = sorted(us_map.keys())
     pairs = []
+    import bisect
     for d in sorted(tw_map.keys()):
-        # binary-search-ish: find largest us date < d
-        prior = [ud for ud in us_dates_sorted if ud < d]
-        if not prior:
+        i = bisect.bisect_left(us_sorted, d)
+        if i == 0:
             continue
-        ud = prior[-1]
-        pairs.append((tw_map[d], us_map[ud]))
+        pairs.append((tw_map[d], us_map[us_sorted[i - 1]]))
     return pairs
+
+
+# ── 共用計算入口(CLI 與網頁共用) ─────────────────────────────
+def yahoo_range_for(window: int) -> str:
+    return "2y" if window > 200 else ("1y" if window > 100 else "6mo")
+
+
+def compute_correlations(peers: list[str], stocks: list[str], window: int,
+                         raw: bool = False,
+                         code_to_concepts: dict | None = None,
+                         progress=None) -> list[dict]:
+    """回傳 [{code,name,concepts,corrs:{peer:{r,n,ci_lo,ci_hi,r_front,r_back,unstable}}}]
+    依 max r 降冪。"""
+    range_str = yahoo_range_for(window)
+    us_excess = {}
+    for p in peers:
+        ex = fetch_us_excess(p, range_str, window, raw=raw)
+        if ex:
+            us_excess[p] = ex
+    if not us_excess:
+        raise RuntimeError("抓不到任何美股 peer 資料(代號打錯?)")
+    rows = []
+    for i, code in enumerate(stocks):
+        tw_map, name = fetch_tw_excess(code, raw=raw, range_str=range_str,
+                                       window=window)
+        if not tw_map:
+            continue
+        recent = sorted(tw_map.keys())[-window:]
+        twr = {d: tw_map[d] for d in recent}
+        corrs = {}
+        for p in peers:
+            if p not in us_excess:
+                corrs[p] = None
+                continue
+            usd = sorted(us_excess[p].keys())[-(window + 5):]
+            pairs = lagged_pairs(twr, {d: us_excess[p][d] for d in usd})
+            corrs[p] = corr_stats([x for x, _ in pairs], [y for _, y in pairs])
+        rows.append({"code": code, "name": name, "corrs": corrs,
+                     "concepts": (code_to_concepts or {}).get(code, [])})
+        if progress and (i + 1) % 25 == 0:
+            progress(i + 1, len(stocks))
+
+    def max_r(row):
+        rs = [c["r"] for c in row["corrs"].values() if c]
+        return max(rs) if rs else -2
+    rows.sort(key=max_r, reverse=True)
+    return rows
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="台股概念 vs 美股 peer 相關性查詢",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
-    )
+        formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     parser.add_argument("concept", nargs="?",
-                        help="台股概念 key（例：ASIC自研晶片）。省略+--peer 即進入掃描全市場模式。")
+                        help="台股概念 key(例:ASIC自研晶片)。省略+--peer 即全掃。")
     parser.add_argument("--window", type=int, default=240,
-                        help="相關係數計算視窗天數（預設 240，約 1 年 TPE 交易日）")
-    parser.add_argument("--peer", help="美股 peer ticker（覆蓋預設或啟用全掃模式）")
-    parser.add_argument("--top", type=int, default=20, help="顯示前 N 檔")
+                        help="相關係數視窗天數(預設 240 ≈ 1 年)")
+    parser.add_argument("--peer", help="美股 peer ticker(覆蓋預設或啟用全掃)")
+    parser.add_argument("--top", type=int, default=20)
     parser.add_argument("--raw", action="store_true",
-                        help="使用原始報酬（不做 β 調整）— 直觀的「NVDA 漲台股也漲」"
-                             "視角；預設 β 調整則只看「扣除大盤後仍同步」的部分")
+                        help="原始報酬(不做 β 調整)")
     parser.add_argument("--scan", action="store_true",
-                        help="掃描全部 34 個概念裡的所有股票，跟指定 --peer 算相關性。"
-                             "需搭配 --peer。省略 concept 直接 --peer X 也會自動進入掃全模式。")
-    parser.add_argument("--list", action="store_true", help="列出所有概念與預設 peer")
+                        help="全市場掃描,需搭配 --peer(省略 concept 亦自動全掃)")
+    parser.add_argument("--list", action="store_true")
     args = parser.parse_args()
 
-    # Load concepts.json
     concepts_path = os.path.join(HERE, "concept_momentum", "cache", "concepts.json")
     with open(concepts_path) as f:
         concepts = json.load(f)
 
     if args.list:
-        print("可用概念與對應美股 peer：\n")
+        print("可用概念與對應美股 peer:\n")
         for k, v in concepts["themes"].items():
             peers = US_PEERS.get(k, ["(no mapping)"])
             print(f"  {k:24s} ({len(v['stocks'])}檔) → {','.join(peers)}")
         return
 
-    # Decide mode: scan-all vs concept-scoped
     scan_mode = args.scan or (not args.concept and args.peer)
     if scan_mode and not args.peer:
-        print("--scan 必須搭配 --peer 指定一個美股 ticker")
+        print("--scan 必須搭配 --peer")
         sys.exit(1)
 
     if scan_mode:
-        # Build deduplicated stock list across all concepts, plus a code→concepts map
-        code_to_concepts: dict[str, list[str]] = {}
+        code_to_concepts: dict = {}
         for k, v in concepts["themes"].items():
             for s in v.get("stocks", []):
                 code_to_concepts.setdefault(s, []).append(k)
         stocks = list(code_to_concepts.keys())
-        us_peers = [args.peer]
+        us_peers = [p for p in args.peer.upper().split(",") if p]
         title = f"全市場 ({len(stocks)} 檔)"
     else:
         if not args.concept:
             parser.print_help()
             sys.exit(1)
         if args.concept not in concepts["themes"]:
-            print(f"概念 '{args.concept}' 不存在")
-            print("用 --list 看所有可用概念")
+            print(f"概念 '{args.concept}' 不存在(--list 看全部)")
             sys.exit(1)
         theme = concepts["themes"][args.concept]
         stocks = theme["stocks"]
         code_to_concepts = None
-        if args.peer:
-            us_peers = [args.peer]
-        else:
-            us_peers = US_PEERS.get(args.concept, [])
-            if not us_peers:
-                print(f"概念 '{args.concept}' 沒有預設美股 peer。用 --peer 指定")
-                sys.exit(1)
+        us_peers = ([p for p in args.peer.upper().split(",") if p]
+                    if args.peer else US_PEERS.get(args.concept, []))
+        if not us_peers:
+            print(f"概念 '{args.concept}' 沒有預設 peer,用 --peer 指定")
+            sys.exit(1)
         title = theme["name_zh"]
 
-    mode = "原始報酬（不扣大盤 β）" if args.raw else "β 調整：TPE 對 ^TWII / US 對 ^GSPC"
+    mode = "原始報酬(不扣大盤)" if args.raw else \
+        "β 調整:TPE−^TWII / US−(^GSPC+^NDX殘差) 同視窗估;winsorize ±3σ"
     print(f"=== {title} vs {','.join(us_peers)} ===")
-    print(f"視窗：{args.window} 個 TPE 交易日 | {mode} | 配對：TPE D ↔ US D-1\n")
+    print(f"視窗:{args.window} TPE 交易日 | {mode} | 配對:TPE D ↔ US D-1\n")
 
-    # Auto-extend Yahoo range to cover the requested window
-    # (6mo ≈ 130 td, 1y ≈ 252 td, 2y ≈ 504 td)
-    if args.window > 200:
-        yahoo_range = "2y"
-    elif args.window > 100:
-        yahoo_range = "1y"
-    else:
-        yahoo_range = "6mo"
-
-    market_us = None if args.raw else "^GSPC"
-    us_excess = {}
-    for p in us_peers:
-        ex = fetch_excess_series(p, market_us, yahoo_range)
-        if ex:
-            us_excess[p] = ex
-        else:
-            print(f"  ⚠ 抓不到 {p} 資料")
-
-    if not us_excess:
-        print("沒有任何美股 peer 資料可用")
-        sys.exit(1)
-
-    # Fetch each TPE stock, compute lagged correlation per peer
-    rows_out = []
-    for code in stocks:
-        tw_map, name = fetch_tw_excess(code, raw=args.raw, range_str=yahoo_range)
-        if not tw_map:
-            continue
-        # Take last `window` days
-        recent_dates = sorted(tw_map.keys())[-args.window:]
-        tw_recent = {d: tw_map[d] for d in recent_dates}
-        corrs = {}
-        for p in us_peers:
-            us_recent_dates = sorted(us_excess[p].keys())[-(args.window + 5):]
-            us_recent = {d: us_excess[p][d] for d in us_recent_dates}
-            pairs = lagged_pairs(tw_recent, us_recent)
-            if len(pairs) < 10:
-                corrs[p] = None
-                continue
-            xs = [pp[0] for pp in pairs]
-            ys = [pp[1] for pp in pairs]
-            corrs[p] = correlation(xs, ys)
-        rows_out.append((code, name, corrs))
-
-    if not rows_out:
+    rows = compute_correlations(us_peers, stocks, args.window, raw=args.raw,
+                                code_to_concepts=code_to_concepts,
+                                progress=lambda i, n: print(f"  …{i}/{n}", flush=True)
+                                if scan_mode else None)
+    if not rows:
         print("無可用資料")
         return
 
-    # Sort by max correlation across peers
-    def max_corr(row):
-        cs = [c for c in row[2].values() if c is not None]
-        return max(cs) if cs else -2
-
-    rows_out.sort(key=max_corr, reverse=True)
-
-    # Print table
-    name_w = 12
-    col_w = 9
+    name_w, col_w = 12, 10
     header = f"{'代號':<8}{'名稱':<{name_w}}"
     for p in us_peers:
         header += f"{p:<{col_w}}"
-    header += "max"
+    header += "max     [95% CI]        前/後半   n"
     if scan_mode:
-        header += "  概念"
+        header += "   概念"
     print(header)
-    print("-" * (8 + name_w + col_w * len(us_peers) + 6 + (20 if scan_mode else 0)))
-
-    for code, name, corrs in rows_out[:args.top]:
-        line = f"{code:<8}{name[:name_w-1]:<{name_w}}"
-        cs_vals = []
+    print("-" * (8 + name_w + col_w * len(us_peers) + 42 + (20 if scan_mode else 0)))
+    for row in rows[:args.top]:
+        line = f"{row['code']:<8}{row['name'][:name_w-1]:<{name_w}}"
+        best = None
         for p in us_peers:
-            c = corrs.get(p)
+            c = row["corrs"].get(p)
             if c is None:
                 line += f"{'--':<{col_w}}"
-            else:
-                line += f"{c:+.2f}    "[:col_w]
-                cs_vals.append(c)
-        if cs_vals:
-            mc = max(cs_vals)
+                continue
+            flag = "⚠" if c["unstable"] else " "
+            line += f"{c['r']:+.2f}{flag}    "[:col_w]
+            if best is None or c["r"] > best["r"]:
+                best = c
+        if best:
+            mc = best["r"]
             tag = "🟢" if mc >= 0.6 else "🟡" if mc >= 0.3 else "⚪"
-            line += f" {tag}{mc:+.2f}"
+            ci = (f"[{best['ci_lo']:+.2f},{best['ci_hi']:+.2f}]"
+                  if best["ci_lo"] is not None else "")
+            fb = (f"{best['r_front']:+.2f}/{best['r_back']:+.2f}"
+                  if best["r_front"] is not None else "—")
+            line += f" {tag}{mc:+.2f} {ci:<15} {fb:<9} {best['n']}"
         if scan_mode and code_to_concepts:
-            cc = code_to_concepts.get(code, [])
-            cc_short = "/".join([k.split("_")[0] for k in cc[:2]])
-            line += f"  {cc_short}"
+            cc = code_to_concepts.get(row["code"], [])
+            line += "  " + "/".join(k.split("_")[0] for k in cc[:2])
         print(line)
 
-    print(f"\n🟢 ≥0.6 強相關 / 🟡 0.3–0.6 中等 / ⚪ <0.3 弱相關")
+    print("\n🟢 ≥0.6 強 / 🟡 0.3-0.6 中 / ⚪ <0.3 弱 | "
+          "⚠ 前/後半視窗不一致(短期巧合風險) | CI 含 0 = 統計上不顯著")
 
 
 if __name__ == "__main__":

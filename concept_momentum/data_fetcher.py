@@ -33,17 +33,19 @@ def ensure_dirs():
     os.makedirs(CACHE_DIR, exist_ok=True)
 
 
-def fetch_yahoo(symbol: str, range_str: str = "3mo") -> list[dict]:
-    """Fetch daily OHLCV. Returns [{date, open, high, low, close, volume}, ...]"""
+def fetch_yahoo(symbol: str, range_str: str = "3mo",
+                _retries: int = 2) -> list[dict]:
+    """Fetch daily OHLCV. Returns [{date, open, high, low, close, adj, volume}, ...]
+    adj = Yahoo adjclose(除權息還原價;缺時 fallback 收盤)。429 最多重試 2 次。"""
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range={range_str}"
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
-        if e.code == 429:
+        if e.code == 429 and _retries > 0:
             time.sleep(10)
-            return fetch_yahoo(symbol, range_str)
+            return fetch_yahoo(symbol, range_str, _retries - 1)
         return []
     except Exception:
         return []
@@ -57,6 +59,8 @@ def fetch_yahoo(symbol: str, range_str: str = "3mo") -> list[dict]:
         lows = quotes.get("low", [])
         closes = quotes.get("close", [])
         volumes = quotes.get("volume", [])
+        adjs = (result.get("indicators", {}).get("adjclose", [{}])[0]
+                .get("adjclose", []) or [])
 
         rows = []
         for i, ts in enumerate(timestamps):
@@ -64,12 +68,14 @@ def fetch_yahoo(symbol: str, range_str: str = "3mo") -> list[dict]:
             if c is None:
                 continue
             date_str = datetime.fromtimestamp(ts).strftime("%Y%m%d")
+            a = adjs[i] if i < len(adjs) else None
             rows.append({
                 "date": date_str,
                 "open": opens[i] if i < len(opens) else c,
                 "high": highs[i] if i < len(highs) else c,
                 "low": lows[i] if i < len(lows) else c,
                 "close": c,
+                "adj": a if a else c,
                 "volume": volumes[i] if i < len(volumes) else 0,
             })
         return rows

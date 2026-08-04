@@ -15,3 +15,5 @@ For TW–US correlation queries via `tw_us_correlation.py`, default to scanning 
 - When concepts are explicitly named (e.g. "ASIC vs AVGO"), concept-scoped query is still appropriate.
 
 2026-08-03 起有網頁版 `/us-correlation`(首頁即時工具入口):概念模式即時算、全掃背景跑+快取 `cache/us_corr/`。CLI 與網頁預設都是 β 調整、全掃。
+
+2026-08-04 演算法升級 v2(細節見 docs/tools/us-correlation.md):還原價 adjclose、停牌跨日報酬捨棄、β 同視窗估、美股雙因子(SPX+NDX 正交殘差)、winsorize ±3σ、輸出 n/Fisher CI/前後半 r+⚠ 不穩定旗標。基準:TSM↔2330 raw +0.51。共用入口 compute_correlations() 供 CLI 與網頁。^TWOII(櫃買)Yahoo 資料落後數週不可用,上櫃股仍用 ^TWII。

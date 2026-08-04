@@ -5867,6 +5867,18 @@ _US_CORR_GLOSSARY = {
         "配對用台股第 D 天 vs 美股第 D-1 天(最近交易日)。",
     "視窗": "拿最近幾個台股交易日來算。240≈一年、120≈半年、60≈一季。"
         "視窗短對近期敏感但雜訊大;長則穩定但反應慢。",
+    "還原價": "報酬用除權息還原價(Yahoo adjclose)算 — 否則除息日會出現 −3~−5% 的"
+        "假下跌,既稀釋真相關又可能造出假相關。",
+    "winsorize (截尾)": "算相關前把兩邊報酬序列各自截在平均±3個標準差內。"
+        "防止財報日 ±15% 或漲跌停這種單日極端值一天就把 240 日的相關撐高 0.1-0.2。",
+    "95% CI (信賴區間)": "相關係數的 Fisher 信賴區間。區間含 0 = 統計上跟「沒相關」"
+        "分不出來,不要當真。視窗越短(n 越小)區間越寬 — 60 日視窗 r<0.3 基本不顯著。",
+    "前/後半 與 ⚠": "把視窗切前後兩半各算一次 r。兩邊差 >0.20 或正負相反就標 ⚠ — "
+        "代表整段的相關可能只由某半段的短期巧合貢獻(例:某股 60 日 +0.46 但 240 日 "
+        "+0.14,就是短期巧合)。穩定的真聯動應該前後半都差不多。",
+    "美股雙因子": "美股 excess 扣兩個因子:S&P500 + 「NASDAQ100 對 S&P500 迴歸後的殘差」"
+        "(正交化科技因子)。只扣 S&P 的話,科技股彼此殘差還共享 tech sector 行情,"
+        "會高估「個股連動」。非科技股第二因子 β≈0 自動退化為單因子。",
 }
 _BACKTEST_GLOSSARY.update(_US_CORR_GLOSSARY)
 
@@ -5881,59 +5893,11 @@ def _us_corr_modules():
     return uc, data_fetcher
 
 
-_us_yahoo_memo: dict = {}
-
-
-def _us_memo_fetch_install(uc, data_fetcher):
-    """當日記憶化 fetch_yahoo(^TWII 等會被每檔重抓,快取省 5 成請求)。"""
-    today = datetime.now().strftime("%Y%m%d")
-    orig = data_fetcher.fetch_yahoo.__wrapped__ if hasattr(
-        data_fetcher.fetch_yahoo, "__wrapped__") else data_fetcher.fetch_yahoo
-
-    def memo(symbol, range_str="3mo"):
-        k = (symbol, range_str, today)
-        if k not in _us_yahoo_memo:
-            _us_yahoo_memo[k] = orig(symbol, range_str)
-        return _us_yahoo_memo[k]
-    memo.__wrapped__ = orig
-    data_fetcher.fetch_yahoo = memo
-    uc.fetch_yahoo = memo
-
-
 def _us_corr_compute(peers: list[str], stocks: list[str], window: int,
                      raw: bool, code_to_concepts: dict | None) -> list[dict]:
-    uc, df = _us_corr_modules()
-    _us_memo_fetch_install(uc, df)
-    yahoo_range = "2y" if window > 200 else ("1y" if window > 100 else "6mo")
-    market_us = None if raw else "^GSPC"
-    us_excess = {}
-    for p in peers:
-        ex = uc.fetch_excess_series(p, market_us, yahoo_range)
-        if ex:
-            us_excess[p] = ex
-    if not us_excess:
-        raise RuntimeError("抓不到任何美股 peer 資料(代號打錯?)")
-    rows = []
-    for code in stocks:
-        tw_map, name = uc.fetch_tw_excess(code, raw=raw, range_str=yahoo_range)
-        if not tw_map:
-            continue
-        recent = sorted(tw_map.keys())[-window:]
-        twr = {d: tw_map[d] for d in recent}
-        corrs = {}
-        for p in peers:
-            if p not in us_excess:
-                corrs[p] = None
-                continue
-            usd = sorted(us_excess[p].keys())[-(window + 5):]
-            pairs = uc.lagged_pairs(twr, {d: us_excess[p][d] for d in usd})
-            corrs[p] = (uc.correlation([x for x, _ in pairs], [y for _, y in pairs])
-                        if len(pairs) >= 10 else None)
-        rows.append({"code": code, "name": name, "corrs": corrs,
-                     "concepts": (code_to_concepts or {}).get(code, [])})
-    rows.sort(key=lambda r: max((c for c in r["corrs"].values() if c is not None),
-                                default=-2), reverse=True)
-    return rows
+    uc, _ = _us_corr_modules()
+    return uc.compute_correlations(peers, stocks, window, raw=raw,
+                                   code_to_concepts=code_to_concepts)
 
 
 def _us_scan_worker(peers: list[str], window: int, raw: bool, key: str):
@@ -5947,7 +5911,7 @@ def _us_scan_worker(peers: list[str], window: int, raw: bool, key: str):
         stocks = list(code_to_concepts.keys())
         rows = _us_corr_compute(peers, stocks, window, raw, code_to_concepts)
         os.makedirs(_US_CORR_DIR, exist_ok=True)
-        out = {"peers": peers, "window": window, "raw": raw,
+        out = {"peers": peers, "window": window, "raw": raw, "algo": 2,
                "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                "n_universe": len(stocks), "rows": rows}
         with open(os.path.join(_US_CORR_DIR, key + ".json"), "w") as f:
@@ -5960,21 +5924,36 @@ def _us_scan_worker(peers: list[str], window: int, raw: bool, key: str):
 def _us_corr_table(rows: list[dict], peers: list[str], top: int,
                    fut_set: set) -> str:
     def cell(c):
-        if c is None:
+        if not c:
             return "<td>—</td>"
-        cls = ("corr-hi" if c >= 0.6 else ("corr-mid" if c >= 0.3 else ""))
-        return f'<td class="{cls}">{c:+.2f}</td>'
+        cls = ("corr-hi" if c["r"] >= 0.6 else ("corr-mid" if c["r"] >= 0.3 else ""))
+        warn = "⚠" if c.get("unstable") else ""
+        return f'<td class="{cls}">{c["r"]:+.2f}{warn}</td>'
     h = "".join(f"<th>{_esc(p)}</th>" for p in peers)
     out = [f'<div class="table-scroll"><table class="report-table"><thead><tr>'
-           f'<th>代號</th><th>名稱</th>{h}<th>max</th><th>所屬概念</th></tr></thead><tbody>']
+           f'<th>代號</th><th>名稱</th>{h}<th>max</th>'
+           f'<th title="max 那檔的 Fisher 95% 信賴區間;含 0 = 統計上不顯著">95% CI</th>'
+           f'<th title="視窗前半 / 後半分開算的 r;差很大或正負相反(⚠)代表相關可能由短期巧合貢獻">前/後半</th>'
+           f'<th title="有效配對天數">n</th><th>所屬概念</th></tr></thead><tbody>']
     for r in rows[:top]:
         star = "★" if r["code"] in fut_set else ""
-        cs = [c for c in r["corrs"].values() if c is not None]
-        mx = f"{max(cs):+.2f}" if cs else "—"
+        stats = [c for c in r["corrs"].values() if c]
+        best = max(stats, key=lambda c: c["r"], default=None)
         cells = "".join(cell(r["corrs"].get(p)) for p in peers)
+        if best:
+            mx = f'{best["r"]:+.2f}'
+            ci = (f'{best["ci_lo"]:+.2f}~{best["ci_hi"]:+.2f}'
+                  if best.get("ci_lo") is not None else "—")
+            fb = (f'{best["r_front"]:+.2f}/{best["r_back"]:+.2f}'
+                  if best.get("r_front") is not None else "—")
+            n = best["n"]
+        else:
+            mx = ci = fb = "—"
+            n = "—"
         out.append(
             f'<tr><td>{_esc(r["code"])}</td><td>{_esc(r["name"])}{star}</td>'
-            f'{cells}<td><b>{mx}</b></td>'
+            f'{cells}<td><b>{mx}</b></td><td class="small">{ci}</td>'
+            f'<td class="small">{fb}</td><td class="small">{n}</td>'
             f'<td class="small">{_esc("、".join(r["concepts"][:3]))}</td></tr>')
     out.append("</tbody></table></div>")
     return "".join(out)
@@ -6022,12 +6001,17 @@ def us_correlation_page():
         key = "_".join(peers) + f"_w{window}" + ("_raw" if raw else "")
         cache_f = os.path.join(_US_CORR_DIR, key + ".json")
         state = _us_scan_state.get(key, {})
+        d = None
+        if os.path.exists(cache_f):
+            d = json.load(open(cache_f))
+            if d.get("algo") != 2:
+                os.remove(cache_f)          # 舊演算法結果作廢,觸發重掃
+                d = None
         if state.get("status") == "running":
             note = ('<meta http-equiv="refresh" content="20">'
                     '<section class="note">⏳ 全市場掃描中(約 2-5 分鐘,每檔台股都要抓一年價格)…'
                     '頁面每 20 秒自動刷新。</section>')
-        elif os.path.exists(cache_f):
-            d = json.load(open(cache_f))
+        elif d:
             rows = d["rows"]
             body = (f'<section><h3>全市場 {d["n_universe"]} 檔 vs '
                     f'{_esc(",".join(d["peers"]))}(視窗 {d["window"]},'
