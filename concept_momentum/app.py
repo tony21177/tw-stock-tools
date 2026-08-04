@@ -6087,6 +6087,19 @@ def us_correlation_page():
 </body></html>"""
 
 
+@app.route("/disposal-rules")
+def disposal_rules_page():
+    import disposal_rules
+    try:
+        from tw_stock_futures import fut_stock_set
+        fs = fut_stock_set()
+    except Exception:
+        fs = set()
+    nav = __import__("site_nav").nav_html("/disposal-rules")
+    return disposal_rules.render_page(nav, fut_set=fs)
+
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()

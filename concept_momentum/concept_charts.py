@@ -699,6 +699,7 @@ document.addEventListener('DOMContentLoaded',function(){{
       <a class="tab" href="/intraday-sim" style="text-decoration:none;color:inherit;">📉 盤中走勢模擬</a>
       <a class="tab" href="/adr-premium" style="text-decoration:none;color:inherit;">🇺🇸 ADR 折溢價</a>
       <a class="tab" href="/us-correlation" style="text-decoration:none;color:inherit;">🔗 美台聯動</a>
+      <a class="tab" href="/disposal-rules" style="text-decoration:none;color:inherit;">⚖ 處置新制</a>
       <a class="tab" href="/futures-basis" style="text-decoration:none;color:inherit;">📐 期貨基差</a>
       <a class="tab" href="/stock-futures" style="text-decoration:none;color:inherit;">🔥 個股期火熱</a>
       <a class="tab" href="/lin-matrix" style="text-decoration:none;color:inherit;">📐 林則行矩陣</a>

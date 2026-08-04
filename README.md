@@ -37,6 +37,7 @@
 📉 [盤中模擬](docs/tools/turnaround.md) ·
 🦖 [沉睡巨人](docs/tools/dormant-giants.md) ·
 🔗 [美台聯動](docs/tools/us-correlation.md) ·
+⚖ [處置新制解讀+千金股門檻雷達](docs/tools/disposal-rules.md) ·
 💼 [基本面工具(合約負債/存貨/股東)](docs/strategies/fundamentals.md) ·
 🔔 [其他訊號](docs/strategies/misc-signals.md) ·
 🔬 [借券大增/回補研究](docs/strategies/sbl-surge-study.md) ·
