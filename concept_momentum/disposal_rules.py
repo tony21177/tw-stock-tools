@@ -84,6 +84,178 @@ def build_monitor_rows(min_price: float = 900.0) -> tuple[list[dict], str]:
     return rows, latest_date
 
 
+# ── 注意/處置現況(讀 tw_disposal_data 快取) ──────────────────
+def _load_disposal(kind):
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(HERE))
+    import tw_disposal_data as dd
+    return dd.load_all(kind)
+
+
+def _calendar():
+    files = sorted(glob.glob(os.path.join(HERE, "cache", "year_prices", "*.json")))
+    return [os.path.basename(f).replace(".json", "") for f in files]
+
+
+def build_attention_status():
+    """回傳 (rows, asof)。近 30 交易日有注意紀錄的 4 碼個股之處置進度
+    + 處置中/即將解禁標記。rows 依(處置中優先, 進度降冪)排序。"""
+    cal = _calendar()
+    if not cal:
+        return [], "—"
+    asof = cal[-1]
+    last30 = set(cal[-30:])
+    last10 = set(cal[-10:])
+    notices = {}
+    for r in _load_disposal("notice"):
+        c = r.get("code", "")
+        if len(c) == 4 and c.isdigit() and r.get("date") in last30:
+            notices.setdefault(c, {"name": r["name"], "dates": set()})
+            notices[c]["dates"].add(r["date"])
+    active_p, coming_release = {}, {}
+    for r in _load_disposal("punish"):
+        c = r.get("code", "")
+        st, en = r.get("start"), r.get("end")
+        if not (len(c) == 4 and c.isdigit() and st and en):
+            continue
+        if st <= asof <= en:
+            active_p[c] = {"end": en, "measure": r.get("measure", ""),
+                           "cum": r.get("cum", ""), "name": r.get("name", "")}
+    rows = []
+    seen = set(notices) | set(active_p)
+    for c in seen:
+        info = notices.get(c, {})
+        dates = info.get("dates", set())
+        streak = 0
+        for d in reversed(cal[-30:]):
+            if d in dates:
+                streak += 1
+            else:
+                break
+        n10 = len(dates & last10)
+        n30 = len(dates)
+        prog = max(streak / 5, n10 / 6, n30 / 12)
+        disp = active_p.get(c)
+        # 距解禁交易日數
+        days_left = None
+        if disp:
+            days_left = len([d for d in cal if asof < d <= disp["end"]])
+            future = [d for d in cal if d > asof]
+            days_left = sum(1 for d in future if d <= disp["end"])
+            if days_left == 0:          # 快取日曆沒有未來日,用日曆日估
+                from datetime import datetime as _dt
+                days_left = max(0, ( _dt.strptime(disp["end"], "%Y%m%d")
+                                     - _dt.strptime(asof, "%Y%m%d")).days)
+        rows.append({"code": c,
+                     "name": info.get("name") or (disp or {}).get("name", ""),
+                     "streak": streak, "n10": n10, "n30": n30,
+                     "progress": prog, "disposed": bool(disp),
+                     "disp_end": disp["end"] if disp else None,
+                     "disp_left": days_left,
+                     "measure": (disp or {}).get("measure", "")})
+    rows.sort(key=lambda r: (not r["disposed"], -r["progress"]))
+    return rows, asof
+
+
+def _fmt_ymd(d):
+    return f"{d[4:6]}/{d[6:]}" if d and len(d) == 8 else (d or "—")
+
+
+def render_attention_section(fut_set=None):
+    fut_set = fut_set or set()
+    rows, asof = build_attention_status()
+    if not rows:
+        return ('<section><h3>🚨 現役注意/處置狀態</h3>'
+                '<p class="small">近 30 交易日無注意/處置紀錄之 4 碼個股,'
+                '或公告快取尚未建立(跑 tw_disposal_data.py)。</p></section>')
+    trs = []
+    for r in rows[:40]:
+        star = "★" if r["code"] in fut_set else ""
+        if r["disposed"]:
+            st = (f'<span style="color:#ff6b6b;font-weight:700">處置中</span> '
+                  f'至 {_fmt_ymd(r["disp_end"])}(剩 {r["disp_left"]} 交易日)')
+        elif r["streak"] >= 4 or r["n10"] >= 5 or r["n30"] >= 10:
+            st = '<span style="color:#e6c56a;font-weight:700">瀕臨處置</span>'
+        else:
+            st = ""
+        trs.append(
+            f'<tr><td data-kx="{r["code"]}" style="cursor:pointer">'
+            f'{r["code"]} {r["name"]}{star}</td>'
+            f'<td>{r["streak"]}/5</td><td>{r["n10"]}/6</td><td>{r["n30"]}/12</td>'
+            f'<td>{r["progress"]*100:.0f}%</td><td>{st}</td></tr>')
+    return (
+        f'<section><h3>🚨 現役注意/處置狀態 — 距處置進度(資料日 {asof})</h3>'
+        '<p class="small">處置要件三條路:<b>連續 5 日</b>注意、<b>10 日內 6 次</b>、'
+        '<b>30 日內 12 次</b> — 任一達成即處置。進度 = 三者最大完成度。'
+        '含權證以外之 4 碼個股;來源 TWSE/TPEx 公告(每日 20:20 更新)。⚠ 計數為近似:處置後累計歸零、同款別合併等交易所細則未完全模擬,會出現「進度>100% 但未處置」— 以交易所公告為準。</p>'
+        '<div class="table-scroll"><table class="report-table"><thead><tr>'
+        '<th>股票</th><th>連續</th><th>10日內</th><th>30日內</th>'
+        '<th>進度</th><th>狀態</th></tr></thead><tbody>'
+        + "".join(trs) + '</tbody></table></div></section>')
+
+
+def render_backtest_section():
+    parts = []
+    p1 = os.path.join(HERE, "cache", "disposal_backtest.json")
+    if os.path.exists(p1):
+        d = json.load(open(p1))
+        h = d["horizons"]
+        sp = d["splits"]
+        def row(label, s):
+            if not s:
+                return ""
+            return (f'<tr><td>{label}</td><td>{s["n"]}</td>'
+                    f'<td>{s["mean"]:+.1f}%</td><td>{s["median"]:+.1f}%</td>'
+                    f'<td>{s["win"]:.0f}%</td>'
+                    f'<td>{s.get("excess_mean", "—"):+.1f}%</td>'
+                    f'<td>{s.get("t", "—")}</td></tr>')
+        parts.append(
+            f'<section><h3>🧪 回測 A:處置解禁行情(解除日收盤進場,n={d["n_events"]},'
+            f'{d["sample_range"][0][:4]}/{_fmt_ymd(d["sample_range"][0])}'
+            f'~{d["sample_range"][1][:4]}/{_fmt_ymd(d["sample_range"][1])})</h3>'
+            '<div class="table-scroll"><table class="report-table"><thead><tr>'
+            '<th>分組</th><th>n</th><th>絕對均</th><th>中位</th><th>勝率</th>'
+            '<th>超額均(vs同日隨機100檔)</th><th>t</th></tr></thead><tbody>'
+            + row("全部 H5", h["5"]) + row("全部 H10", h["10"]) + row("全部 H20", h["20"])
+            + row("首次處置 H20", sp["first"]["20"])
+            + row("二次+處置 H20", sp["second_plus"]["20"])
+            + row("上市 H20", sp["twse"]["20"]) + row("上櫃 H20", sp["tpex"]["20"])
+            + '</tbody></table></div>'
+            f'<p><b>結論:解禁不是穩定 edge,是彩券。</b>H20 超額均 +3.7%(t=4.4)看似顯著,'
+            f'但中位數 −2.3%、勝率僅 48% — 平均被少數解禁暴衝股拉高,買「一般」解禁股多數輸。'
+            f'二次+處置解禁(H20 超額 +4.6%, t=4.3)強於首次(+1.9%, t=1.6),'
+            f'與「被關越久反彈越大」一致。處置期間本身平均仍 <b>+{d["in_period_ret"]}%</b>'
+            f'(n={d["in_period_n"]})— 處置壓不住動能。'
+            '<b>可操作解讀:解禁日不無腦追;若要參與,偏向二次+處置且處置期間仍強者,'
+            '並接受彩券式分布(小注分散)。</b></p></section>')
+    p2 = os.path.join(HERE, "cache", "tier_cross_backtest.json")
+    if os.path.exists(p2):
+        d = json.load(open(p2))
+        h, c = d["horizons"], d["control"]
+        def row2(label, s):
+            if not s:
+                return ""
+            return (f'<tr><td>{label}</td><td>{s["n"]}</td>'
+                    f'<td>{s["mean"]:+.1f}%</td><td>{s["median"]:+.1f}%</td>'
+                    f'<td>{s["win"]:.0f}%</td></tr>')
+        parts.append(
+            f'<section><h3>🧪 回測 B:整數關卡跨越(原始收盤首次站上 1000/2000/3000…,'
+            f'n={d["n_events"]})</h3>'
+            '<div class="table-scroll"><table class="report-table"><thead><tr>'
+            '<th>組別</th><th>n</th><th>絕對均</th><th>中位</th><th>勝率</th>'
+            '</tr></thead><tbody>'
+            + row2("跨關卡 H5", h["5"]) + row2("跨關卡 H10", h["10"]) + row2("跨關卡 H20", h["20"])
+            + row2("對照(同日高價股) H5", c["5"]) + row2("對照 H10", c["10"])
+            + row2("對照 H20", c["20"])
+            + '</tbody></table></div>'
+            '<p class="small">⚠ 此回測驗證的是「整數關卡心理效應」(新制鋸齒紅利只適用施行後,'
+            '尚無數據可測)。事件偵測用原始收盤(關卡是名目價格),報酬用還原價。</p></section>')
+    if not parts:
+        parts.append('<section class="note">回測結果尚未產生'
+                     '(跑 tw_disposal_analysis.py --release / --tier-cross)。</section>')
+    return "".join(parts)
+
+
 _TIER_TABLE = """
 <table class="report-table">
 <thead><tr><th>股價級距</th><th>價差門檻</th><th>6日容許幅度(級距底→頂)</th><th>約幾根漲停</th></tr></thead>
@@ -165,20 +337,19 @@ _RULES_HTML = """
 _STRATEGY_HTML = """
 <section><h3>💡 可開發的策略構想(尚未開發,按價值排序)</h3>
 <ol>
-<li><b>11 款門檻雷達(本頁下方已上線)</b>:每日掃千金股 6 日起迄價差 ÷ 門檻,
-用掉 ≥70% 的列預警。用途:持股者提前知道「再一根漲停就注意」;
-交易者觀察「進注意前的最後衝刺」與「注意後降溫」型態。可加 cron 推播。</li>
-<li><b>處置解禁行情回測</b>:抓 TWSE/TPEx 處置公告歷史,回測「解除處置日後 N 日」報酬與量能回補。
-若有 edge,做解禁日曆 + 前一日提醒。新制施行日的集體解禁潮是天然實驗場。</li>
-<li><b>注意累積計數器</b>:追每檔的注意次數(連 5 / 10 之 6 / 30 之 12 進度條),
-量化「距處置還差幾天」。對隔日沖/當沖者是風控工具(處置股不能當沖、出場流動性變差)。</li>
-<li><b>整數關卡跨越觀察</b>:鋸齒效應下,跨過 2,000/3,000 的千金股拿到寬鬆門檻 —
-統計「跨關卡後 N 日動能是否強於未跨關卡對照組」。若成立,是規則紅利型動能訊號。</li>
-<li><b>處置中動能延續研究(新制後才能做)</b>:2 分鐘撮合下處置股的動能延續 vs 舊制 5/20 分鐘 —
-懲罰放輕後「處置照樣噴」的機率理論上升高,累積數據後可驗證。</li>
+<li><b>11 款門檻雷達 ✅ 已上線</b>(本頁雷達表 + 每日 20:20 cron,
+≥70%/瀕臨處置/即將解禁任一觸發才推 Telegram)。</li>
+<li><b>處置解禁行情回測 ✅ 已完成</b>(結果見上方回測 A:解禁是彩券 —
+平均正但中位負;二次+處置解禁較強;推播附解禁日提醒)。</li>
+<li><b>注意累積計數器 ✅ 已上線</b>(上方「現役注意/處置狀態」表,
+每日 cron 更新公告快取)。</li>
+<li><b>整數關卡跨越 ✅ 已回測</b>(結果見上方回測 B:跨關卡後動能顯著強於同日高價股對照,
+中位數也贏 — 圓整數突破效應成立;新制鋸齒紅利屬額外順風,施行後可再驗)。</li>
+<li><b>處置中動能延續研究(累積中)</b>:公告快取每日累積(2024-07 起已回補),
+新制施行滿 2-3 個月後可對比新舊制處置期間報酬(舊制基期:處置期間均 +3.4%)。</li>
 </ol>
-<p class="small">1 可立即做(本頁已含雷達表);2-3 需要接 TWSE/TPEx 注意與處置公告資料源;
-4-5 需累積新制施行後的數據。</p></section>
+<p class="small">資料源:TWSE announcement/notice+punish、TPEx bulletin/attention+disposal
+(官方 API,月檔快取於 cache/disposal/,2024-07 起)。</p></section>
 """
 
 
@@ -241,6 +412,8 @@ def render_page(nav: str, glossary: str = "", fut_set: set | None = None) -> str
 {_RULES_HTML}
 <section><h3>📐 第 11 款級距門檻表</h3>{_TIER_TABLE}</section>
 {monitor}
+{render_attention_section(fut_set)}
+{render_backtest_section()}
 {_STRATEGY_HTML}
 {glossary}
 </body></html>"""
