@@ -280,6 +280,94 @@ def backtest_tier_cross():
     print(f"→ {path}")
 
 
+# ── 每日訊號:今日跨關卡 + 逼近關卡 watch ─────────────────────
+TIERS = [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000,
+         12000, 15000, 20000]
+RAW_CACHE = os.path.join(CM, "cache", "raw_closes_high.json")
+
+
+def update_raw_closes(token: str) -> dict:
+    """增量更新高價股原始收盤快取。候選=還原收盤近 60 日曾 >900 的 4 碼個股
+    (新進榜者抓近 120 日)。回傳快取 dict {code: {date: close}}。"""
+    dates, closes = load_panel()
+    recent = dates[-60:]
+    cands = {c for c, m in closes.items()
+             if len(c) == 4 and c.isdigit()
+             and max((m.get(d, 0) for d in recent), default=0) > 900}
+    cache = json.load(open(RAW_CACHE)) if os.path.exists(RAW_CACHE) else {}
+    from datetime import datetime, timedelta
+    for code in sorted(cands | set(cache)):
+        cur = cache.get(code, {})
+        if cur:
+            last = max(cur)
+            start = (datetime.strptime(last, "%Y%m%d")
+                     + timedelta(days=1)).strftime("%Y-%m-%d")
+            if last >= dates[-1]:
+                continue
+        else:
+            start = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
+        new = _finmind_raw_closes(code, token, start=start)
+        if new:
+            cur.update(new)
+            cache[code] = cur
+        time.sleep(0.3)
+    json.dump(cache, open(RAW_CACHE, "w"))
+    return cache
+
+
+def _first_cross(raw: dict, rdates: list, j: int, B: int) -> bool:
+    """rdates[j] 收盤跨上 B 且前 60 交易日未曾 ≥B。"""
+    if j == 0:
+        return False
+    if not (raw[rdates[j - 1]] < B <= raw[rdates[j]]):
+        return False
+    return not any(raw[d] >= B for d in rdates[max(0, j - 60):j])
+
+
+def recent_tier_events(days: int = 5) -> list[dict]:
+    """近 N 交易日的跨關卡事件(讀快取,不打 API)。"""
+    if not os.path.exists(RAW_CACHE):
+        return []
+    cache = json.load(open(RAW_CACHE))
+    out = []
+    for code, raw in cache.items():
+        rdates = sorted(raw)
+        if len(rdates) < 61:
+            continue
+        for j in range(max(1, len(rdates) - days), len(rdates)):
+            for B in TIERS:
+                if _first_cross(raw, rdates, j, B):
+                    out.append({"code": code, "date": rdates[j], "tier": B,
+                                "close": raw[rdates[j]]})
+    out.sort(key=lambda e: (-int(e["date"]), -e["tier"]))
+    return out
+
+
+def near_tier_watch(max_gap_pct: float = 5.0) -> list[dict]:
+    """逼近關卡 watch:最新收盤距上方「60 日未觸及」關卡 ≤max_gap_pct%。"""
+    if not os.path.exists(RAW_CACHE):
+        return []
+    cache = json.load(open(RAW_CACHE))
+    out = []
+    for code, raw in cache.items():
+        rdates = sorted(raw)
+        if len(rdates) < 61:
+            continue
+        c = raw[rdates[-1]]
+        nxt = next((B for B in TIERS if B > c), None)
+        if not nxt:
+            continue
+        gap = (nxt - c) / c * 100
+        if gap > max_gap_pct:
+            continue
+        if any(raw[d] >= nxt for d in rdates[-61:-1]):
+            continue                      # 近 60 日碰過 → 非首次跨越 setup
+        out.append({"code": code, "close": c, "tier": nxt,
+                    "gap_pct": round(gap, 1), "date": rdates[-1]})
+    out.sort(key=lambda e: e["gap_pct"])
+    return out
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--release", action="store_true")

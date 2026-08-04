@@ -26,18 +26,34 @@ TG_API = "https://api.telegram.org/bot{token}/sendMessage"
 
 def build_message() -> str | None:
     import disposal_rules as dr
+    import tw_disposal_analysis as ta
     radar_rows, asof = dr.build_monitor_rows()
     att_rows, _ = dr.build_attention_status()
+    # 更新原始收盤快取後偵測今日跨關卡(需 FINMIND_TOKEN;缺時用既有快取)
+    tok = os.environ.get("FINMIND_TOKEN")
+    if tok:
+        try:
+            ta.update_raw_closes(tok)
+        except Exception as e:
+            print("raw update err:", e)
+    crosses = [e for e in ta.recent_tier_events(1)]
 
     hot = [r for r in radar_rows if (r.get("used") or 0) >= 70]
     near = [r for r in att_rows if not r["disposed"]
             and (r["streak"] >= 4 or r["n10"] >= 5 or r["n30"] >= 10)]
     releasing = [r for r in att_rows if r["disposed"]
                  and r.get("disp_left") is not None and r["disp_left"] <= 2]
-    if not (hot or near or releasing):
+    if not (hot or near or releasing or crosses):
         return None
 
     L = [f"⚖ 處置雷達 {asof}", "━━━━━━━━━━━━"]
+    if crosses:
+        from disposal_rules import _name_lookup
+        nm = _name_lookup()
+        L.append("📈 整數關卡跨越(回測 H20 +10.3%/勝率61%,中位也贏對照):")
+        for e in crosses[:6]:
+            L.append(f"  {e['code']} {nm(e['code'])} 首次站上 {e['tier']:,}"
+                     f"(收 {e['close']:,.0f})")
     if hot:
         L.append("🔥 11款門檻雷達(千金股 6日起迄已用門檻%):")
         for r in hot[:8]:

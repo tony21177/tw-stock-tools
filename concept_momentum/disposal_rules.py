@@ -194,6 +194,42 @@ def render_attention_section(fut_set=None):
         + "".join(trs) + '</tbody></table></div></section>')
 
 
+def render_tier_signal_section(fut_set=None):
+    """整數關卡跨越訊號:近 5 交易日事件 + 逼近關卡 watch。"""
+    fut_set = fut_set or set()
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(HERE))
+    try:
+        import tw_disposal_analysis as ta
+        events = ta.recent_tier_events(5)
+        watch = ta.near_tier_watch(5.0)
+    except Exception:
+        events, watch = [], []
+    name = _name_lookup()
+
+    def li(e, extra=""):
+        star = "★" if e["code"] in fut_set else ""
+        return (f'<tr><td data-kx="{e["code"]}" style="cursor:pointer">'
+                f'{e["code"]} {name(e["code"])}{star}</td>'
+                f'<td>{_fmt_ymd(e["date"])}</td><td>{e["tier"]:,}</td>'
+                f'<td>{e["close"]:,.0f}</td><td>{extra}</td></tr>')
+    rows = "".join(li(e, "✅ 已跨越") for e in events)
+    rows += "".join(li(w, f'差 {w["gap_pct"]}%') for w in watch)
+    if not rows:
+        rows = '<tr><td colspan="5" class="small">近 5 日無跨關卡事件,亦無逼近關卡(≤5%)標的。</td></tr>'
+    return (
+        '<section><h3>📈 整數關卡跨越訊號(策略選股)</h3>'
+        '<p class="small">訊號:原始收盤<b>首次</b>站上 1,000/2,000/3,000…整數關卡'
+        '(前 60 交易日未曾觸及)。回測(n=152,2024-07~2026-07):'
+        '<b>H20 +10.3%、中位 +8.2%、勝率 61%</b> vs 同日高價股對照 +6.7%/+2.5%/55% — '
+        '中位數也贏,非彩券分布。⚠ 回測樣本以 1,000-6,000 關卡為主,更高關卡為同邏輯外推;'
+        '新制鋸齒紅利(跨關卡後 11 款門檻放寬)屬額外順風。'
+        '「差 x%」= 逼近關卡預備名單(距上方 60 日未觸及關卡 ≤5%)。</p>'
+        '<div class="table-scroll"><table class="report-table"><thead><tr>'
+        '<th>股票</th><th>日期</th><th>關卡</th><th>收盤(原始)</th><th>狀態</th>'
+        '</tr></thead><tbody>' + rows + '</tbody></table></div></section>')
+
+
 def render_backtest_section():
     parts = []
     p1 = os.path.join(HERE, "cache", "disposal_backtest.json")
@@ -412,6 +448,7 @@ def render_page(nav: str, glossary: str = "", fut_set: set | None = None) -> str
 {_RULES_HTML}
 <section><h3>📐 第 11 款級距門檻表</h3>{_TIER_TABLE}</section>
 {monitor}
+{render_tier_signal_section(fut_set)}
 {render_attention_section(fut_set)}
 {render_backtest_section()}
 {_STRATEGY_HTML}
