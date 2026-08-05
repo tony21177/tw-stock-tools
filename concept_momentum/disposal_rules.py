@@ -213,26 +213,12 @@ def render_tier_signal_section(fut_set=None):
                 f'{e["code"]} {name(e["code"])}{star}</td>'
                 f'<td>{_fmt_ymd(e["date"])}</td><td>{e["tier"]:,}</td>'
                 f'<td>{e["close"]:,.0f}</td><td>{extra}</td></tr>')
-    try:
-        import tw_disposal_analysis as _ta
-        fz = _ta.free_zone_watch()
-    except Exception:
-        fz = []
     rows = "".join(li(e, "✅ 已跨越") for e in events)
     for w in watch:
         tag = f'差 {w["gap_pct"]}%'
         if w["tier"] >= 2000:
             tag += '(雷區→通關)'
         rows += li(w, tag)
-    for w in fz:
-        kind = "突破型" if w["first_time"] else "收復型"
-        mom = f'{w["mom6"]:+.1f}%' if w["mom6"] is not None else "—"
-        rows += (f'<tr><td data-kx="{w["code"]}" style="cursor:pointer">'
-                 f'{w["code"]} {name(w["code"])}'
-                 f'{"★" if w["code"] in fut_set else ""}</td>'
-                 f'<td>{_fmt_ymd(w["date"])}</td><td>1,000</td>'
-                 f'<td>{w["close"]:,.0f}</td>'
-                 f'<td>🎯 免費區候補 差 {w["gap_pct"]}% · 6日動能 {mom} · {kind}</td></tr>')
     if not rows:
         rows = '<tr><td colspan="5" class="small">近 5 日無跨關卡事件,亦無逼近關卡(≤5%)標的。</td></tr>'
     return (
@@ -246,6 +232,47 @@ def render_tier_signal_section(fut_set=None):
         '<div class="table-scroll"><table class="report-table"><thead><tr>'
         '<th>股票</th><th>日期</th><th>關卡</th><th>收盤(原始)</th><th>狀態</th>'
         '</tr></thead><tbody>' + rows + '</tbody></table></div></section>')
+
+
+def render_free_zone_section(fut_set=None):
+    """🎯 千元免費區候補 — 獨立區塊(收盤 930-1,000)。"""
+    fut_set = fut_set or set()
+    import sys as _sys
+    _sys.path.insert(0, os.path.dirname(HERE))
+    try:
+        import tw_disposal_analysis as ta
+        fz = ta.free_zone_watch()
+    except Exception:
+        fz = []
+    name = _name_lookup()
+    if fz:
+        trs = []
+        for w in fz:
+            star = "★" if w["code"] in fut_set else ""
+            kind = ('<span style="color:#4cc2ff;font-weight:700">突破型</span>'
+                    if w["first_time"] else "收復型")
+            mom = f'{w["mom6"]:+.1f}%' if w["mom6"] is not None else "—"
+            mom_cls = "pos" if (w["mom6"] or 0) > 0 else "neg"
+            trs.append(
+                f'<tr><td data-kx="{w["code"]}" style="cursor:pointer">'
+                f'{w["code"]} {name(w["code"])}{star}</td>'
+                f'<td>{w["close"]:,.0f}</td><td>{w["gap_pct"]}%</td>'
+                f'<td class="{mom_cls}">{mom}</td><td>{kind}</td></tr>')
+        body = ('<div class="table-scroll"><table class="report-table"><thead><tr>'
+                '<th>股票</th><th>收盤(原始)</th><th>距 1,000</th>'
+                '<th>6日動能</th><th>型態</th></tr></thead><tbody>'
+                + "".join(trs) + '</tbody></table></div>')
+    else:
+        body = '<p class="small">目前無 930-1,000 元候補標的。</p>'
+    return (
+        '<section><h3>🎯 千元免費區候補(收盤 930-1,000)</h3>'
+        '<p class="small"><b>依「主力地圖」(解讀第 8 點)選股</b>:1,000 元以下歸第一款'
+        '(6 日累積 32%)管、11 款免疫;剛跨 1,000 後 11 款門檻 300 元 ≈30% 與第一款幾乎重疊 → '
+        '<b>「站上千金」這一步在監管上零新增代價</b>,且跨後直到 ~1,300 都是全規則最寬鬆帶。'
+        '<b>突破型</b> = 60 日內未曾破千(對應回測 B 的首次跨越,H20 +10.3%/勝率 61%);'
+        '<b>收復型</b> = 曾破千後跌回(僅具監管免摩擦特性,無回測 edge,如崩後反彈的環球晶)。'
+        '6 日動能 = 原始收盤 6 日淨變動。點代號看 K 線。</p>'
+        + body + '</section>')
 
 
 def render_backtest_section():
@@ -485,6 +512,7 @@ def render_page(nav: str, glossary: str = "", fut_set: set | None = None) -> str
 <section><h3>📐 第 11 款級距門檻表</h3>{_TIER_TABLE}</section>
 {monitor}
 {render_tier_signal_section(fut_set)}
+{render_free_zone_section(fut_set)}
 {render_attention_section(fut_set)}
 {render_backtest_section()}
 {_STRATEGY_HTML}
