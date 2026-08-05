@@ -25,3 +25,5 @@ uptrend →(收盤自 refpeak 回檔≥CORR_PCT=6%)→ correction →(創低後�
 - **cron 07:35(週一~六,抓隔夜美股 FTD)+ 21:45(週一~五,台股)**,無 is_trading_day 守門(資料驅動無害);**「最新資料日=FTD日」且未推過才推**:Telegram 睏霸數錢(-5229750819)+ **LINE 睏霸數錢(C96e49f2...)/田尾三人幫(Ca0735be...)**(`--line-to`,line_push 模組)。TG/LINE 任一成功即記去重檔 `cache/ftd_pushed.json` {index:date}(⚠ 表示另一通道失敗不重試 — LINE 額度用完月份 TG 照推、LINE 靜默跳過)。
 - 搭配敘事:融資斷頭潮(多方投降)+自營收put(恐慌極值)標「底部區」,FTD 確認「反轉啟動」。
 相關:[[reference-option-flow]]、[[reference-margin-scan]]、[[reference-market-overnight]]
+
+2026-08-05 加櫃買指數(FinMind data_id=TPEx,2005 起,含當日與量):43 次 FTD、失敗率 23.3%(四指數最低)、H20 +2.02%/勝率 66.7% vs 基準 +0.71%/58.3%。頁面/推播自動涵蓋(INDICES 列表驅動)。

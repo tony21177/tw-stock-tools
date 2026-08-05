@@ -10,7 +10,7 @@ FTD 反彈確認日 (tw_ftd) — 歐尼爾/IBD Follow-Through Day
      且 量 > 前一日(台股用成交金額,美股用成交量)→ 確認可能轉上升趨勢
   5. 失敗:FTD 後跌破 rally_low(歷史約 25-30% 失敗)
 
-指數:加權 TAIEX(FinMind,2004 起)、S&P500 ^GSPC、Nasdaq ^IXIC(Yahoo 25y)。
+指數:加權 TAIEX(FinMind,2004 起)、櫃買 TPEx(FinMind,2005 起)、S&P500 ^GSPC、Nasdaq ^IXIC(Yahoo 25y)。
 內建回測:全歷史 FTD 事件 → 失敗率(FAIL_WIN 內跌破防線)+ 後續 H20/H60 報酬
 vs 對照組。頁面顯示各指數當前狀態(修正中/嘗試反彈第N天/FTD確認)+ 歷史事件表。
 
@@ -45,15 +45,17 @@ MIN_DAY = 4        # 反彈第 ≥4 天才算 FTD
 FAIL_WIN = 25      # 回測:FTD 後 N 交易日內跌破防線 = 失敗
 
 INDICES = [
-    ("TAIEX", "加權指數", "finmind"),
+    ("TAIEX", "加權指數", "finmind:TAIEX"),
+    ("TPEX", "櫃買指數", "finmind:TPEx"),
     ("GSPC", "S&P 500", "yahoo:^GSPC"),
     ("IXIC", "Nasdaq", "yahoo:^IXIC"),
 ]
 
 
 # ── 資料 ────────────────────────────────────────────────
-def _fetch_taiex(token: str, start: str = "2004-01-01") -> list[dict]:
-    p = {"dataset": "TaiwanStockPrice", "data_id": "TAIEX",
+def _fetch_taiex(token: str, start: str = "2004-01-01",
+                 data_id: str = "TAIEX") -> list[dict]:
+    p = {"dataset": "TaiwanStockPrice", "data_id": data_id,
          "start_date": start, "token": token}
     req = urllib.request.Request(FINMIND + "?" + urllib.parse.urlencode(p),
                                  headers={"User-Agent": UA})
@@ -212,10 +214,11 @@ def build(token: str | None = None) -> dict:
     out = {"as_of": datetime.now().strftime("%Y-%m-%d %H:%M"), "indices": []}
     for idx_id, name, src in INDICES:
         try:
-            if src == "finmind":
+            if src.startswith("finmind"):
                 if not token:
                     continue
-                days = _fetch_taiex(token)
+                did = src.split(":")[1] if ":" in src else "TAIEX"
+                days = _fetch_taiex(token, data_id=did)
             else:
                 days = _fetch_yahoo(src.split(":")[1])
         except Exception as e:
