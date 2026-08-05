@@ -116,7 +116,7 @@ def render_page(signal_rows: list[dict], day: dict, asof: str,
     parts.append(
         '<section><p class="meta">當日權證總成交金額 ≥ 近20日均 2 倍的現股。'
         '「認購佔比」= 認購(含牛證)成交金額 ÷ 全部權證；Δ = 今日 − 近20日均。'
-        '金額單位億元、近似。</p>'
+        '金額單位億元、近似。訊號門檻:權證總成交金額(量×價)≥1,000 萬(濾小額雜訊)。</p>'
         '<table><thead><tr>'
         '<th>代號</th><th>名稱</th><th>方向</th><th>爆量倍數</th>'
         '<th>權證總額(億)</th><th>認購佔比</th><th>Δ占比</th>'

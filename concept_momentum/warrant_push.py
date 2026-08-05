@@ -58,6 +58,14 @@ def _stock_name(code: str, u: dict) -> str:
         return ""
 
 
+
+def _fmt_amt(v: float) -> str:
+    """≥1億 → x.xx億;不足 → xxx萬。"""
+    if v >= 1e8:
+        return f"{v/1e8:.2f}億"
+    return f"{v/1e4:,.0f}萬"
+
+
 def _days_to_expiry(expiry: str, asof: str) -> int | None:
     from datetime import datetime
     try:
@@ -104,6 +112,8 @@ def build_message(rows: list[dict], day: dict, top: int = 8,
             bits = []
             if w0.get("close") is not None:
                 bits.append(f"權證價${w0['close']:g}")
+            if w0.get("turnover"):
+                bits.append(f"成交{_fmt_amt(w0['turnover'])}")
             if t.get("strike"):
                 bits.append(f"履約${t['strike']:g}")
             dte = _days_to_expiry(t.get("expiry", ""), date)
@@ -118,7 +128,7 @@ def build_message(rows: list[dict], day: dict, top: int = 8,
                 wt = f"\n     主要權證({w0['code']}): " + " ".join(bits)
         lines.append(
             f"  {r['code']} {name} {_DIR.get(r['direction'], '—')} "
-            f"爆量{r['surge_ratio']:.1f}x 權證{r['warrant_turnover']/YI:.2f}億 "
+            f"爆量{r['surge_ratio']:.1f}x 權證總額{_fmt_amt(r['warrant_turnover'])} "
             f"認購佔比{r['bull_share']:.0%}(Δ{r['bull_share_delta']:+.0%}) "
             f"發行:{iss}{wt}")
     lines.append("\n詳見網頁 /warrant-signal")

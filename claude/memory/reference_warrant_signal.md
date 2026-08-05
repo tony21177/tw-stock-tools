@@ -35,3 +35,5 @@ metadata:
 taiex.json 歷史只到 63 天限制樣本；累積更長日檔後、或改良訊號（限特定隱波/價內外/發行券商條件）可用 `warrant_signal_backtest.py --backfill-days N` 重跑
 
 相關：[[reference-money-flow]]（同為先驗未回測觀察工具）、[[reference-chip-episode-compare]]
+
+2026-08-05:加 TURNOVER_MIN=1,000萬(權證總成交金額 量×價)訊號門檻濾小額雜訊;推播權證總額/主要權證成交額格式化(≥1億→億、否則萬)。

@@ -6,6 +6,7 @@
 SURGE_MIN = 2.0
 SHARE_DELTA_MIN = 0.10
 MIN_HISTORY = 10   # 前期資料不足 N 天則不判斷（資料太薄，均值/爆量比不可靠）
+TURNOVER_MIN = 10_000_000   # 權證總成交金額(量×價)≥1,000萬才出訊號,濾小額雜訊
 
 
 def _total(u: dict) -> float:
@@ -13,14 +14,15 @@ def _total(u: dict) -> float:
 
 
 def build_signal_rows(day_files: list[dict], surge_min: float = SURGE_MIN,
-                      delta_min: float = SHARE_DELTA_MIN) -> list[dict]:
+                      delta_min: float = SHARE_DELTA_MIN,
+                      turnover_min: float = TURNOVER_MIN) -> list[dict]:
     if not day_files:
         return []
     latest = day_files[-1]
     rows = []
     for code, cur in latest.get("underlyings", {}).items():
         tot = _total(cur)
-        if tot <= 0:
+        if tot < turnover_min:
             continue
         # 前 N 日（不含今日）總量與 bull_share 序列
         prior_tot, prior_share = [], []
