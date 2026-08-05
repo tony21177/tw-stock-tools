@@ -332,6 +332,16 @@ def fetch_signals(end_date: str | None = None, days: int = 140) -> dict:
         names = {c: get_name(c, "") for c in sm}
     except Exception:
         pass
+    # TWSE ISIN 漏興櫃/全額交割 → FinMind TaiwanStockInfo 名稱補洞
+    try:
+        fm = json.load(open(os.path.join(
+            HERE, "concept_momentum", "cache", "finmind_names.json")))
+        fm = fm.get("names", fm) if isinstance(fm, dict) else {}
+        for c in sm:
+            if not names.get(c) or names[c] == c:   # get_name 找不到回傳代號本身
+                names[c] = fm.get(c, "")
+    except Exception:
+        pass
     return build_signals(sm, names)
 
 
@@ -430,7 +440,8 @@ def render_html(data: dict) -> str:
              '<th>幅度</th><th>盤整均ATR</th><th>盤整</th><th>收盤</th>'
              '<th>箱內位階</th><th>量倍</th><th>堆疊</th></tr></thead><tbody>')
         for r in rows:
-            h += (f'<tr><td>{_h.escape(r["code"])}</td>'
+            h += (f'<tr><td data-kx="{_h.escape(r["code"])}" '
+                  f'style="cursor:pointer">{_h.escape(r["code"])}</td>'
                   f'<td>{_h.escape(r["name"])}</td>'
                   f'<td>{"📈" if r.get("has_fut") else "—"}</td>'
                   f'<td>{r["tier"]}</td>'

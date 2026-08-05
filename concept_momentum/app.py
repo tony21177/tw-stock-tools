@@ -5957,7 +5957,8 @@ def _us_corr_table(rows: list[dict], peers: list[str], top: int,
             mx = ci = fb = "—"
             n = "—"
         out.append(
-            f'<tr><td>{_esc(r["code"])}</td><td>{_esc(r["name"])}{star}</td>'
+            f'<tr><td data-kx="{_esc(r["code"])}" style="cursor:pointer">'
+            f'{_esc(r["code"])}</td><td>{_esc(r["name"])}{star}</td>'
             f'{cells}<td><b>{mx}</b></td><td class="small">{ci}</td>'
             f'<td class="small">{fb}</td><td class="small">{n}</td>'
             f'<td class="small">{_esc("、".join(r["concepts"][:3]))}</td></tr>')

@@ -161,7 +161,7 @@ def render_page(signal_rows: list[dict], day: dict, asof: str,
             "neg" if (r["bull_share_delta"] or 0) < 0 else "")
         name = (u.get("name") or _stock_name(r["code"])) + _fut_star(r["code"])
         parts.append(
-            f'<tr><td>{_esc(r["code"])}</td>'
+            f'<tr><td data-kx="{_esc(r["code"])}" style="cursor:pointer">{_esc(r["code"])}</td>'
             f'<td style="text-align:left">{_esc(name)}</td>'
             f'<td title="{_esc(d_tip)}">{d_label}</td>'
             f'<td>{r["surge_ratio"]:.1f}x</td>'
