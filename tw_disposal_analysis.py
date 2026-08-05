@@ -312,6 +312,21 @@ def update_raw_closes(token: str) -> dict:
             cur.update(new)
             cache[code] = cur
         time.sleep(0.3)
+    # FinMind 上櫃價同步較慢(上市 ~14:10 就有):缺今日者用 Yahoo 補原始收盤
+    from datetime import datetime as _dt
+    if _dt.now().strftime("%H%M") >= "1345":   # 收盤後才補
+        from data_fetcher import fetch_yahoo as _yf
+        for code, cur in cache.items():
+            if cur and max(cur) >= today:
+                continue
+            for suffix in (".TWO", ".TW"):
+                rows = _yf(code + suffix, "5d")
+                got = {r["date"]: r["close"] for r in rows
+                       if r.get("close") and r["date"] > max(cur, default="0")}
+                if got:
+                    cur.update(got)
+                    break
+            time.sleep(0.2)
     json.dump(cache, open(RAW_CACHE, "w"))
     return cache
 

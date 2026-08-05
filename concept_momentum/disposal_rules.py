@@ -82,12 +82,13 @@ def build_monitor_rows(min_price: float = 900.0) -> tuple[list[dict], str]:
             c0 = v0[2] if isinstance(v0, list) and len(v0) >= 3 else None
         if not close or close < min_price:
             continue
+        row_date = rdates[-1] if len(rdates) >= 6 else None
         diff = (close - c0) if c0 else None
         th = threshold(close)
         used = abs(diff) / th * 100 if (diff is not None and th) else None
         n_limit = math.log(1 + th / close) / math.log(1.10) if th else None
         rows.append({
-            "code": code, "name": name(code), "close": close,
+            "code": code, "name": name(code), "close": close, "d": row_date,
             "th": th, "diff": diff, "used": used,
             "allow_pct": th / close * 100 if th else None,
             "n_limit": n_limit,
@@ -264,8 +265,11 @@ def render_free_zone_section(fut_set=None):
     name = _name_lookup()
     if fz:
         trs = []
+        fz_asof = max(w["date"] for w in fz)
         for w in fz:
             star = "★" if w["code"] in fut_set else ""
+            stale = (f' <span class="small">({w["date"][4:6]}/{w["date"][6:]})</span>'
+                     if w["date"] != fz_asof else "")
             kind = ('<span style="color:#4cc2ff;font-weight:700">突破型</span>'
                     if w["first_time"] else "收復型")
             mom = f'{w["mom6"]:+.1f}%' if w["mom6"] is not None else "—"
