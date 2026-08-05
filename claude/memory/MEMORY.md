@@ -43,3 +43,4 @@
 - [VCP 波動收縮掃描 /vcp](reference_vcp_screen.md) — Minervini型態(遞減收縮+量縮+pivot突破);趨勢模板前置;突破日推TG;與utility/FTD三件套;21:00 cron;回測初步負(8事件/失敗率50%,僅觀察)
 - [常駐主機搬遷TODO](project_host_migration_todo.md) — 暫緩;TODO在repo docs/TODO.md;deploy/腳本全就緒只差主機;筆電仍是唯一生產機
 - [處置新制解讀+千金股門檻雷達](reference_disposal_rules.md) — /disposal-rules;11款級距公式(頂端15%漸近線)+鋸齒/淨變動等7解讀+5策略構想;2026-08-04
+- [MOPS F17 N年矩陣缺年處理](feedback_mops_f17_history.md) — 年報次年出/掃描圖檔判別/失敗勿快取空/缺年必顯示原因

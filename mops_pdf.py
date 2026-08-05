@@ -485,38 +485,63 @@ def fetch_shareholders_history(stock_code: str, years: int = 5,
     """
     import json
     if end_roc_year is None:
-        end_roc_year = datetime.now().year - 1911
+        # 年報於「次年」發布:最新已出版年度 = 去年(民國)。抓當年度會白抓。
+        end_roc_year = datetime.now().year - 1911 - 1
     target_years = list(range(end_roc_year - years + 1, end_roc_year + 1))
 
     per_year = {}   # roc_year -> {match_key: {"name", "pct"}}
+    missing = {}    # roc_year -> 缺資料原因(顯示於頁面)
     for yr in target_years:
         cache = os.path.join(PDF_CACHE, f"{stock_code}_F17hist{yr}.json")
+        holders = None
+        cached_status = None
         if os.path.exists(cache):
             try:
                 with open(cache, encoding="utf-8") as f:
-                    holders = json.load(f)
-            except Exception:
-                holders = None
-        else:
-            holders = None
-        if holders is None:
-            path = download_top10_f17(stock_code, yr)
-            holders = []
-            if path:
-                parsed = parse_major_shareholders(path)
-                holders = sorted(parsed.get("shareholders", []),
-                                 key=lambda s: s["pct"], reverse=True)[:10]
-            try:
-                with open(cache, "w", encoding="utf-8") as f:
-                    json.dump(holders, f, ensure_ascii=False)
+                    data = json.load(f)
+                if isinstance(data, dict) and data.get("_status"):
+                    cached_status = data["_status"]     # e.g. "scanned"
+                elif isinstance(data, list) and data:
+                    holders = data
+                # 舊版快取的空 list = 可能是下載失敗誤存 → 視為未快取,重試
             except Exception:
                 pass
+        if holders is None and cached_status is None:
+            path = download_top10_f17(stock_code, yr)
+            if not path:
+                missing[yr] = "MOPS 查無該年度 F17(該年可能未上市/未公發)"
+                continue                     # 不快取,之後可重試
+            parsed = parse_major_shareholders(path)
+            holders = sorted(parsed.get("shareholders", []),
+                             key=lambda s: s["pct"], reverse=True)[:10]
+            if not holders:
+                # 區分掃描圖檔(永久)與解析失敗(可重試)
+                scanned = False
+                try:
+                    import pdfplumber
+                    with pdfplumber.open(path) as pdf:
+                        p0 = pdf.pages[0]
+                        scanned = len(p0.chars) < 200 and len(p0.images) >= 1
+                except Exception:
+                    pass
+                if scanned:
+                    missing[yr] = "年報 F17 為掃描圖檔,無法解析文字"
+                    with open(cache, "w", encoding="utf-8") as f:
+                        json.dump({"_status": "scanned"}, f)
+                else:
+                    missing[yr] = "F17 解析失敗(格式異常,下次載入會重試)"
+                continue
+            with open(cache, "w", encoding="utf-8") as f:
+                json.dump(holders, f, ensure_ascii=False)
+        if cached_status == "scanned":
+            missing[yr] = "年報 F17 為掃描圖檔,無法解析文字"
+            continue
         if holders:
             per_year[yr] = {_match_key(h["name"]): h for h in holders}
 
     avail = sorted(per_year.keys())
     if not avail:
-        return {"years": [], "rows": []}
+        return {"years": [], "rows": [], "missing": missing}
 
     # Union of all holders across years; display name from the newest year a
     # holder appears in. Dedup by normalized match key.
@@ -541,7 +566,7 @@ def fetch_shareholders_history(stock_code: str, years: int = 5,
                              r["latest"] if r["latest"] is not None
                              else max(r["by_year"].values())),
               reverse=True)
-    return {"years": avail, "rows": rows}
+    return {"years": avail, "rows": rows, "missing": missing}
 
 
 def download_pdf(stock_code: str, roc_year: int, season: int,

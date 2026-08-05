@@ -3103,8 +3103,14 @@ def _shareholders_history_html(history: dict | None, code: str,
                        f'</p></section>')
     years = history.get("years", [])
     rows = history.get("rows", [])
+    missing = history.get("missing") or {}
+    miss_note = ""
+    if missing:
+        items = "、".join(f"{y} 年:{r}" for y, r in sorted(missing.items()))
+        miss_note = (f'<p class="small" style="color:#e6c56a">⚠ 缺少年度 — {items}。'
+                     f'(新上市公司通常只有掛牌後年度的年報)</p>')
     if not years or not rows:
-        return form + '<p class="small">查無多年度資料。</p></section>'
+        return form + miss_note + '<p class="small">查無多年度資料。</p></section>'
 
     ynew, yold = years[-1], years[0]
     th = "".join(f'<th class="num">{y}年</th>' for y in years)
@@ -3154,7 +3160,7 @@ def _shareholders_history_html(history: dict | None, code: str,
     chart_json = json.dumps({"labels": json.loads(labels),
                              "datasets": datasets}, ensure_ascii=False)
 
-    return form + f"""
+    return form + miss_note + f"""
   <canvas id="sh-hist-chart" height="150"></canvas>
   {_history_commentary(history)}
   <div style="overflow-x:auto;margin-top:12px;">
