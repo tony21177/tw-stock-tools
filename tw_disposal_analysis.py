@@ -368,6 +368,35 @@ def near_tier_watch(max_gap_pct: float = 5.0) -> list[dict]:
     return out
 
 
+def free_zone_watch(lo: float = 930.0) -> list[dict]:
+    """千元免費區候補:原始收盤在 [lo, 1000)。
+    監管特性:1,000 以下歸第一款(6日累積 32%)管、11 款免疫;
+    剛跨 1,000 後 11 款門檻 300 元 ≈ 30% 與第一款幾乎重疊 →
+    「站上千金」這步在規則上零新增摩擦(免費區)。
+    first_time=True 表示 60 日內未曾 ≥1000(突破型,回測有 edge);
+    False 為崩後收復型(僅具監管免摩擦特性,無回測 edge)。"""
+    if not os.path.exists(RAW_CACHE):
+        return []
+    cache = json.load(open(RAW_CACHE))
+    out = []
+    for code, raw in cache.items():
+        rdates = sorted(raw)
+        if len(rdates) < 7:
+            continue
+        c = raw[rdates[-1]]
+        if not (lo <= c < 1000):
+            continue
+        c6 = raw[rdates[-6]]
+        mom6 = (c - c6) / c6 * 100 if c6 else None
+        first = not any(raw[d] >= 1000 for d in rdates[-61:-1])
+        out.append({"code": code, "close": c, "date": rdates[-1],
+                    "gap_pct": round((1000 - c) / c * 100, 1),
+                    "mom6": round(mom6, 1) if mom6 is not None else None,
+                    "first_time": first})
+    out.sort(key=lambda e: e["gap_pct"])
+    return out
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--release", action="store_true")

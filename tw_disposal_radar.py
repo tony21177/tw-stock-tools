@@ -54,6 +54,15 @@ def build_message() -> str | None:
         for e in crosses[:6]:
             L.append(f"  {e['code']} {nm(e['code'])} 首次站上 {e['tier']:,}"
                      f"(收 {e['close']:,.0f})")
+    fz = [w for w in ta.free_zone_watch() if w["gap_pct"] <= 3.0]
+    if fz:
+        L.append("🎯 千元免費區候補(跨1000無監管摩擦,見/disposal-rules解讀8):")
+        from disposal_rules import _name_lookup as _nl
+        _n = _nl()
+        for w in fz[:5]:
+            kind = "突破型" if w["first_time"] else "收復型"
+            L.append(f"  {w['code']} {_n(w['code'])} {w['close']:,.0f} "
+                     f"差{w['gap_pct']}% 6日{w['mom6']:+.1f}% {kind}")
     if hot:
         L.append("🔥 11款門檻雷達(千金股 6日起迄已用門檻%):")
         for r in hot[:8]:

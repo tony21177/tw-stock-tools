@@ -213,8 +213,26 @@ def render_tier_signal_section(fut_set=None):
                 f'{e["code"]} {name(e["code"])}{star}</td>'
                 f'<td>{_fmt_ymd(e["date"])}</td><td>{e["tier"]:,}</td>'
                 f'<td>{e["close"]:,.0f}</td><td>{extra}</td></tr>')
+    try:
+        import tw_disposal_analysis as _ta
+        fz = _ta.free_zone_watch()
+    except Exception:
+        fz = []
     rows = "".join(li(e, "✅ 已跨越") for e in events)
-    rows += "".join(li(w, f'差 {w["gap_pct"]}%') for w in watch)
+    for w in watch:
+        tag = f'差 {w["gap_pct"]}%'
+        if w["tier"] >= 2000:
+            tag += '(雷區→通關)'
+        rows += li(w, tag)
+    for w in fz:
+        kind = "突破型" if w["first_time"] else "收復型"
+        mom = f'{w["mom6"]:+.1f}%' if w["mom6"] is not None else "—"
+        rows += (f'<tr><td data-kx="{w["code"]}" style="cursor:pointer">'
+                 f'{w["code"]} {name(w["code"])}'
+                 f'{"★" if w["code"] in fut_set else ""}</td>'
+                 f'<td>{_fmt_ymd(w["date"])}</td><td>1,000</td>'
+                 f'<td>{w["close"]:,.0f}</td>'
+                 f'<td>🎯 免費區候補 差 {w["gap_pct"]}% · 6日動能 {mom} · {kind}</td></tr>')
     if not rows:
         rows = '<tr><td colspan="5" class="small">近 5 日無跨關卡事件,亦無逼近關卡(≤5%)標的。</td></tr>'
     return (
@@ -366,6 +384,24 @@ _RULES_HTML = """
 <h4>7. 施行日有「解禁潮」:一批處置股集體提前放出</h4>
 <p>銜接規則=施行日用新制重算、天數已到直接解除 → 原第二次處置(舊制 10 天)者最受惠。
 解除處置日歷來有流動性回補行情,施行日當天值得盯。</p>
+
+<h4>8. ⭐ 跨 1,000 是「免費區」— 規則無意間畫出的主力地圖</h4>
+<p>1,000 元以下本來就有<b>第一款(6 日累積漲跌 32%)</b>人人適用的天花板管著;
+剛跨過 1,000 後,11 款門檻 300 元 ≈ 30%,<b>與第一款的 32% 幾乎重疊</b> —
+「站上千金」這一步在監管上零新增代價。完整地圖:</p>
+<table class="report-table">
+<thead><tr><th>區段</th><th>11款容許幅度</th><th>性質</th></tr></thead>
+<tbody>
+<tr><td>950 → 1,300</td><td>免疫 → 30%~23%</td><td><b>免費區</b>:跨千金無新約束,
+且回測顯示首次站上 1,000 有動能順風(H20 +10.3%)</td></tr>
+<tr><td>1,700 → 2,000</td><td>17.6% → 15%</td><td><b>雷區</b>:1.5 根漲停就見報注意,
+連拉易湊處置</td></tr>
+<tr><td>跨過 2,000/3,000…</td><td>跳回 22.5%/20%…</td><td><b>快速通關</b>:貼級距頂別磨、
+直接推過去,門檻立刻放寬</td></tr>
+</tbody></table>
+<p>加上「起迄只看淨變動」(漲三洗二可控)與新制處置僅 5 天 2 分鐘,
+這套規則對懂它的人是操作說明書、對不懂的人才是限制。
+下方「千元免費區候補」即依此特性選股。</p>
 </section>
 
 """
