@@ -296,14 +296,15 @@ def update_raw_closes(token: str) -> dict:
              and max((m.get(d, 0) for d in recent), default=0) > 900}
     cache = json.load(open(RAW_CACHE)) if os.path.exists(RAW_CACHE) else {}
     from datetime import datetime, timedelta
+    today = datetime.now().strftime("%Y%m%d")
     for code in sorted(cands | set(cache)):
         cur = cache.get(code, {})
         if cur:
             last = max(cur)
             start = (datetime.strptime(last, "%Y%m%d")
                      + timedelta(days=1)).strftime("%Y-%m-%d")
-            if last >= dates[-1]:
-                continue
+            if last >= today:          # 已含今日才跳過(勿用 year_prices 日曆,
+                continue               # 它 20:00 才有當日檔)
         else:
             start = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
         new = _finmind_raw_closes(code, token, start=start)

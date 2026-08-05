@@ -24,7 +24,7 @@
 | 18:00 | 🎯 主力雷達(推播+首頁榜) | 分點+融資連動 | ✅ 詳文件 | [docs](docs/tools/broker-radar.md) |
 | 18:30 | 🎫 權證量能 `/warrant-signal` | 六類權證爆量×失衡 | ⚠ 無edge,觀察 | [docs](docs/strategies/warrant-signal.md) |
 | 20:00 | 📊 一年高低榜 `/extremes` | 距一年高跌最深/距低漲最多 Top20(僅更新頁面,不推播) | — | [docs](docs/strategies/extremes.md) |
-| 20:20 | ⚖ 處置雷達 `/disposal-rules` | 11款門檻/瀕臨處置/即將解禁,訊號觸發才推 | 解禁=彩券;關卡跨越有效 | [docs](docs/tools/disposal-rules.md) |
+| 14:40+17:10 | ⚖ 處置雷達 `/disposal-rules` | 11款門檻/跨關卡/免費區/瀕臨處置/解禁;訊號觸發才推(去重) | 解禁=彩券;關卡跨越有效 | [docs](docs/tools/disposal-rules.md) |
 | 20:40 | 🌐 外資成本線 `/foreign-cost` | 遞迴外資成本,110-140% 穩健區+140%+動能區 | ✅ 單調梯度:獲利越多越強 | [docs](docs/strategies/foreign-cost.md) |
 | 20:50 | 🛡 抗跌領頭羊 `/utility-screen` | Minervini 修正期區間RS(距高點天數為窗)卡片牆 | ⚠ 未回測 | [docs](docs/strategies/utility-screen.md) |
 | 21:00 | 🌀 VCP 波動收縮 `/vcp` | 遞減收縮+量縮+pivot,突破日推 | ⚠ 初步負(8事件/失敗率50%,僅觀察) | [docs](docs/strategies/vcp.md) |

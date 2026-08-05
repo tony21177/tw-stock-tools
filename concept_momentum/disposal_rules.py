@@ -52,24 +52,36 @@ def _name_lookup():
 
 def build_monitor_rows(min_price: float = 900.0) -> tuple[list[dict], str]:
     """回傳 (rows, 最新資料日)。rows 依門檻用掉% 降冪。
-    只含 4 碼個股(排除指數/ETF 代碼)。"""
+    價格用「原始收盤」(11 款官方口徑;raw_closes_high 於 14:40 即含當日),
+    raw 缺的股票 fallback 還原價。只含 4 碼個股。"""
     files = sorted(glob.glob(os.path.join(HERE, "cache", "year_prices", "*.json")))
     if len(files) < 6:
         return [], "—"
-    latest_date = os.path.basename(files[-1]).replace(".json", "")
+    raw_p = os.path.join(HERE, "cache", "raw_closes_high.json")
+    raw = json.load(open(raw_p)) if os.path.exists(raw_p) else {}
+    latest_date = max((max(m) for m in raw.values() if m),
+                      default=os.path.basename(files[-1]).replace(".json", ""))
     day_maps = [json.load(open(f)) for f in files[-6:]]
     name = _name_lookup()
     latest = day_maps[-1]
     first = day_maps[0]
     rows = []
-    for code, v in latest.items():
+    codes = set(latest) | set(raw)
+    for code in codes:
         if not (len(code) == 4 and code.isdigit()):
             continue
-        close = v[2] if isinstance(v, list) and len(v) >= 3 else None
+        rm = raw.get(code) or {}
+        rdates = sorted(d for d in rm if d <= latest_date)
+        if len(rdates) >= 6:
+            close = rm[rdates[-1]]
+            c0 = rm[rdates[-6]]
+        else:
+            v = latest.get(code)
+            close = v[2] if isinstance(v, list) and len(v) >= 3 else None
+            v0 = first.get(code)
+            c0 = v0[2] if isinstance(v0, list) and len(v0) >= 3 else None
         if not close or close < min_price:
             continue
-        v0 = first.get(code)
-        c0 = v0[2] if isinstance(v0, list) and len(v0) >= 3 else None
         diff = (close - c0) if c0 else None
         th = threshold(close)
         used = abs(diff) / th * 100 if (diff is not None and th) else None
@@ -94,7 +106,12 @@ def _load_disposal(kind):
 
 def _calendar():
     files = sorted(glob.glob(os.path.join(HERE, "cache", "year_prices", "*.json")))
-    return [os.path.basename(f).replace(".json", "") for f in files]
+    dates = {os.path.basename(f).replace(".json", "") for f in files}
+    raw_p = os.path.join(HERE, "cache", "raw_closes_high.json")
+    if os.path.exists(raw_p):
+        for m in json.load(open(raw_p)).values():
+            dates.update(m)
+    return sorted(dates)
 
 
 def build_attention_status():
@@ -187,7 +204,7 @@ def render_attention_section(fut_set=None):
         f'<section><h3>🚨 現役注意/處置狀態 — 距處置進度(資料日 {asof})</h3>'
         '<p class="small">處置要件三條路:<b>連續 5 日</b>注意、<b>10 日內 6 次</b>、'
         '<b>30 日內 12 次</b> — 任一達成即處置。進度 = 三者最大完成度。'
-        '含權證以外之 4 碼個股;來源 TWSE/TPEx 公告(每日 20:20 更新)。⚠ 計數為近似:處置後累計歸零、同款別合併等交易所細則未完全模擬,會出現「進度>100% 但未處置」— 以交易所公告為準。</p>'
+        '含權證以外之 4 碼個股;來源 TWSE/TPEx 公告(注意公告約 16-17 點發布,本表每日 14:40/17:10 更新)。⚠ 計數為近似:處置後累計歸零、同款別合併等交易所細則未完全模擬,會出現「進度>100% 但未處置」— 以交易所公告為準。</p>'
         '<div class="table-scroll"><table class="report-table"><thead><tr>'
         '<th>股票</th><th>連續</th><th>10日內</th><th>30日內</th>'
         '<th>進度</th><th>狀態</th></tr></thead><tbody>'
@@ -478,8 +495,8 @@ def render_page(nav: str, glossary: str = "", fut_set: set | None = None) -> str
             f'<td class="small">{r["allow_pct"]:.1f}% / {r["n_limit"]:.1f} 根</td></tr>')
     monitor = (
         f'<section><h3>📡 11 款門檻雷達 — 千金股即時監控(資料日 {asof})</h3>'
-        '<p class="small">6 日起迄價差 = 最新收盤 − 往前第 5 個交易日收盤(還原價;'
-        '6 日內有除權息者價差與實際略有出入)。<b>用掉% ≥70% 標紅</b> = 再約一根漲停/跌停'
+        '<p class="small">6 日起迄價差 = 最新收盤 − 往前第 5 個交易日收盤(高價股用原始收盤=官方口徑,'
+        '每日 ~14:40 更新;除權息日的名目跳空是否計入以交易所實務為準)。<b>用掉% ≥70% 標紅</b> = 再約一根漲停/跌停'
         '就觸發注意第 11 款。900-1,000 元列出供追蹤「即將進入適用範圍」。點代號看 K 線。</p>'
         '<div class="table-scroll"><table class="report-table"><thead><tr>'
         '<th>股票</th><th>收盤</th><th>門檻(元)</th><th>6日起迄</th>'

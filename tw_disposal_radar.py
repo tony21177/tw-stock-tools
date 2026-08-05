@@ -27,15 +27,15 @@ TG_API = "https://api.telegram.org/bot{token}/sendMessage"
 def build_message() -> str | None:
     import disposal_rules as dr
     import tw_disposal_analysis as ta
-    radar_rows, asof = dr.build_monitor_rows()
-    att_rows, _ = dr.build_attention_status()
-    # 更新原始收盤快取後偵測今日跨關卡(需 FINMIND_TOKEN;缺時用既有快取)
+    # 先更新原始收盤快取(需 FINMIND_TOKEN;缺時用既有快取),再算所有訊號
     tok = os.environ.get("FINMIND_TOKEN")
     if tok:
         try:
             ta.update_raw_closes(tok)
         except Exception as e:
             print("raw update err:", e)
+    radar_rows, asof = dr.build_monitor_rows()
+    att_rows, _ = dr.build_attention_status()
     crosses = [e for e in ta.recent_tier_events(1)]
 
     hot = [r for r in radar_rows if (r.get("used") or 0) >= 70]
@@ -123,8 +123,17 @@ def main():
         return
     print(msg)
     if args.telegram and not args.dry_run:
+        import hashlib
+        h = hashlib.md5(msg.encode()).hexdigest()
+        hp = os.path.join(HERE, "concept_momentum", "cache", "disposal",
+                          "last_push.md5")
+        if os.path.exists(hp) and open(hp).read().strip() == h:
+            print("內容與上次推播相同,跳過")
+            return
         ok = send_tg(msg, args.chat)
         print("TG:", "ok" if ok else "fail")
+        if ok:
+            open(hp, "w").write(h)
 
 
 if __name__ == "__main__":
