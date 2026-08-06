@@ -248,3 +248,8 @@ python3 -m patchright install chromium
 7. **組合層模擬**：事件研究之上加簡單組合模擬（同時最多 K 檔、等權、資金重複使用規則），回答「這些策略疊起來的資金曲線長怎樣」。
 8. **沉睡巨人 / 美台聯動 回測**：沉睡巨人持有期長（月~年），需要不同的評估框架（6m/12m horizon + 觸發稀少）；美台聯動是配對訊號非選股訊號。各開獨立 plan。
 9. **dormant_giants 還原價來源**：Yahoo adjclose → FinMind `TaiwanStockPriceAdj`（sponsor 已可用，README 註記過時）。
+
+
+## Telegram plugin 看門狗
+
+`telegram_plugin_watchdog.sh`(cron */30):claude 官方 telegram plugin 0.0.6 有 busy-loop 卡死 bug(2026-07-30 某 session 連續 7 天吃滿一顆 CPU,正常 idle ~3%)。連續兩次檢查 CPU>90% 自動 kill,session 下次互動自動重啟 plugin。log:telegram_watchdog.log。官方出新版後可移除。
