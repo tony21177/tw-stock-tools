@@ -18,3 +18,5 @@ originSessionId: e67fcb4a-ba3e-4b10-8dd9-8d8a51bbed3d
 
 **歷史踩過點：**
 - 2026-05-14 23:32 6282 chip 報告 multi-paragraph disclaimer that data 還沒 finalize — 事實是已 final 2 小時 (msg 1599 → user 1600 糾正)
+
+2026-08-06 擴充(8039 案例):時間指涉一律絕對日期+星期,禁止「今晚/明日」相對詞 — 報告「今日」=基準日但「今晚」=執行日晚,兩框混用會叫讀者等已出爐的資料。forward-looking 指示前先查該資料是否已可得,可得就直接判讀不留作業。報告開頭必標執行時間+各資料源最新日。
