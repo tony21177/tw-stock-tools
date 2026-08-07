@@ -196,3 +196,7 @@ FINMIND_TOKEN=... python3 tw_chip_price.py 2313 --date 20260512 --no-fetch  # ca
 - FinMind tick data 需 sponsor 版 (有 token 即可)；失敗時自動 fallback 到 price-quartile 三階段 + net-based wash 判讀
 - **單一價位多 broker 同 vol coincidence** 在 G 段 cross-cell consistency 解之前是無解的：若該分點全部 cell 都缺乏 anchor (同 vol 多 candidates 而 cluster span 差不多)，centroid 無從建立 → 退回最大 vol candidate 當代表 (可能誤判)。這是公開資料 (BSR 沒分點 → tick mapping) 的根本上限
 - **Pattern B 密集 burst 填單無解** (case 4: 兆豐台南 \$50.20 8張 4 秒內 4+1+1+1+1) — broker 用市價/積極限價單秒級填單，跟其他 broker 的短 burst 無法區分。Mitigation: 工具自動顯示 alternatives 讓使用者用自己 trade 記憶手動 override。詳見上面 4 case 表
+
+## 欄位說明(2026-08-07 加)
+
+頁面頂部可收合「📖 欄位完整說明」逐欄講意義+資料源+算法。核心限制:整頁建於 TWSE/TPEx BSR(分點×價位×張數,**無成交時間**),三階段/軌跡等時間欄位皆為「價格 quartile 當時間 proxy」;avg=成交值加權均價;集中區=自適應寬度密度聚類;BSR 約盤後 17:30 公布。

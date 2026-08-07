@@ -195,6 +195,78 @@ def _esc(s) -> str:
     return html_lib.escape(str(s))
 
 
+def _chip_price_glossary() -> str:
+    """籌碼價量頁每個 section / 欄位的意義 + 資料源 + 算法(可收合)。"""
+    return """
+<details class="cp-gloss"><summary>📖 欄位完整說明(意義・資料來源・如何計算)</summary>
+<div style="font-size:.9em;line-height:1.7">
+
+<p><b>最核心的資料源與限制</b>:整頁建立在
+<b>TWSE / TPEx 券商分點買賣日報(BSR, broker-security-report)</b>之上 —
+每一筆原始資料是「<b>某分點 × 某成交價 × 買或賣幾張</b>」的格子(cell),
+<b>沒有成交時間</b>。所以凡是牽涉「早盤/尾盤/時間先後」的欄位,都是用
+<b>成交價位當時間的替代(proxy)</b>推出來的近似,不是真 tick 資料。
+BSR 當日資料約 <b>盤後 17:30</b> 才公布;OHLC 與收盤價來自 FinMind。</p>
+
+<h4>頁首</h4>
+<ul>
+<li><b>開/收/高/低</b>:當日 K 線四價,FinMind 官方收盤。<b>()內 %</b> = (收−開)/開,
+當日陰陽線幅度(非漲跌幅,漲跌幅要對昨收)。</li>
+<li><b>總量 X 張</b>:當日所有分點買進張數合計(≈成交量),1 張=1,000 股。</li>
+</ul>
+
+<h4>🔥 Top 10 大單 cells(broker × price)</h4>
+<p>把 BSR 所有格子按張數排序取前 10。一列 = 「一個分點在一個價位買或賣了幾張」。</p>
+<ul>
+<li><b>分點/名稱</b>:券商分公司代碼與名稱(如 9A00 富邦、1650 台灣摩根)。</li>
+<li><b>價位</b>:該筆成交的價格。<b>方向</b>:買/賣。<b>張數</b>:該格子的成交張數。</li>
+<li><b>標記</b>:自動標籤 — ⚡隔日沖(該分點在隔日沖名單)、外資、散戶指標分點等。</li>
+</ul>
+
+<h4>⏰ 三階段分析(早盤/盤中/尾盤)</h4>
+<p>⚠ BSR 無時間,<b>預設用「價格 quartile 當時間 proxy」</b>:把當日價格區間切四等分,
+低 25% 價位視為早盤、中 50% 盤中、高 25% 尾盤 —— 這是<b>假設「低點多在早盤、
+高點多在尾盤」的近似,不保證成立</b>(標題會註明「以價格 quartile 為時間 proxy」)。
+若當天有分點分時資料則改「以實際成交時間切分」(標題會顯示)。</p>
+<ul>
+<li><b>買方主力/賣方主力</b>:各價格區間內淨買超/淨賣超前 3 大分點與其淨張數。</li>
+</ul>
+
+<h4>🎯 Top 5 買/賣超分點價格指紋</h4>
+<p>當日淨買超(或淨賣超)最大的 5 個分點,拆出它們「在哪些價位進出」的指紋。</p>
+<ul>
+<li><b>淨</b>:該分點當日買張−賣張(正=淨買)。</li>
+<li><b>avg</b>:<b>成交值加權平均價</b> = Σ(價×張)/Σ張 — 該分點今天的平均成本/出貨價。</li>
+<li><b>範圍</b>:該分點成交價的最低~最高。</li>
+<li><b>主買/賣集中區</b>:用格子分布找出它<b>最集中的價格帶</b>(自適應寬度,把最密的連續價位聚成一段),
+標出「這段佔它總量幾 %」— 看主力真正的成本落點。</li>
+<li><b>Top 3 價位</b>:該分點張數最大的 3 個價位。</li>
+<li><b>📈 跨日軌跡</b>:回抓近數個交易日,畫這個分點<b>逐日淨買賣的走勢</b> —
+判斷是「連續累積(真買盤)」還是「今天買明天倒(隔日沖)」。</li>
+</ul>
+
+<h4>🌀 同分點兩面操作(高賣低買 / 低賣高買)</h4>
+<p>同一分點當天<b>又買又賣</b>的標的。抓當沖/造市/洗盤行為。</p>
+<ul>
+<li><b>賣/買</b>:該分點賣出、買進的張數與價格帶。<b>買賣價差</b>:買均價−賣均價。</li>
+<li><b>判定</b>:高賣低買(先高出後低接,壓低吸貨/當沖賺價差)或低賣高買(追價)。
+<b>過濾條件</b>:買賣任一邊需 ≥當日量 1%、且小邊/大邊 ≥10%(濾掉 214買/1賣 這種假雙向)。</li>
+</ul>
+
+<h4>📅 連續性</h4>
+<p>把 Top 分點在近數日的進出串起來,看主力是「連續同向」還是「反覆」。</p>
+
+<h4>🔍 分點深度(在網址加 &broker=代號 才出現)</h4>
+<p>單一分點(或同券商多分點合計)的多日 K 線疊價量圖 + 逐日買賣明細 +
+band 軌跡,用來追一個特定主力的完整進出歷史。</p>
+
+<p style="color:#8b98a9;margin-top:10px">
+共通提醒:BSR 是<b>「分點」不是「主力身分」</b>—— 一個分點背後可能有多個投資人;
+外資/隔日沖標記是<b>資料驅動的推定</b>非官方認定;avg 是加權均價非逐筆;
+「時間」類欄位無 tick 時皆為價格 proxy。判讀請三線(現股/借券/融資)交叉,勿單看一欄。</p>
+</div></details>"""
+
+
 def _render_report_html(data: dict) -> str:
     """Render the analysis dict as structured HTML tables (7 sections).
 
@@ -223,7 +295,7 @@ def _render_report_html(data: dict) -> str:
     <span class="{chg_cls}">({change_pct:+.2f}%)</span>
   </div>
   <div class="ohlc">總量 <b>{total_zhang}</b> 張</div>
-</section>"""]
+</section>""", _chip_price_glossary()]
 
     # ── Section 2: Top 10 大單 cells ──────────────────────────────────────
     parts.append('<section><h2>🔥 Top 10 大單 cells (broker × price)</h2>')
@@ -1368,6 +1440,11 @@ def _render_chip_price_page(code: str | None = None,
   section h2 {{ font-size: 1.05em; margin: 4px 0 8px 0;
                 color: #333; border-bottom: 1px solid #eee; padding-bottom: 4px; }}
   section h2 small {{ font-weight: normal; color: #888; font-size: 0.85em; }}
+  details.cp-gloss {{ background:#fff; border:1px solid #e5e5ea; border-radius:6px;
+                margin-bottom:12px; padding:8px 14px; }}
+  details.cp-gloss > summary {{ cursor:pointer; font-weight:600; color:#0066cc; }}
+  details.cp-gloss h4 {{ margin:12px 0 3px; font-size:1em; color:#111; }}
+  details.cp-gloss ul {{ margin:2px 0 6px; padding-left:20px; }}
   section h3 {{ font-size: 0.95em; margin: 12px 0 6px 0; color: #555; }}
   .ohlc {{ font-size: 0.95em; color: #444; margin: 2px 0; }}
   .ohlc b {{ color: #000; }}
