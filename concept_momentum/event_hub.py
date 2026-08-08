@@ -49,6 +49,22 @@ def _fmt_d(d):
     return f"{d[4:6]}/{d[6:]}" if d and len(d) == 8 else (d or "—")
 
 
+def _mops(code, market="sii", kind="material"):
+    """MOPS 深連結。kind: material=個股重大訊息 / insider=董監持股."""
+    typek = "otc" if market == "otc" else "sii"
+    if kind == "insider":
+        # 董監持股轉讓/設質彙總
+        return (f'https://mopsov.twse.com.tw/mops/web/t56sb21q1'
+                f'?step=1&co_id={code}&TYPEK={typek}')
+    return (f'https://mopsov.twse.com.tw/mops/web/t146sb05'
+            f'?step=1&co_id={code}&TYPEK={typek}')
+
+
+def _src(code, market="sii", kind="material"):
+    return (f'<td><a href="{_mops(code, market, kind)}" target="_blank" '
+            f'rel="noopener" class="small">MOPS ↗</a></td>')
+
+
 def _esc(s):
     import html
     return html.escape(str(s))
@@ -130,10 +146,11 @@ def _event_rows(events, etype, name, rev, limit=25):
             f'{_esc(e["code"])} {_esc(e["name"])}</td>'
             + (tgt_cell if is_buy else "")
             + f'<td style="text-align:left">{subj}</td>'
-            f'<td class="small">{"上市" if e["market"]=="sii" else "上櫃"}</td></tr>')
+            f'<td class="small">{"上市" if e["market"]=="sii" else "上櫃"}</td>'
+            + _src(e["code"], e["market"]) + '</tr>')
     tgt_th = "<th>買進標的</th>" if is_buy else ""
     return ('<div class="table-scroll"><table class="report-table"><thead><tr>'
-            f'<th>日期</th><th>買方/公司</th>{tgt_th}<th>主旨</th><th>市場</th>'
+            f'<th>日期</th><th>買方/公司</th>{tgt_th}<th>主旨</th><th>市場</th><th>來源</th>'
             '</tr></thead><tbody>' + "".join(trs) + '</tbody></table></div>'
             + ('<p class="small">「買進標的」= 從主旨抽取被取得的公司,可反查代號者加'
                '<b>粗體+↗</b>並可點看 K 線。標的即上市櫃股票時,這就是潛在的連動選股。</p>'
@@ -165,9 +182,10 @@ def _capital_ce_rows(events, name):
             f'<td data-kx="{_esc(e["code"])}" style="cursor:pointer">'
             f'{_esc(e["code"])} {_esc(e["name"])}</td><td>{kind}</td>'
             f'<td>{scope}</td>'
-            f'<td style="text-align:left">{_esc(e["subject"])}</td></tr>')
+            f'<td style="text-align:left">{_esc(e["subject"])}</td>'
+            + _src(e["code"], e["market"]) + '</tr>')
     return ('<div class="table-scroll"><table class="report-table"><thead><tr>'
-            '<th>日期</th><th>公司</th><th>類型</th><th>對象</th><th>主旨</th>'
+            '<th>日期</th><th>公司</th><th>類型</th><th>對象</th><th>主旨</th><th>來源</th>'
             '</tr></thead><tbody>' + "".join(trs) + '</tbody></table></div>'
             '<p class="small"><b>本公司</b>現增/私募/CB = 直接稀釋股本(如環球晶 GDR),'
             '影響大;<b>子公司</b>增資多為集團內部調度,對母股影響小。減資分彌補虧損(利空)'
@@ -193,10 +211,11 @@ def _xfer_rows():
             f'{_esc(x["code"])} {_esc(x["name"])}</td>'
             f'<td style="text-align:left">{_esc(x["who"])} {_esc(x["person"])}</td>'
             f'<td>{zhang:,.0f} 張</td>'
-            f'<td style="text-align:left" class="small">{method}{recv}</td></tr>')
+            f'<td style="text-align:left" class="small">{method}{recv}</td>'
+            + _src(x["code"], x.get("market", "sii"), "insider") + '</tr>')
     return ('<div class="table-scroll"><table class="report-table"><thead><tr>'
             '<th>申報日</th><th>公司</th><th>申報人</th><th>預定轉讓</th>'
-            '<th>方式/受讓人</th></tr></thead><tbody>' + "".join(trs)
+            '<th>方式/受讓人</th><th>來源</th></tr></thead><tbody>' + "".join(trs)
             + '</tbody></table></div>'
             '<p class="small">⭐ <b>事前申報轉讓</b> = 董監/大股東大額轉讓,法規要求'
             '<b>轉讓前 3 日申報</b> —— 這是少數「還沒賣就先知道」的 Layer 0 提前信號。'
@@ -231,10 +250,11 @@ def _insider_rows(name, fut_set=None):
             f'<td>{i["hold"]/1000:,.0f} 張</td>'
             f'<td>{i["pledge"]/1000:,.0f} 張</td>'
             f'<td>{i["pledge_ratio"]:.0f}%</td>'
-            f'<td class="small">{i["month"][:4]}/{i["month"][4:6]}</td></tr>')
+            f'<td class="small">{i["month"][:4]}/{i["month"][4:6]}</td>'
+            + _src(i["code"], "sii", "insider") + '</tr>')
     return ('<div class="table-scroll"><table class="report-table"><thead><tr>'
             '<th>公司</th><th>職稱</th><th>持股</th><th>設質</th>'
-            '<th>設質比例</th><th>資料月</th>'
+            '<th>設質比例</th><th>資料月</th><th>來源</th>'
             '</tr></thead><tbody>' + "".join(trs) + '</tbody></table></div>'
             '<p class="small">只列<b>持股 ≥3,000 張</b>的大股東(小額全質押是雜訊、無賣壓意義)。'
             '設質比例 = 質押 ÷ 持股;≥90% 標紅。<b>大持股 + 高設質 = 大股東高槓桿,'
