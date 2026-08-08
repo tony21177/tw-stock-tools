@@ -49,6 +49,15 @@ def _fmt_d(d):
     return f"{d[4:6]}/{d[6:]}" if d and len(d) == 8 else (d or "—")
 
 
+def _fmt_t(t):
+    """發言時間 '92514' → '09:25'。"""
+    t = "".join(c for c in str(t) if c.isdigit())
+    if len(t) < 4:
+        return "—"
+    t = t.zfill(6)
+    return f"{t[:2]}:{t[2:4]}"
+
+
 def _mops(code, market="sii", kind="material"):
     """MOPS 深連結。kind: material=個股重大訊息 / insider=董監持股."""
     typek = "otc" if market == "otc" else "sii"
@@ -141,7 +150,7 @@ def _event_rows(events, etype, name, rev, limit=25):
             else:
                 tgt_cell = '<td>—</td>'
         trs.append(
-            f'<tr><td>{_fmt_d(e["date"])}</td>'
+            f'<tr><td>{_fmt_d(e["date"])}</td><td class="small">{_fmt_t(e["time"])}</td>'
             f'<td data-kx="{_esc(e["code"])}" style="cursor:pointer">'
             f'{_esc(e["code"])} {_esc(e["name"])}</td>'
             + (tgt_cell if is_buy else "")
@@ -150,7 +159,8 @@ def _event_rows(events, etype, name, rev, limit=25):
             + _src(e["code"], e["market"]) + '</tr>')
     tgt_th = "<th>買進標的</th>" if is_buy else ""
     return ('<div class="table-scroll"><table class="report-table"><thead><tr>'
-            f'<th>日期</th><th>買方/公司</th>{tgt_th}<th>主旨</th><th>市場</th><th>來源</th>'
+            f'<th title="MOPS 發言日 = 法定最早公開時點">最早得知</th><th>時間</th>'
+            f'<th>買方/公司</th>{tgt_th}<th>主旨</th><th>市場</th><th>來源</th>'
             '</tr></thead><tbody>' + "".join(trs) + '</tbody></table></div>'
             + ('<p class="small">「買進標的」= 從主旨抽取被取得的公司,可反查代號者加'
                '<b>粗體+↗</b>並可點看 K 線。標的即上市櫃股票時,這就是潛在的連動選股。</p>'
@@ -178,14 +188,15 @@ def _capital_ce_rows(events, name):
         else:
             kind = "📈 現增"
         trs.append(
-            f'<tr><td>{_fmt_d(e["date"])}</td>'
+            f'<tr><td>{_fmt_d(e["date"])}</td><td class="small">{_fmt_t(e["time"])}</td>'
             f'<td data-kx="{_esc(e["code"])}" style="cursor:pointer">'
             f'{_esc(e["code"])} {_esc(e["name"])}</td><td>{kind}</td>'
             f'<td>{scope}</td>'
             f'<td style="text-align:left">{_esc(e["subject"])}</td>'
             + _src(e["code"], e["market"]) + '</tr>')
     return ('<div class="table-scroll"><table class="report-table"><thead><tr>'
-            '<th>日期</th><th>公司</th><th>類型</th><th>對象</th><th>主旨</th><th>來源</th>'
+            '<th title="MOPS 發言日 = 法定最早公開時點">最早得知</th><th>時間</th>'
+            '<th>公司</th><th>類型</th><th>對象</th><th>主旨</th><th>來源</th>'
             '</tr></thead><tbody>' + "".join(trs) + '</tbody></table></div>'
             '<p class="small"><b>本公司</b>現增/私募/CB = 直接稀釋股本(如環球晶 GDR),'
             '影響大;<b>子公司</b>增資多為集團內部調度,對母股影響小。減資分彌補虧損(利空)'
@@ -326,7 +337,7 @@ def render(nav: str, fut_set=None) -> str:
 <h1>🎯 事件交易(Event-Driven)</h1>
 <p class="small">資料日 {_fmt_d(asof)} · 資料源:TWSE/TPEx 官方重大訊息 OpenAPI + 內部人持股。
 <b>核心理念:MOPS 是「法定確認」不是「最早」</b> —— 純等公告多半無超額報酬,
-真 edge 在公告前的分點/集保籌碼痕跡(見旗艦模組)。完整研究見
+真 edge 在公告前的分點/集保籌碼痕跡(見旗艦模組)。<b>「最早得知」欄</b> = MOPS 發言日(法定最早公開時點);公開收購(提前5日)、事前申報轉讓(提前3日)因法規要求申報,結構上領先實際動作。完整研究見
 <a href="https://github.com/tony21177/tw-stock-tools/blob/main/docs/strategies/event-driven.md">docs</a>。
 點代號看 K 線。</p>
 {roadmap}
