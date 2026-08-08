@@ -74,6 +74,27 @@ def _src(code, market="sii", kind="material"):
             f'rel="noopener" class="small">MOPS ↗</a></td>')
 
 
+def _hide(tr):
+    """把一列 <tr> 標記為預設隱藏(展開後才顯示)。"""
+    if tr.startswith('<tr class="'):
+        return tr.replace('<tr class="', '<tr class="ev-x ', 1)
+    return tr.replace('<tr', '<tr class="ev-x"', 1)
+
+
+def _collapse(thead, trs, note="", n=12):
+    """組表格:前 n 列直接顯示,其餘隱藏 + 展開按鈕。thead 需含
+    到 <tbody> 為止的開頭 HTML。無資料時回提示。"""
+    if not trs:
+        return '<p class="small">近期無此類事件(或快取尚未累積)。</p>'
+    total = len(trs)
+    body = thead + "".join(trs[:n]) + "".join(_hide(t) for t in trs[n:])
+    body += "</tbody></table></div>"
+    if total > n:
+        body += (f'<button class="ev-more" onclick="evMore(this)">'
+                 f'▼ 展開全部 {total} 筆(目前顯示 {n})</button>')
+    return body + note
+
+
 def _esc(s):
     import html
     return html.escape(str(s))
@@ -130,11 +151,9 @@ def _extract_target(subject: str, rev: dict):
     return tgt, code
 
 
-def _event_rows(events, etype, name, rev, limit=25):
-    """列出某類型近期事件。strategic_buy 抽標的並連結。"""
-    rows = [e for e in events if e["type"] == etype][:limit]
-    if not rows:
-        return '<p class="small">近 3 個月無此類事件(或快取尚未累積)。</p>'
+def _event_rows(events, etype, name, rev):
+    """列出某類型近期事件(全部,展開式)。strategic_buy 抽標的並連結。"""
+    rows = [e for e in events if e["type"] == etype]
     is_buy = etype == "strategic_buy"
     trs = []
     for e in rows:
@@ -158,20 +177,19 @@ def _event_rows(events, etype, name, rev, limit=25):
             f'<td class="small">{"上市" if e["market"]=="sii" else "上櫃"}</td>'
             + _src(e["code"], e["market"]) + '</tr>')
     tgt_th = "<th>買進標的</th>" if is_buy else ""
-    return ('<div class="table-scroll"><table class="report-table"><thead><tr>'
-            f'<th title="MOPS 發言日 = 法定最早公開時點">最早得知</th><th>時間</th>'
-            f'<th>買方/公司</th>{tgt_th}<th>主旨</th><th>市場</th><th>來源</th>'
-            '</tr></thead><tbody>' + "".join(trs) + '</tbody></table></div>'
-            + ('<p class="small">「買進標的」= 從主旨抽取被取得的公司,可反查代號者加'
-               '<b>粗體+↗</b>並可點看 K 線。標的即上市櫃股票時,這就是潛在的連動選股。</p>'
-               if is_buy else ""))
+    thead = ('<div class="table-scroll"><table class="report-table"><thead><tr>'
+             f'<th title="MOPS 發言日 = 法定最早公開時點">最早得知</th><th>時間</th>'
+             f'<th>買方/公司</th>{tgt_th}<th>主旨</th><th>市場</th><th>來源</th>'
+             '</tr></thead><tbody>')
+    note = ('<p class="small">「買進標的」= 從主旨抽取被取得的公司,可反查代號者加'
+            '<b>粗體+↗</b>並可點看 K 線。標的即上市櫃股票時,這就是潛在的連動選股。</p>'
+            if is_buy else "")
+    return _collapse(thead, trs, note)
 
 
 def _capital_ce_rows(events, name):
     """現增/減資合併一區;分本公司(影響大)vs 子公司(影響小)。"""
-    rows = [e for e in events if e["type"] in ("capital_increase", "capital_reduction")][:35]
-    if not rows:
-        return '<p class="small">近 3 個月無增減資事件。</p>'
+    rows = [e for e in events if e["type"] in ("capital_increase", "capital_reduction")]
     trs = []
     for e in rows:
         s = e["subject"]
@@ -194,23 +212,21 @@ def _capital_ce_rows(events, name):
             f'<td>{scope}</td>'
             f'<td style="text-align:left">{_esc(e["subject"])}</td>'
             + _src(e["code"], e["market"]) + '</tr>')
-    return ('<div class="table-scroll"><table class="report-table"><thead><tr>'
-            '<th title="MOPS 發言日 = 法定最早公開時點">最早得知</th><th>時間</th>'
-            '<th>公司</th><th>類型</th><th>對象</th><th>主旨</th><th>來源</th>'
-            '</tr></thead><tbody>' + "".join(trs) + '</tbody></table></div>'
-            '<p class="small"><b>本公司</b>現增/私募/CB = 直接稀釋股本(如環球晶 GDR),'
+    thead = ('<div class="table-scroll"><table class="report-table"><thead><tr>'
+             '<th title="MOPS 發言日 = 法定最早公開時點">最早得知</th><th>時間</th>'
+             '<th>公司</th><th>類型</th><th>對象</th><th>主旨</th><th>來源</th>'
+             '</tr></thead><tbody>')
+    note = ('<p class="small"><b>本公司</b>現增/私募/CB = 直接稀釋股本(如環球晶 GDR),'
             '影響大;<b>子公司</b>增資多為集團內部調度,對母股影響小。減資分彌補虧損(利空)'
             '與現金減資(中性偏多),看主旨。</p>')
+    return _collapse(thead, trs, note)
 
 
 def _xfer_rows():
     """內部人事前申報轉讓(法定提前 3 日)。"""
     ed = _ed()
     xf = ed.load_xfer(months=2) or ed.fetch_insider_transfer()
-    xf = [x for x in xf if x["shares"] >= 50000][:25]   # ≥50 張才列
-    if not xf:
-        return ('<p class="small">近期無 ≥50 張的內部人事前申報轉讓'
-                '(或快取尚未累積)。</p>')
+    xf = [x for x in xf if x["shares"] >= 50000]   # ≥50 張才列
     trs = []
     for x in xf:
         zhang = x["shares"] / 1000
@@ -224,14 +240,15 @@ def _xfer_rows():
             f'<td>{zhang:,.0f} 張</td>'
             f'<td style="text-align:left" class="small">{method}{recv}</td>'
             + _src(x["code"], x.get("market", "sii"), "insider") + '</tr>')
-    return ('<div class="table-scroll"><table class="report-table"><thead><tr>'
-            '<th>申報日</th><th>公司</th><th>申報人</th><th>預定轉讓</th>'
-            '<th>方式/受讓人</th><th>來源</th></tr></thead><tbody>' + "".join(trs)
-            + '</tbody></table></div>'
-            '<p class="small">⭐ <b>事前申報轉讓</b> = 董監/大股東大額轉讓,法規要求'
+    thead = ('<div class="table-scroll"><table class="report-table"><thead><tr>'
+             '<th title="轉讓前 3 日申報,即最早得知">申報日</th><th>公司</th>'
+             '<th>申報人</th><th>預定轉讓</th>'
+             '<th>方式/受讓人</th><th>來源</th></tr></thead><tbody>')
+    note = ('<p class="small">⭐ <b>事前申報轉讓</b> = 董監/大股東大額轉讓,法規要求'
             '<b>轉讓前 3 日申報</b> —— 這是少數「還沒賣就先知道」的 Layer 0 提前信號。'
             '「洽特定人/鉅額逐筆」多為協議轉讓(未必利空,可能是引進策略股東);'
             '「一般交易」= 盤中賣出(較偏賣壓)。≥50 張才列。</p>')
+    return _collapse(thead, trs, note)
 
 
 _HOLD_FLOOR = 3_000_000   # 只看持股 ≥3,000 張的大股東(小額全質押=雜訊)
@@ -248,9 +265,7 @@ def _insider_rows(name, fut_set=None):
             # 排序鍵:設質張數(絕對賣壓量)大者優先
             if not cur or i["pledge"] > cur["pledge"]:
                 by_code[i["code"]] = i
-    rows = sorted(by_code.values(), key=lambda x: -x["pledge"])[:30]
-    if not rows:
-        return '<p class="small">無「大持股(≥3,000 張)+高設質(≥50%)」的內部人。</p>'
+    rows = sorted(by_code.values(), key=lambda x: -x["pledge"])
     trs = []
     for i in rows:
         cls = "u-hot" if i["pledge_ratio"] >= 90 else ""
@@ -263,13 +278,16 @@ def _insider_rows(name, fut_set=None):
             f'<td>{i["pledge_ratio"]:.0f}%</td>'
             f'<td class="small">{i["month"][:4]}/{i["month"][4:6]}</td>'
             + _src(i["code"], "sii", "insider") + '</tr>')
-    return ('<div class="table-scroll"><table class="report-table"><thead><tr>'
-            '<th>公司</th><th>職稱</th><th>持股</th><th>設質</th>'
-            '<th>設質比例</th><th>資料月</th><th>來源</th>'
-            '</tr></thead><tbody>' + "".join(trs) + '</tbody></table></div>'
-            '<p class="small">只列<b>持股 ≥3,000 張</b>的大股東(小額全質押是雜訊、無賣壓意義)。'
+    thead = ('<div class="table-scroll"><table class="report-table"><thead><tr>'
+             '<th>公司</th><th>職稱</th><th>持股</th><th>設質</th>'
+             '<th>設質比例</th><th>資料月</th><th>來源</th>'
+             '</tr></thead><tbody>')
+    note = ('<p class="small">只列<b>持股 ≥3,000 張</b>的大股東(小額全質押是雜訊、無賣壓意義)。'
             '設質比例 = 質押 ÷ 持股;≥90% 標紅。<b>大持股 + 高設質 = 大股東高槓桿,'
             '股價跌時有被質押券商斷頭的賣壓風險</b>。月頻資料。</p>')
+    if not trs:
+        return '<p class="small">無「大持股(≥3,000 張)+高設質(≥50%)」的內部人。</p>'
+    return _collapse(thead, trs, note)
 
 
 def render(nav: str, fut_set=None) -> str:
@@ -330,7 +348,18 @@ def render(nav: str, fut_set=None) -> str:
   table.report-table td:first-child,table.report-table th:first-child{text-align:left}
   .small{font-size:.84em;color:#8b98a9}
   .u-hot td{color:#ff6b6b;font-weight:600}
-</style>"""
+  tr.ev-x{display:none}
+  .ev-more{margin-top:6px;background:#1a2230;color:#4cc2ff;border:1px solid #223041;
+    border-radius:6px;padding:5px 12px;cursor:pointer;font-size:.86em}
+  .ev-more:hover{background:#22304a}
+</style>
+<script>
+function evMore(btn){
+  var box=btn.previousElementSibling;   // 該按鈕對應的 table-scroll 容器
+  if(box) box.querySelectorAll('tr.ev-x').forEach(function(r){r.classList.remove('ev-x');});
+  btn.remove();
+}
+</script>"""
     return f"""<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>🎯 事件交易</title>{css}</head><body>{nav}
