@@ -31,6 +31,9 @@ UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
 MATERIAL_SII = "https://openapi.twse.com.tw/v1/opendata/t187ap04_L"
 MATERIAL_OTC = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap04_O"
 INSIDER_SII = "https://openapi.twse.com.tw/v1/opendata/t187ap11_L"
+# 內部人「事前申報轉讓」(法定轉讓前 3 日申報;Layer 0 提前信號)
+INSIDER_XFER_SII = "https://openapi.twse.com.tw/v1/opendata/t187ap12_L"
+INSIDER_XFER_OTC = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap12_O"
 BLOCK_TRADE = "https://openapi.twse.com.tw/v1/exchangeReport/BFIAUU"
 
 
@@ -167,6 +170,34 @@ def fetch_insider() -> list[dict]:
     return out
 
 
+def fetch_insider_transfer() -> list[dict]:
+    """內部人事前申報轉讓(上市+上櫃)。董監/大股東轉讓前 3 日申報,
+    含轉讓方式、股數、有效期間 —— 屬 Layer 0 提前信號。"""
+    out = []
+    for market, url in [("sii", INSIDER_XFER_SII), ("otc", INSIDER_XFER_OTC)]:
+        for r in _get_json(url):
+            code = (r.get("公司代號") or r.get("SecuritiesCompanyCode") or "").strip()
+            if not (len(code) == 4 and code.isdigit()):
+                continue
+            try:
+                sh = int(str(r.get("預定轉讓方式及股數-轉讓股數", "0")).replace(",", "") or 0)
+            except ValueError:
+                sh = 0
+            out.append({
+                "code": code, "name": r.get("公司名稱", "").strip(),
+                "market": market,
+                "date": _roc_date(r.get("出表日期", "")),
+                "who": r.get("申報人身分", "").strip(),
+                "person": r.get("姓名", "").strip(),
+                "method": r.get("預定轉讓方式及股數-轉讓方式", "").strip(),
+                "shares": sh,
+                "receiver": r.get("受讓人", "").strip(),
+                "period": r.get("有效轉讓期間", "").strip(),
+            })
+    out.sort(key=lambda x: -x["shares"])
+    return out
+
+
 def update_daily(force: bool = False) -> dict:
     """抓當日重訊 + 內部人月檔,存月檔累積(去重)。"""
     from datetime import datetime
@@ -193,6 +224,16 @@ def update_daily(force: bool = False) -> dict:
         stats["insider"] = len(ins)
     else:
         stats["insider"] = "skip"
+
+    # 事前申報轉讓:每日累積去重(短期有效,存月檔)
+    xpath = os.path.join(CACHE_DIR, f"xfer_{yyyymm}.json")
+    xexist = json.load(open(xpath)) if os.path.exists(xpath) else []
+    xseen = {(e["code"], e["date"], e["person"], e["shares"]) for e in xexist}
+    xnew = [e for e in fetch_insider_transfer()
+            if (e["code"], e["date"], e["person"], e["shares"]) not in xseen]
+    xexist.extend(xnew)
+    json.dump(xexist, open(xpath, "w"), ensure_ascii=False)
+    stats["xfer_new"] = len(xnew)
     return stats
 
 
@@ -209,6 +250,15 @@ def load_material(months: int = 3) -> list[dict]:
 def load_insider() -> list[dict]:
     files = sorted(glob.glob(os.path.join(CACHE_DIR, "insider_*.json")))
     return json.load(open(files[-1])) if files else []
+
+
+def load_xfer(months: int = 2) -> list[dict]:
+    files = sorted(glob.glob(os.path.join(CACHE_DIR, "xfer_*.json")))[-months:]
+    out = []
+    for f in files:
+        out.extend(json.load(open(f)))
+    out.sort(key=lambda e: (e.get("date", ""), e.get("shares", 0)), reverse=True)
+    return out
 
 
 if __name__ == "__main__":

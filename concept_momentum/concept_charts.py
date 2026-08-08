@@ -680,7 +680,7 @@ document.addEventListener('DOMContentLoaded',function(){{
     </div>
   </div>
   <div class="tab-group g-backtest" title="各策略事件研究回測 (含 95% CI 與術語說明)">
-    <div class="tab-group-label">🧪 策略回測 · 事件研究</div>
+    <div class="tab-group-label">🎯 事件研究</div>
     <div class="tab-group-items">
     </div>
   </div>

@@ -67,79 +67,178 @@ MODULES = [
      "現金增資(GDR/ADR,如環球晶)、私募、可轉債、減資。稀釋 vs 護盤方向不同,看類型。"),
     ("major_contract", "📝 重大契約/大單", "live",
      "簽訂合資/大單/供應協議(美光×環球晶型)。高影響但難提前,靠即時重訊。"),
-    ("insider_pledge", "👤 內部人高設質", "live",
-     "董監/大股東股票質押比例高 = 槓桿+潛在賣壓風險。⚠ 月頻資料。"
-     "事前申報轉讓(法定提前 3 日)待接。"),
+    ("insider", "👤 內部人動向(事前申報轉讓 + 高設質)", "live",
+     "⭐ <b>事前申報轉讓</b>:董監大額轉讓前 3 日申報(Layer 0 提前信號);"
+     "<b>高設質</b>:大股東質押比例高 = 槓桿+潛在斷頭賣壓(月頻)。"),
     ("chip_precursor", "🔍 分點吸貨前兆(旗艦)", "dev",
      "模組 #1:全市場掃「單一分點連續大額吸貨+成本集中+集保大戶跳增」,"
      "在取得股權公告<b>前</b>抓策略買家足跡。需回測+跨市場分點掃描,開發中。"),
 ]
 
 
-def _event_rows(events, etype, name, limit=25):
-    """列出某類型近期事件。strategic_buy 額外抽標的。"""
+import re
+
+# 取得股權主旨抽標的:取得[子公司][地名]X[股份有限公司][普通股/股份/股權/有價證券]
+_TARGET_RE = re.compile(
+    r"取得(?:(?:子公司|孫公司|轉投資|泰國|大陸|中國|越南|印度|美國|日本)){0,3}"
+    r"(.+?)(?:股份有限公司|公司)?(?:之|百分之百)?"
+    r"(?:普通股|特別股|股份|股票|股權|有價證券)")
+
+
+def _extract_target(subject: str, rev: dict):
+    """從取得股權主旨抽標的公司名 + 反查代號。回傳 (顯示名, 代號 or '')。"""
+    s = subject.replace(" ", "")
+    m = _TARGET_RE.search(s)
+    if not m:
+        return "", ""
+    tgt = m.group(1).strip("之的股權有價證券百分比0123456789")
+    if len(tgt) < 2:
+        return tgt, ""
+    # 反查:先完全比對,再要求「標的名 ⊇ finmind 全名」且全名 ≥2 字(避免單字誤配)
+    code = rev.get(tgt, "")
+    if not code:
+        best = ""
+        for full, c in rev.items():
+            if len(full) >= 2 and (full == tgt or full in tgt):
+                if len(full) > len(best):     # 取最長匹配
+                    best, code = full, c
+    return tgt, code
+
+
+def _event_rows(events, etype, name, rev, limit=25):
+    """列出某類型近期事件。strategic_buy 抽標的並連結。"""
     rows = [e for e in events if e["type"] == etype][:limit]
     if not rows:
         return '<p class="small">近 3 個月無此類事件(或快取尚未累積)。</p>'
+    is_buy = etype == "strategic_buy"
     trs = []
     for e in rows:
-        star = ""
         subj = _esc(e["subject"])
+        tgt_cell = ""
+        if is_buy:
+            tgt, tcode = _extract_target(e["subject"], rev)
+            if tcode:
+                tgt_cell = (f'<td data-kx="{_esc(tcode)}" style="cursor:pointer;'
+                            f'text-align:left"><b>{_esc(tcode)} {_esc(tgt)}</b> ↗</td>')
+            elif tgt:
+                tgt_cell = f'<td style="text-align:left">{_esc(tgt)}</td>'
+            else:
+                tgt_cell = '<td>—</td>'
         trs.append(
             f'<tr><td>{_fmt_d(e["date"])}</td>'
             f'<td data-kx="{_esc(e["code"])}" style="cursor:pointer">'
-            f'{_esc(e["code"])} {_esc(e["name"])}{star}</td>'
-            f'<td style="text-align:left">{subj}</td>'
+            f'{_esc(e["code"])} {_esc(e["name"])}</td>'
+            + (tgt_cell if is_buy else "")
+            + f'<td style="text-align:left">{subj}</td>'
             f'<td class="small">{"上市" if e["market"]=="sii" else "上櫃"}</td></tr>')
+    tgt_th = "<th>買進標的</th>" if is_buy else ""
     return ('<div class="table-scroll"><table class="report-table"><thead><tr>'
-            '<th>日期</th><th>公司</th><th>主旨</th><th>市場</th>'
-            '</tr></thead><tbody>' + "".join(trs) + '</tbody></table></div>')
+            f'<th>日期</th><th>買方/公司</th>{tgt_th}<th>主旨</th><th>市場</th>'
+            '</tr></thead><tbody>' + "".join(trs) + '</tbody></table></div>'
+            + ('<p class="small">「買進標的」= 從主旨抽取被取得的公司,可反查代號者加'
+               '<b>粗體+↗</b>並可點看 K 線。標的即上市櫃股票時,這就是潛在的連動選股。</p>'
+               if is_buy else ""))
 
 
 def _capital_ce_rows(events, name):
-    """現增/減資合併一區,標色分方向。"""
-    rows = [e for e in events if e["type"] in ("capital_increase", "capital_reduction")][:30]
+    """現增/減資合併一區;分本公司(影響大)vs 子公司(影響小)。"""
+    rows = [e for e in events if e["type"] in ("capital_increase", "capital_reduction")][:35]
     if not rows:
         return '<p class="small">近 3 個月無增減資事件。</p>'
     trs = []
     for e in rows:
-        kind = "✂ 減資" if e["type"] == "capital_reduction" else "📈 增資/CB"
+        s = e["subject"]
+        is_sub = ("子公司" in s or "孫公司" in s
+                  or re.search(r"[A-Za-z]{3,}", s.replace(e["name"], "")))
+        scope = ('<span class="small">子公司</span>' if is_sub
+                 else '<b style="color:#ff6b6b">本公司</b>')
+        if e["type"] == "capital_reduction":
+            kind = "✂ 減資"
+        elif re.search(r"(私募|海外存託|存託憑證|GDR)", s):
+            kind = "🌐 私募/GDR"
+        elif re.search(r"可轉換|轉換公司債|附認股", s):
+            kind = "🔄 可轉債"
+        else:
+            kind = "📈 現增"
         trs.append(
             f'<tr><td>{_fmt_d(e["date"])}</td>'
             f'<td data-kx="{_esc(e["code"])}" style="cursor:pointer">'
             f'{_esc(e["code"])} {_esc(e["name"])}</td><td>{kind}</td>'
+            f'<td>{scope}</td>'
             f'<td style="text-align:left">{_esc(e["subject"])}</td></tr>')
     return ('<div class="table-scroll"><table class="report-table"><thead><tr>'
-            '<th>日期</th><th>公司</th><th>類型</th><th>主旨</th>'
-            '</tr></thead><tbody>' + "".join(trs) + '</tbody></table></div>')
+            '<th>日期</th><th>公司</th><th>類型</th><th>對象</th><th>主旨</th>'
+            '</tr></thead><tbody>' + "".join(trs) + '</tbody></table></div>'
+            '<p class="small"><b>本公司</b>現增/私募/CB = 直接稀釋股本(如環球晶 GDR),'
+            '影響大;<b>子公司</b>增資多為集團內部調度,對母股影響小。減資分彌補虧損(利空)'
+            '與現金減資(中性偏多),看主旨。</p>')
+
+
+def _xfer_rows():
+    """內部人事前申報轉讓(法定提前 3 日)。"""
+    ed = _ed()
+    xf = ed.load_xfer(months=2) or ed.fetch_insider_transfer()
+    xf = [x for x in xf if x["shares"] >= 50000][:25]   # ≥50 張才列
+    if not xf:
+        return ('<p class="small">近期無 ≥50 張的內部人事前申報轉讓'
+                '(或快取尚未累積)。</p>')
+    trs = []
+    for x in xf:
+        zhang = x["shares"] / 1000
+        method = _esc(x["method"])
+        recv = f" → {_esc(x['receiver'])}" if x.get("receiver") else ""
+        trs.append(
+            f'<tr><td>{_fmt_d(x["date"])}</td>'
+            f'<td data-kx="{_esc(x["code"])}" style="cursor:pointer">'
+            f'{_esc(x["code"])} {_esc(x["name"])}</td>'
+            f'<td style="text-align:left">{_esc(x["who"])} {_esc(x["person"])}</td>'
+            f'<td>{zhang:,.0f} 張</td>'
+            f'<td style="text-align:left" class="small">{method}{recv}</td></tr>')
+    return ('<div class="table-scroll"><table class="report-table"><thead><tr>'
+            '<th>申報日</th><th>公司</th><th>申報人</th><th>預定轉讓</th>'
+            '<th>方式/受讓人</th></tr></thead><tbody>' + "".join(trs)
+            + '</tbody></table></div>'
+            '<p class="small">⭐ <b>事前申報轉讓</b> = 董監/大股東大額轉讓,法規要求'
+            '<b>轉讓前 3 日申報</b> —— 這是少數「還沒賣就先知道」的 Layer 0 提前信號。'
+            '「洽特定人/鉅額逐筆」多為協議轉讓(未必利空,可能是引進策略股東);'
+            '「一般交易」= 盤中賣出(較偏賣壓)。≥50 張才列。</p>')
+
+
+_HOLD_FLOOR = 3_000_000   # 只看持股 ≥3,000 張的大股東(小額全質押=雜訊)
 
 
 def _insider_rows(name, fut_set=None):
     ed = _ed()
     ins = ed.load_insider() or ed.fetch_insider()
-    # 每檔取設質比例最高的內部人;≥30% 才列
+    # 每檔取「持股夠大且設質比例最高」的內部人;需 持股≥3000張 且 設質≥50%
     by_code = {}
     for i in ins:
-        if i["pledge_ratio"] >= 30 and i["hold"] > 0:
+        if i["hold"] >= _HOLD_FLOOR and i["pledge_ratio"] >= 50:
             cur = by_code.get(i["code"])
-            if not cur or i["pledge_ratio"] > cur["pledge_ratio"]:
+            # 排序鍵:設質張數(絕對賣壓量)大者優先
+            if not cur or i["pledge"] > cur["pledge"]:
                 by_code[i["code"]] = i
-    rows = sorted(by_code.values(), key=lambda x: -x["pledge_ratio"])[:30]
+    rows = sorted(by_code.values(), key=lambda x: -x["pledge"])[:30]
     if not rows:
-        return '<p class="small">無設質比例 ≥30% 的內部人(或快取未建)。</p>'
+        return '<p class="small">無「大持股(≥3,000 張)+高設質(≥50%)」的內部人。</p>'
     trs = []
     for i in rows:
-        cls = "u-hot" if i["pledge_ratio"] >= 80 else ""
+        cls = "u-hot" if i["pledge_ratio"] >= 90 else ""
         trs.append(
             f'<tr class="{cls}"><td data-kx="{_esc(i["code"])}" style="cursor:pointer">'
             f'{_esc(i["code"])} {_esc(i["name"])}</td>'
-            f'<td>{_esc(i["title"])}</td><td>{i["pledge_ratio"]:.0f}%</td>'
+            f'<td>{_esc(i["title"])}</td>'
+            f'<td>{i["hold"]/1000:,.0f} 張</td>'
+            f'<td>{i["pledge"]/1000:,.0f} 張</td>'
+            f'<td>{i["pledge_ratio"]:.0f}%</td>'
             f'<td class="small">{i["month"][:4]}/{i["month"][4:6]}</td></tr>')
     return ('<div class="table-scroll"><table class="report-table"><thead><tr>'
-            '<th>公司</th><th>職稱</th><th>設質比例</th><th>資料月</th>'
+            '<th>公司</th><th>職稱</th><th>持股</th><th>設質</th>'
+            '<th>設質比例</th><th>資料月</th>'
             '</tr></thead><tbody>' + "".join(trs) + '</tbody></table></div>'
-            '<p class="small">設質比例 = 質押股數 ÷ 該內部人持股;≥80% 標紅。'
-            '高設質 = 大股東槓桿高,股價跌時有被斷頭賣壓的風險。月頻資料。</p>')
+            '<p class="small">只列<b>持股 ≥3,000 張</b>的大股東(小額全質押是雜訊、無賣壓意義)。'
+            '設質比例 = 質押 ÷ 持股;≥90% 標紅。<b>大持股 + 高設質 = 大股東高槓桿,'
+            '股價跌時有被質押券商斷頭的賣壓風險</b>。月頻資料。</p>')
 
 
 def render(nav: str, fut_set=None) -> str:
@@ -171,10 +270,13 @@ def render(nav: str, fut_set=None) -> str:
             continue
         if key == "capital_ce":
             body = _capital_ce_rows(events, name)
-        elif key == "insider_pledge":
-            body = _insider_rows(name, fut_set)
+        elif key == "insider":
+            body = ('<h4 style="margin:.5em 0 .3em">⭐ 事前申報轉讓(法定提前 3 日)</h4>'
+                    + _xfer_rows()
+                    + '<h4 style="margin:1em 0 .3em">高設質內部人</h4>'
+                    + _insider_rows(name, fut_set))
         else:
-            body = _event_rows(events, key, name)
+            body = _event_rows(events, key, name, rev)
         blocks.append(sec(key, label, desc, body))
     # 旗艦開發中佔位
     dev = [m for m in MODULES if m[2] == "dev"]
