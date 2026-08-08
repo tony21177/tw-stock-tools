@@ -45,3 +45,4 @@
 - [處置新制解讀+千金股門檻雷達](reference_disposal_rules.md) — /disposal-rules;11款級距公式(頂端15%漸近線)+鋸齒/淨變動等7解讀+5策略構想;2026-08-04
 - [MOPS F17 N年矩陣缺年處理](feedback_mops_f17_history.md) — 年報次年出/掃描圖檔判別/失敗勿快取空/缺年必顯示原因
 - [事件交易中樞](reference_event_driven.md) — /event-trading;MOPS重訊分類+內部人;事件=事後標記/籌碼=事前偵測;TWSE OpenAPI;分批擴充
+- [FinMind 有歷史分點](reference_finmind_broker_history.md) — TaiwanStockTradingDailyReport 單日查回溯~2021免費;解鎖分點回測(先前誤判付費)
