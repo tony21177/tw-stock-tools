@@ -116,9 +116,10 @@ MODULES = [
     ("insider", "👤 內部人動向(事前申報轉讓 + 高設質)", "live",
      "⭐ <b>事前申報轉讓</b>:董監大額轉讓前 3 日申報(Layer 0 提前信號);"
      "<b>高設質</b>:大股東質押比例高 = 槓桿+潛在斷頭賣壓(月頻)。"),
-    ("chip_precursor", "🔍 分點吸貨前兆(旗艦)", "dev",
-     "模組 #1:全市場掃「單一分點連續大額吸貨+成本集中+集保大戶跳增」,"
-     "在取得股權公告<b>前</b>抓策略買家足跡。需回測+跨市場分點掃描,開發中。"),
+    ("bigholder", "🔍 集保千張大戶動向(旗艦・已回測:無 edge)", "live",
+     "集保<b>千張大戶</b>(≥1000張)持股週變化。原想當「主力吸貨」買訊,但"
+     "<b>回測證實無做多 edge</b>(中位≤0、勝率<50%),且<b>跳增越大反而越偏空</b>"
+     "(≥10pp 後 H20 中位 −5.6%)—— 大戶暴增常是相對高點/出貨。僅供觀察大戶動向,非買賣訊號。"),
 ]
 
 
@@ -290,6 +291,70 @@ def _insider_rows(name, fut_set=None):
     return _collapse(thead, trs, note)
 
 
+def _bigholder_section(name, fut_set):
+    """集保大戶跳增:回測 edge 數字 + 近期跳增個股。"""
+    try:
+        import tw_bigholder as bh
+        bt = bh.load_backtest()
+        sc = bh.load_scan()
+    except Exception:
+        bt = sc = None
+    parts = []
+    # 回測數字
+    if bt and bt.get("horizons"):
+        h = bt["horizons"]
+        b = bt["baseline"]
+        rows = ""
+        for k in ("5", "10", "20"):
+            e = h.get(k)
+            bl = b.get(k)
+            if not e:
+                continue
+            ex = e["mean"] - (bl["mean"] if bl else 0)
+            rows += (f'<tr><td>H{k}</td><td>{e["n"]}</td>'
+                     f'<td>{e["mean"]:+.1f}%</td><td>{e["median"]:+.1f}%</td>'
+                     f'<td>{e["win"]:.0f}%</td>'
+                     f'<td>{bl["mean"]:+.1f}%</td>'
+                     f'<td><b>{ex:+.1f}%</b></td></tr>')
+        parts.append(
+            f'<h4 style="margin:.4em 0 .3em">🧪 回測(隨機 {bt["universe"]} 檔,'
+            f'跳增 ≥{bt["thresh"]}pp,n={bt["n_events"]} 事件)</h4>'
+            '<div class="table-scroll"><table class="report-table"><thead><tr>'
+            '<th>持有</th><th>n</th><th>事件均</th><th>中位</th><th>勝率</th>'
+            '<th>對照均</th><th>超額</th></tr></thead><tbody>' + rows
+            + '</tbody></table></div>'
+            '<p class="note" style="background:#2f1416;border:1px solid #63262b;'
+            'color:#ff9b9b;padding:8px 12px;border-radius:4px;margin-top:6px">'
+            '⚠ <b>回測結論:無做多 edge。</b>事件均值雖微正,但<b>中位數 ≤0、勝率 &lt;50%</b>'
+            '(平均被少數大贏拉高的彩券分布);而且<b>門檻越高越偏空</b> — ≥5pp H20 中位 −2.1%、'
+            '≥10pp H20 中位 −5.6%/勝率 20%。<b>大戶持股暴增常是相對高點/出貨,不是買點。</b>'
+            '本區僅供<b>觀察大戶動向</b>,勿當買賣訊號。(集保週頻、樣本抽樣、存活者偏誤未除)</p>')
+    else:
+        parts.append('<p class="small">回測結果生成中(tw_bigholder.py --backtest)。</p>')
+    # 近期跳增個股
+    if sc and sc.get("hits"):
+        trs = []
+        for x in sc["hits"]:
+            star = "★" if x["code"] in (fut_set or set()) else ""
+            px = f'{x["close"]:,.0f}' if x.get("close") else "—"
+            trs.append(
+                f'<tr><td>{_fmt_d(x["date"])}</td>'
+                f'<td data-kx="{_esc(x["code"])}" style="cursor:pointer">'
+                f'{_esc(x["code"])} {_esc(name(x["code"]))}{star}</td>'
+                f'<td>{x["from"]:.1f}% → {x["to"]:.1f}%</td>'
+                f'<td><b>+{x["jump"]:.1f}pp</b></td><td>{px}</td></tr>')
+        thead = ('<h4 style="margin:1em 0 .3em">📡 近期大戶跳增個股(掃描)</h4>'
+                 '<div class="table-scroll"><table class="report-table"><thead><tr>'
+                 '<th>週</th><th>個股</th><th>大戶% 變化</th><th>跳增</th><th>現價</th>'
+                 '</tr></thead><tbody>')
+        note = (f'<p class="small">掃描時間 {sc["built_at"]} · 近 {sc["weeks"]} 週千張大戶'
+                f'週增 ≥{sc["thresh"]}pp。點代號看 K 線。</p>')
+        parts.append(_collapse(thead, trs, note))
+    else:
+        parts.append('<p class="small">掃描結果生成中(tw_bigholder.py --scan,週更新)。</p>')
+    return "".join(parts)
+
+
 def render(nav: str, fut_set=None) -> str:
     ed = _ed()
     name, rev = _names()
@@ -317,7 +382,9 @@ def render(nav: str, fut_set=None) -> str:
     for key, label, st, desc in MODULES:
         if st != "live":
             continue
-        if key == "capital_ce":
+        if key == "bigholder":
+            body = _bigholder_section(name, fut_set)
+        elif key == "capital_ce":
             body = _capital_ce_rows(events, name)
         elif key == "insider":
             body = ('<h4 style="margin:.5em 0 .3em">⭐ 事前申報轉讓(法定提前 3 日)</h4>'
