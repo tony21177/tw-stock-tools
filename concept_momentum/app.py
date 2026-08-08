@@ -1440,11 +1440,14 @@ def _render_chip_price_page(code: str | None = None,
   section h2 {{ font-size: 1.05em; margin: 4px 0 8px 0;
                 color: #333; border-bottom: 1px solid #eee; padding-bottom: 4px; }}
   section h2 small {{ font-weight: normal; color: #888; font-size: 0.85em; }}
-  details.cp-gloss {{ background:#fff; border:1px solid #e5e5ea; border-radius:6px;
-                margin-bottom:12px; padding:8px 14px; }}
-  details.cp-gloss > summary {{ cursor:pointer; font-weight:600; color:#0066cc; }}
-  details.cp-gloss h4 {{ margin:12px 0 3px; font-size:1em; color:#111; }}
+  details.cp-gloss {{ background:var(--card2,#1a2230);
+                border:1px solid var(--line,#223041); border-radius:6px;
+                margin-bottom:12px; padding:8px 14px; color:var(--ink,#dfe6ee); }}
+  details.cp-gloss > summary {{ cursor:pointer; font-weight:600; color:var(--acc,#4cc2ff); }}
+  details.cp-gloss h4 {{ margin:12px 0 3px; font-size:1em; color:var(--ink,#eef3f8); }}
+  details.cp-gloss b {{ color:#eef3f8; }}
   details.cp-gloss ul {{ margin:2px 0 6px; padding-left:20px; }}
+  details.cp-gloss p[style] {{ color:var(--ink2,#8b98a9)!important; }}
   section h3 {{ font-size: 0.95em; margin: 12px 0 6px 0; color: #555; }}
   .ohlc {{ font-size: 0.95em; color: #444; margin: 2px 0; }}
   .ohlc b {{ color: #000; }}

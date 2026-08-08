@@ -135,6 +135,10 @@ tr[style*="fafafa"],div[style*="fafafa"]{
   background:var(--card2) !important;color:var(--ink)}
 /* 各頁查詢 form 白底轉深色卡 */
 form{background:var(--card);color:var(--ink)}
+/* 說明用 <details> 盒(cp-gloss/wg 等)白底一律轉深色卡 */
+details.cp-gloss,details.wg{background:var(--card2)!important;
+  border-color:var(--line)!important;color:var(--ink)!important}
+details.cp-gloss h4,details.wg h4{color:#eef3f8!important}
 /* 各頁 .pos/.neg 色深淺不一(有的 #060/#c30 在黑底太暗):提亮但保留
    各頁自己的紅綠語意(backtest 綠=正報酬、個股期紅=增),不改色相 */
 .pos,.neg{filter:brightness(1.6)}

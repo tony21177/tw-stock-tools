@@ -150,11 +150,14 @@ def render_page(signal_rows: list[dict], day: dict, asof: str,
   .small,small{font-size:.85em;color:#666;}
   details{margin:2px 0;} summary{cursor:pointer;color:#0066cc;}
   .meta{color:#666;font-size:.85em;}
-  details.wg{background:#fff;border:1px solid #e5e5ea;border-radius:6px;
-    margin:0 0 12px;padding:8px 14px;}
-  details.wg>summary{font-weight:600;}
-  details.wg h4{margin:12px 0 3px;font-size:1em;color:#111;}
+  details.wg{background:var(--card2,#1a2230);
+    border:1px solid var(--line,#223041);border-radius:6px;
+    margin:0 0 12px;padding:8px 14px;color:var(--ink,#dfe6ee);}
+  details.wg>summary{font-weight:600;color:var(--acc,#4cc2ff);}
+  details.wg h4{margin:12px 0 3px;font-size:1em;color:var(--ink,#eef3f8);}
+  details.wg b{color:#eef3f8;}
   details.wg ul{margin:2px 0 6px;padding-left:20px;}
+  details.wg p[style]{color:var(--ink2,#8b98a9)!important;}
 </style>"""
     fmt_date = f"{asof[:4]}/{asof[4:6]}/{asof[6:]}" if len(asof) == 8 else asof
     head = (f'<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="utf-8">'
