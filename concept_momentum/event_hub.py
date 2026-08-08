@@ -113,6 +113,10 @@ MODULES = [
      "現金增資(GDR/ADR,如環球晶)、私募、可轉債、減資。稀釋 vs 護盤方向不同,看類型。"),
     ("major_contract", "📝 重大契約/大單", "live",
      "簽訂合資/大單/供應協議(美光×環球晶型)。高影響但難提前,靠即時重訊。"),
+    ("investor_conf", "🎤 法人說明會行事曆", "live",
+     "從重訊抓法說會+解析召開日,做前瞻行事曆。法說常揭露展望/財測,是轉折點,提前知道可預先關注。"),
+    ("dividend", "💵 股利/盈餘分派", "live",
+     "董事會決議股利政策。高殖利率/配息成長 = 存股題材;減配/不配 = 利空。除權息前後有填權息行情。"),
     ("insider", "👤 內部人動向(事前申報轉讓 + 高設質)", "live",
      "⭐ <b>事前申報轉讓</b>:董監大額轉讓前 3 日申報(Layer 0 提前信號);"
      "<b>高設質</b>:大股東質押比例高 = 槓桿+潛在斷頭賣壓(月頻)。"),
@@ -150,6 +154,48 @@ def _extract_target(subject: str, rev: dict):
                 if len(full) > len(best):     # 取最長匹配
                     best, code = full, c
     return tgt, code
+
+
+# 從主旨抽民國年月日 → yyyymmdd(法說會召開日)
+_CONF_DATE_RE = re.compile(r"(\d{2,3})年(\d{1,2})月(\d{1,2})日")
+
+
+def _roc_ymd(s):
+    m = _CONF_DATE_RE.search(s.replace(" ", ""))
+    if not m:
+        return ""
+    y, mo, d = int(m.group(1)) + 1911, int(m.group(2)), int(m.group(3))
+    return f"{y:04d}{mo:02d}{d:02d}"
+
+
+def _conf_rows(events, name, today):
+    """法說會行事曆:抽召開日,未來的排前面(升冪),過去的排後面。"""
+    rows = [e for e in events if e["type"] == "investor_conf"]
+    enr = []
+    for e in rows:
+        cd = _roc_ymd(e["subject"])
+        enr.append((cd, e))
+    # 未來場次(cd>=today)升冪在前,其餘(無日期/過去)照公告日降冪在後
+    fut = sorted([x for x in enr if x[0] and x[0] >= today], key=lambda x: x[0])
+    past = sorted([x for x in enr if not (x[0] and x[0] >= today)],
+                  key=lambda x: x[1]["date"], reverse=True)
+    trs = []
+    for cd, e in fut + past:
+        when = (f'<b style="color:#4cc2ff">{_fmt_d(cd)} 召開</b>' if cd and cd >= today
+                else (f'{_fmt_d(cd)}' if cd else '<span class="small">—</span>'))
+        trs.append(
+            f'<tr><td>{when}</td>'
+            f'<td data-kx="{_esc(e["code"])}" style="cursor:pointer">'
+            f'{_esc(e["code"])} {_esc(e["name"])}</td>'
+            f'<td style="text-align:left">{_esc(e["subject"])}</td>'
+            f'<td class="small">{_fmt_d(e["date"])}</td>'
+            + _src(e["code"], e["market"]) + '</tr>')
+    thead = ('<div class="table-scroll"><table class="report-table"><thead><tr>'
+             '<th>召開日</th><th>公司</th><th>主旨</th><th>公告日</th><th>來源</th>'
+             '</tr></thead><tbody>')
+    note = ('<p class="small">🔵 藍字 = <b>未來場次</b>(升冪在前);法說會常揭露展望/財測,'
+            '是股價轉折點,提前知道日期可預先關注。日期從主旨解析,格式特殊者顯示公告日。</p>')
+    return _collapse(thead, trs, note)
 
 
 def _event_rows(events, etype, name, rev):
@@ -384,6 +430,9 @@ def render(nav: str, fut_set=None) -> str:
             continue
         if key == "bigholder":
             body = _bigholder_section(name, fut_set)
+        elif key == "investor_conf":
+            from datetime import datetime as _dt
+            body = _conf_rows(events, name, _dt.now().strftime("%Y%m%d"))
         elif key == "capital_ce":
             body = _capital_ce_rows(events, name)
         elif key == "insider":

@@ -46,6 +46,14 @@ def classify(subject: str) -> str:
     if "公開收購" in s:
         return "tender_offer"
 
+    # 法人說明會(前瞻行事曆)
+    if re.search(r"(法人說明會|法說會)", s):
+        return "investor_conf"
+
+    # 股利/盈餘分派(董事會決議)
+    if re.search(r"(股利|股息|盈餘分派|盈餘分配)", s) and "董事會" in s:
+        return "dividend"
+
     # 取得股權(策略投資)— 排除不動產/設備/使用權
     if "取得" in s and re.search(r"(股份|普通股|股票|特別股|可轉換公司債)", s):
         if not re.search(r"(不動產|土地|廠房|廠辦|辦公|設備|機器|使用權資產)", s):
@@ -91,6 +99,8 @@ def classify(subject: str) -> str:
 
 EVENT_LABELS = {
     "tender_offer": "🎯 公開收購",
+    "investor_conf": "🎤 法人說明會",
+    "dividend": "💵 股利/盈餘分派",
     "strategic_buy": "🤝 取得股權/策略投資",
     "merger": "🔗 併購/合併",
     "treasury": "💰 庫藏股買回",
