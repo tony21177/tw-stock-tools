@@ -6187,6 +6187,19 @@ def disposal_rules_page():
 
 
 
+@app.route("/event-trading")
+def event_trading_page():
+    import event_hub
+    try:
+        from tw_stock_futures import fut_stock_set
+        fs = fut_stock_set()
+    except Exception:
+        fs = set()
+    nav = __import__("site_nav").nav_html("/event-trading")
+    return event_hub.render(nav, fut_set=fs)
+
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()

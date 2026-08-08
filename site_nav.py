@@ -28,6 +28,7 @@ NAV_LINKS = [
     ("/adr-premium", "🇺🇸 ADR"),
     ("/us-correlation", "🔗 美台聯動"),
     ("/disposal-rules", "⚖ 處置新制"),
+    ("/event-trading", "🎯 事件交易"),
     ("/warrant-signal", "🎫 權證"),
     ("/money-flow", "💰 資金流"),
     ("/chip-price", "🧬 籌碼價量"),
