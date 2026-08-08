@@ -30,4 +30,4 @@
 40 14 * * 1-5 FINMIND_TOKEN=${FINMIND_TOKEN} /usr/bin/python3 /home/kun/project/tw_stock_tools/is_trading_day.py && TG_BOT_TOKEN=${TG_BOT_TOKEN} FINMIND_TOKEN=${FINMIND_TOKEN} /usr/bin/python3 /home/kun/project/tw_stock_tools/tw_disposal_radar.py --telegram >> /home/kun/project/tw_stock_tools/disposal_radar.log 2>&1
 10 17 * * 1-5 FINMIND_TOKEN=${FINMIND_TOKEN} /usr/bin/python3 /home/kun/project/tw_stock_tools/is_trading_day.py && TG_BOT_TOKEN=${TG_BOT_TOKEN} FINMIND_TOKEN=${FINMIND_TOKEN} /usr/bin/python3 /home/kun/project/tw_stock_tools/tw_disposal_radar.py --telegram >> /home/kun/project/tw_stock_tools/disposal_radar.log 2>&1
 */30 * * * * /home/kun/project/tw_stock_tools/telegram_plugin_watchdog.sh
-10 20 * * 1-5 /usr/bin/python3 /home/kun/project/tw_stock_tools/tw_event_data.py >> /home/kun/project/tw_stock_tools/event_data.log 2>&1
+10 20 * * 1-5 TG_BOT_TOKEN=${TG_BOT_TOKEN} /usr/bin/python3 /home/kun/project/tw_stock_tools/tw_event_push.py --telegram >> /home/kun/project/tw_stock_tools/event_push.log 2>&1
